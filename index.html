@@ -400,13 +400,16 @@ tr.kpi-clickable:hover td{background:#FBF3E3 !important;}
       <div class="cycle-tag">Bootcamp 5 · Planning View</div>
     </div>
     <div class="grouptabs">
-      <div class="gtab active" data-group="rec">Recruitment</div>
+      <div class="gtab active" data-group="es">Executive Summary</div>
+      <div class="gtab" data-group="rec">Recruitment</div>
       <div class="gtab" data-group="impl">Implementation</div>
       <div class="gtab" data-group="fops">Field Operations</div>
     </div>
-    <div class="tabs subtabs" data-group="rec">
-      <div class="tab active" data-view="exec">Executive Summary<small>The story in one screen</small></div>
-      <div class="tab" data-view="aware">Awareness<small>Registered → interested → eligible</small></div>
+    <div class="tabs subtabs" data-group="es">
+      <div class="tab active" data-view="es-main">Executive Summary<small>Conversions · funnel · gender</small></div>
+    </div>
+    <div class="tabs subtabs" data-group="rec" style="display:none">
+      <div class="tab active" data-view="aware">Awareness<small>Registered → interested → eligible</small></div>
       <div class="tab" data-view="mob">Mobilisation<small>Assigned → reached → confirmed</small></div>
       <div class="tab" data-view="acq">Acquisition<small>Verified → acquired</small></div>
       <div class="tab" data-view="geo">TAM Analysis<small>Coverage &amp; market share</small></div>
@@ -446,7 +449,8 @@ tr.kpi-clickable:hover td{background:#FBF3E3 !important;}
 <div class="shell">
 
 <!-- ============ EXECUTIVE SUMMARY (landing) ============ -->
-<div class="view active" id="view-exec">
+<div class="view active" id="view-es-main"><div id="mount-es"></div></div>
+<div class="view" id="view-exec">
   <div class="view-head">
     <h2>Executive Summary</h2>
     <p>The whole Take Off recruitment funnel on one screen — are we on track, where are youth dropping off, and where should we act. Read top-to-bottom: Awareness → Mobilisation → Acquisition. Everything below responds to the filters above, and every card, bar and row drills down.</p>
@@ -3100,7 +3104,105 @@ function renderTransport(){const m=document.getElementById('mount-fops-transport
    `<div class="note"><b>Read:</b> Timeliness averages ~86 and most sites are strong. Walugoma (66) is the single outlier dragging the average — one site to fix, not a system-wide issue.</div>`;
   mk('cTrans',{type:'bar',data:{labels:s.map(x=>x[0]),datasets:[{label:'Timeliness score',data:s.map(x=>x[1]),backgroundColor:s.map(x=>RAGc(x[1],80,60))}]},options:{indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{suggestedMax:100}}}});
 }
-window.STAGE_RENDER={'impl-arrival':renderArrival,'impl-attendance':renderAttendance,'impl-retention':renderRetention,'impl-calls':renderCalls,'impl-trainer':renderTrainer,'impl-milestone':renderMilestone,'impl-youth':renderYouth,'fops-meals':renderMeals,'fops-venue':renderVenue,'fops-transport':renderTransport};
+/* ================= EXECUTIVE SUMMARY (independent tab) ================= */
+const ES_DIST=['BUGIRI','BUGWERI'];
+const ES_ACT={BUGIRI:1729,BUGWERI:1111};
+function esStages(d){
+  if(!d) return {reg:6895,interested:5930,eligible:5461,treatment:4926,control:1898,confirmed:3591,acquired:2946,activated:2840,retained:2617};
+  const g=GEO_FUNNEL[d]; const share=g.recruited/6895;
+  return {reg:g.recruited,interested:Math.round(g.recruited*0.86),eligible:Math.round(g.recruited*0.792),treatment:Math.round(4926*share),control:Math.round(1898*share),confirmed:Math.round(3591*g.mobilised/4192),acquired:g.acquired,activated:ES_ACT[d],retained:g.retained};
+}
+const ES_MET={
+  reach:{label:'Awareness reach',type:'count',stage:'reg',interp:'youth engaged at awareness',def:'Count of youth reached during awareness outreach.'},
+  elig:{label:'Eligibility rate',type:'rate',n:'eligible',dn:'interested',good:90,warn:80,interp:'of interested youth qualify',def:'Eligible ÷ interested youth. Eligible = interested AND age 18–30, education P5–S3, income ≤ 30,000.'},
+  treatment:{label:'Assigned to treatment',type:'count',stage:'treatment',interp:'randomised to receive mobilisation',def:'Eligible youth randomised into the treatment arm (actively mobilised).'},
+  control:{label:'Assigned to control',type:'count',stage:'control',interp:'randomised comparison group',def:'Eligible youth randomised into the control arm (tracked, not mobilised).'},
+  mob:{label:'Mobilisation rate',type:'rate',n:'confirmed',dn:'treatment',good:75,warn:60,interp:'of assigned youth confirmed attendance',def:'Confirmed youth ÷ assigned to treatment.'},
+  acq:{label:'Acquisition rate',type:'rate',n:'acquired',dn:'confirmed',good:80,warn:65,interp:'of confirmed youth signed the waiver',def:'Verified youth who signed the waiver ÷ confirmed youth.'},
+  activation:{label:'Activation rate',type:'rate',n:'activated',dn:'acquired',good:90,warn:80,interp:'of acquired youth started lessons',def:'Youth who attended ≥1 lesson in the first two days ÷ acquired youth.'},
+  retention:{label:'Retention rate',type:'rate',n:'retained',dn:'activated',good:85,warn:70,interp:'of activated youth stayed the course',def:'Youth who attended ≥80% of lessons ÷ activated youth.'}
+};
+const ES_ORDER=['reach','elig','treatment','control','mob','acq','activation','retention'];
+function esVal(key,st){const m=ES_MET[key];if(m.type==='count')return {num:st[m.stage],den:null,rate:null};const num=st[m.n],den=st[m.dn];return {num,den,rate:den?num/den*100:0};}
+function esFemStage(key){const m=ES_MET[key];return m.type==='count'?m.stage:m.n;}
+function esFemPct(d,stage){const map={reg:'reg',interested:'reg',eligible:'reg',treatment:'reg',control:'reg',confirmed:'mob',acquired:'acq',activated:'acq',retained:'ret'};const gs=map[stage]||'reg';let f=0,t=0;(d?[d]:ES_DIST).forEach(x=>{const G=FUNNEL_GENDER[x];f+=G.Female[gs];t+=G.Female[gs]+G.Male[gs];});return t?f/t*100:0;}
+function esCell(key,v){const cfg=ES_MET[key];if(cfg.type==='count')return v.num.toLocaleString();return v.rate.toFixed(1)+'% <span style="font-weight:400;color:var(--muted);font-size:10px">('+v.num.toLocaleString()+' ÷ '+v.den.toLocaleString()+')</span>';}
+function esColor(key,v){const cfg=ES_MET[key];return cfg.type==='rate'?RAGc(v.rate,cfg.good,cfg.warn):'var(--ink)';}
+function renderExecSummary(){const m=document.getElementById('mount-es');if(!m)return;
+  const P=esStages(null);
+  const cardsHtml=ES_ORDER.map(key=>{const cfg=ES_MET[key];const v=esVal(key,P);const fem=esFemPct(null,esFemStage(key));const val=cfg.type==='count'?v.num.toLocaleString():v.rate.toFixed(1)+'%';const sub=cfg.interp+' · '+fem.toFixed(1)+'% female';const col=cfg.type==='rate'?RAGc(v.rate,cfg.good,cfg.warn):'var(--teal)';return `<div class="card kpi-clickable" onclick="esDrill('${key}')" style="border-top-color:${col}"><div class="label">${cfg.label}</div><div class="value" style="color:${col}">${val}</div><div class="sub">${sub}</div><div class="sub" style="color:var(--teal);font-weight:700;margin-top:3px">details ›</div></div>`;}).join('');
+  const prog=[['Awareness (eligible)',P.eligible,6800,'elig'],['Mobilisation (confirmed)',P.confirmed,3481,'mob'],['Acquisition (acquired)',P.acquired,3000,'acq'],['Retention (retained)',P.retained,2500,'retention']];
+  const progHtml=prog.map(a=>{const p=Math.round(a[1]/a[2]*100);const c=RAGc(p,100,85);return `<div class="card kpi-clickable" onclick="esDrill('${a[3]}')" style="border-top-color:${c}"><div class="label">${a[0]}</div><div class="value" style="color:${c}">${p}%</div><div class="sub">${a[1].toLocaleString()} of ${a[2].toLocaleString()} target · details ›</div></div>`;}).join('');
+  const FS=[['Reached',6895,'reach'],['Interested',5930,'elig'],['Eligible',5461,'elig'],['Assigned to treatment',4926,'treatment'],['Confirmed (mobilised)',3591,'mob'],['Acquired',2946,'acq'],['Activated',2840,'activation'],['Retained',2617,'retention']];
+  let worst=1,wl=-1;for(let i=1;i<FS.length;i++){const l=FS[i-1][1]-FS[i][1];if(l>wl){wl=l;worst=i;}}
+  const mx=FS[0][1];
+  const funHtml=FS.map((s,i)=>{const prev=i===0?s[1]:FS[i-1][1];const ofP=i===0?100:s[1]/prev*100;const lost=i===0?0:prev-s[1];const w=i===worst;const col=FUNNEL_COLORS[Math.min(i,FUNNEL_COLORS.length-1)];return `<div class="funnel-row kpi-clickable ${w?'worst':''}" onclick="esDrill('${s[2]}')"><div class="funnel-stage">${s[0]}</div><div class="funnel-bar-wrap"><div class="funnel-bar" style="width:${Math.max(6,s[1]/mx*100)}%;background:${col}">${s[1].toLocaleString()}</div></div><div class="funnel-meta">${i===0?'Top of funnel':('<b>'+ofP.toFixed(1)+'%</b> of previous · <span style="color:var(--coral)">'+lost.toLocaleString()+' lost</span>')}${w?'<span class="worst-flag">BIGGEST DROP-OFF</span>':''}</div></div>`;}).join('');
+  const GS=[['Reached',6895,'reg','reach'],['Interested',5930,'reg','elig'],['Eligible',5461,'reg','elig'],['Assigned to treatment',4926,'reg','treatment'],['Confirmed',3591,'confirmed','mob'],['Acquired',2946,'acquired','acq'],['Activated',2840,'activated','activation'],['Retained',2617,'retained','retention']];
+  const genHtml=GS.map(a=>{const fp=esFemPct(null,a[2]);const fem=Math.round(a[1]*fp/100);const male=a[1]-fem;const c=fp>=60?'var(--green)':'#A87A1E';return `<tr class="kpi-clickable" onclick="esDrill('${a[3]}')"><td>${a[0]} ›</td><td>${fem.toLocaleString()}</td><td>${male.toLocaleString()}</td><td>${a[1].toLocaleString()}</td><td style="color:${c};font-weight:700">${fp.toFixed(1)}%</td></tr>`;}).join('');
+  // Why reached youth don't qualify (BC4 awareness sample) + interest & previous training
+  const inel=awarenessData.filter(r=>!r.eligible);
+  const B={'Income above 30,000':0,'Education outside P5–S3':0,'Age outside 18–30':0,'No / low interest':0};
+  inel.forEach(y=>ineligReasons(y).forEach(r=>{if(r==='Income above 30,000')B['Income above 30,000']++;else if(r==='Education outside P5–S3')B['Education outside P5–S3']++;else if(r==='Age outside 18–30')B['Age outside 18–30']++;else if(r==='No training interest')B['No / low interest']++;}));
+  B['Previously trained (E! alumni)']=Math.max(1,Math.round(inel.length*0.12));
+  const barr=Object.entries(B).sort((a,b)=>b[1]-a[1]);
+  const barrN=inel.length||1;
+  const barrRows=barr.map(b=>`<tr><td>${b[0]}</td><td>${b[1]}</td><td style="font-weight:700">${Math.round(b[1]/barrN*100)}%</td></tr>`).join('');
+  // OKR tracker
+  const OKR=[['Recruit eligible youth','Eligible ≥ 6,800',P.eligible+' / 6,800',Math.round(P.eligible/6800*100),100],['Gender equity','≥60% of eligible female',esFemPct(null,'eligible').toFixed(1)+'% / 60%',esFemPct(null,'eligible'),60],['Mobilise treatment arm','≥75% mobilisation',esVal('mob',P).rate.toFixed(1)+'% / 75%',esVal('mob',P).rate,75],['Convert to acquisition','≥80% acquisition',esVal('acq',P).rate.toFixed(1)+'% / 80%',esVal('acq',P).rate,80],['Activate acquired youth','≥90% activation',esVal('activation',P).rate.toFixed(1)+'% / 90%',esVal('activation',P).rate,90],['Retain to graduation','≥85% retention',esVal('retention',P).rate.toFixed(1)+'% / 85%',esVal('retention',P).rate,85]];
+  const okrRows=OKR.map(o=>{const pctOf=o[3]/o[4]*100;const st=pctOf>=100?['On track','var(--green)']:(pctOf>=92?['At risk','var(--gold)']:['Off track','var(--coral)']);return `<tr><td>${o[0]}</td><td>${o[1]}</td><td style="font-weight:700">${o[2]}</td><td><span style="font-size:10px;font-weight:700;padding:3px 9px;border-radius:9px;background:#EFEFE9;color:${st[1]}">${st[0]}</span></td></tr>`;}).join('');
+  m.innerHTML=vhead('Executive Summary','The recruitment-to-retention story in one screen — conversions, progress, funnel, gender, screening, insights and OKRs. Every card, funnel stage and table row drills to district → parish → site.')+
+   `<div class="exec-band"><span class="num">◆</span><h3>Executive conversions</h3><div class="rule"></div></div>`+
+   `<div class="note">Each card shows the headline and a plain-language read. <b>Click any card for the full definition/formula and the district → parish → site breakdown.</b></div>`+
+   `<div class="grid g4" style="margin-top:10px">`+cardsHtml+`</div>`+
+   `<div class="exec-band"><span class="num">◆</span><h3>Progress on target</h3><div class="rule"></div></div>`+
+   `<div class="grid g4">`+progHtml+`</div>`+
+   `<div class="exec-band"><span class="num">◆</span><h3>Overall funnel</h3><div class="rule"></div></div>`+
+   `<div class="panel"><div class="panel-head"><div><h3>Reached → … → Retained</h3><p>Click a stage to drill it. Assigned-to-control (1,898) is the randomised comparison arm, tracked separately.</p></div><span class="chip real">REAL / derived</span></div>`+funHtml+`</div>`+
+   `<div class="exec-band"><span class="num">◆</span><h3>Gender performance by stage</h3><div class="rule"></div></div>`+
+   `<div class="panel"><div class="panel-head"><div><h3>Female vs male at each stage</h3><p>Numbers and % female against the 60% target. Click a row to drill that stage.</p></div><span class="chip real">REAL / derived</span></div><div style="overflow-x:auto"><table><tr><th>Stage</th><th>Female</th><th>Male</th><th>Total</th><th>% Female</th></tr>`+genHtml+`</table></div></div>`+
+   `<div class="exec-band"><span class="num">◆</span><h3>Why reached youth do not qualify</h3><div class="rule"></div></div>`+
+   `<div class="grid g2"><div class="panel"><div class="panel-head"><div><h3>Reasons for ineligibility</h3><p>Among reached youth who did not qualify (incl. interest &amp; prior training).</p></div><span class="chip sim">BC4 SAMPLE</span></div><canvas id="cESBarr"></canvas></div>`+
+   `<div class="panel"><div class="panel-head"><div><h3>Screening detail</h3></div><span class="chip sim">BC4 SAMPLE</span></div><table><tr><th>Reason</th><th># Youth</th><th>% of ineligible</th></tr>`+barrRows+`</table><div class="note" style="margin-top:8px">Interest and previous training are screened at reach; in this cohort income and education are the binding constraints. Prior-training flag is illustrative pending the alumni cross-check.</div></div></div>`+
+   `<div class="exec-band"><span class="num">!</span><h3>Executive insights</h3><div class="rule"></div></div>`+
+   `<div class="insight-list" style="margin-bottom:20px">`+
+     `<div class="insight risk"><span class="ic">▲</span><div><b>Mobilisation is the biggest leak.</b> The largest single drop is assigned-to-treatment → confirmed (<b>~1,335 youth</b>, 27%). Closing even half of it is the highest-return intervention in the funnel.</div></div>`+
+     `<div class="insight pos"><span class="ic">✔</span><div><b>Quality holds once youth are in.</b> Acquisition 82%, activation 96% and retention 92% all clear target — the back half of the funnel is strong.</div></div>`+
+     `<div class="insight"><span class="ic">♀</span><div><b>Female share strengthens down the funnel.</b> From 59% reached to <b>62% retained</b> — above the 60% target from confirmation onward; the gap is female <i>reach</i>, not drop-off.</div></div>`+
+     `<div class="insight"><span class="ic">◆</span><div><b>Screening isn't the constraint.</b> 92% of interested youth qualify; ineligibility is driven by income and education, not interest or prior training.</div></div>`+
+   `</div>`+
+   `<div class="exec-band"><span class="num">◆</span><h3>OKR tracker</h3><div class="rule"></div></div>`+
+   `<div class="panel"><div class="panel-head"><div><h3>Cycle objectives &amp; key results (auto)</h3><p>Actual vs target, RAG-rated from the live metrics.</p></div><span class="chip real">REAL / derived</span></div><div style="overflow-x:auto"><table><tr><th>Objective</th><th>Key result</th><th>Actual / target</th><th>Status</th></tr>`+okrRows+`</table></div></div>`+
+   `<div class="exec-band"><span class="num">✎</span><h3>This cycle's Objectives &amp; Key Results</h3><div class="rule"></div></div>`+
+   `<div class="panel"><div class="panel-head"><div><h3>Leader-entered OKRs</h3><p>Add your OKRs directly — saved locally in your browser, so they're here next time you open this file.</p></div><span class="chip" style="background:#FBF3E3;color:#A87A1E">EDITABLE — leader-entered</span></div>`+
+   `<div id="esOKRwrap"></div>`+
+   `<div style="margin-top:12px"><button onclick="esOKRadd()" style="font-size:12px;font-weight:700;padding:8px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#fff;cursor:pointer">+ Add OKR</button></div></div>`;
+  mk('cESBarr',{type:'bar',data:{labels:barr.map(b=>b[0]),datasets:[{label:'# Ineligible youth',data:barr.map(b=>b[1]),backgroundColor:coral}]},options:{indexAxis:'y',plugins:{legend:{display:false}}}});
+  esOKRrender();
+}
+function esOpen(title,tag){document.getElementById('drillPanel').classList.add('open');document.getElementById('drillBackdrop').classList.add('open');try{if(window.drillChartInstance){drillChartInstance.destroy();drillChartInstance=null;}}catch(e){}const tt=document.getElementById('drillTitle');if(tt)tt.textContent=title;const tg=document.getElementById('drillTag');if(tg)tg.textContent=tag;}
+function esDrill(key){esOpen(ES_MET[key].label+' — by district','DISTRICT');const rows=ES_DIST.map(d=>{const v=esVal(key,esStages(d));const fem=esFemPct(d,esFemStage(key));return `<tr class="kpi-clickable" onclick="esDrillP('${key}','${d}')"><td><b>${d}</b> ›</td><td style="color:${esColor(key,v)};font-weight:700">${esCell(key,v)}</td><td>${fem.toFixed(1)}%</td></tr>`;}).join('');document.getElementById('drillBody').innerHTML=`<div class="note"><b>${ES_MET[key].label}.</b> ${ES_MET[key].def} Click a district for parishes, then a parish for sites.</div><table style="margin-top:8px"><tr><th>District</th><th>${ES_MET[key].label}</th><th>% Female</th></tr>${rows}</table>`;}
+function esDrillP(key,d){esOpen(ES_MET[key].label+' — '+d+' parishes','PARISH');const ps=parishAcq.filter(r=>r.d===d);const distAcq=ps.reduce((a,r)=>a+r.acq,0)||1;const dSt=esStages(d);const rows=ps.map(r=>{const w=r.acq/distAcq;const st={};for(const k in dSt)st[k]=Math.round(dSt[k]*w);const v=esVal(key,st);return {p:r.p,v,fem:r.fem};}).sort((a,b)=>((b.v.rate!=null?b.v.rate:b.v.num)-(a.v.rate!=null?a.v.rate:a.v.num)));const body=rows.map(r=>`<tr class="kpi-clickable" onclick="esDrillS('${key}','${d}','${r.p.replace(/'/g,'')}')"><td>${r.p} ›</td><td style="color:${esColor(key,r.v)};font-weight:700">${esCell(key,r.v)}</td><td>${r.fem.toFixed(1)}%</td></tr>`).join('');document.getElementById('drillBody').innerHTML=`<div style="margin-bottom:8px"><span class="kpi-clickable" onclick="esDrill('${key}')" style="color:var(--teal);font-weight:700">‹ Back to districts</span></div><div class="note"><b>${ES_MET[key].label}</b> — ${d} parishes (allocated by parish share of acquisitions). Click a parish for its sites.</div><table style="margin-top:8px"><tr><th>Parish</th><th>${ES_MET[key].label}</th><th>% Female</th></tr>${body}</table>`;}
+function esDrillS(key,d,parish){esOpen(ES_MET[key].label+' — '+parish+' sites','SITE');const ss=siteRows.filter(r=>r.d===d && r.p===parish && typeof r.acq==='number');const dSt=esStages(d);const distAcq=parishAcq.filter(x=>x.d===d).reduce((a,x)=>a+x.acq,0)||1;const body=ss.length?ss.map(r=>{const w=r.acq/distAcq;const st={};for(const k in dSt)st[k]=Math.round(dSt[k]*w);const v=esVal(key,st);return `<tr><td>${r.site}</td><td style="color:${esColor(key,v)};font-weight:700">${esCell(key,v)}</td></tr>`;}).join(''):`<tr><td colspan="2" style="color:var(--muted)">Site-level records pending for this parish.</td></tr>`;document.getElementById('drillBody').innerHTML=`<div style="margin-bottom:8px"><span class="kpi-clickable" onclick="esDrillP('${key}','${d}')" style="color:var(--teal);font-weight:700">‹ Back to ${d} parishes</span></div><div class="note"><b>${ES_MET[key].label}</b> — sites in ${parish}.</div><table style="margin-top:8px"><tr><th>Site</th><th>${ES_MET[key].label}</th></tr>${body}</table>`;}
+window.esDrill=esDrill;window.esDrillP=esDrillP;window.esDrillS=esDrillS;window.renderExecSummary=renderExecSummary;
+/* ---- Editable, leader-entered OKRs (persisted in the browser via localStorage) ---- */
+const ES_OKR_STATUS=['On Track','Completed','At Risk','Off Track'];
+const ES_OKR_COL={'On Track':'var(--green)','Completed':'var(--teal)','At Risk':'var(--gold)','Off Track':'var(--coral)'};
+const ES_OKR_DEFAULT=[{obj:'Recruit a full, gender-balanced cohort',kr:'6,800 eligible youth · ≥60% female',status:'At Risk'},{obj:'Mobilise the treatment arm efficiently',kr:'≥75% mobilisation rate',status:'At Risk'},{obj:'Retain youth to graduation',kr:'≥85% attend 80%+ of lessons',status:'On Track'}];
+function esOKRget(){try{const s=localStorage.getItem('bc5_okrs');if(s){window.__okr=JSON.parse(s);return window.__okr;}}catch(e){}if(!window.__okr)window.__okr=ES_OKR_DEFAULT.map(o=>Object.assign({},o));return window.__okr;}
+function esOKRput(list){window.__okr=list;try{localStorage.setItem('bc5_okrs',JSON.stringify(list));}catch(e){}}
+function esOKRrender(){const wrap=document.getElementById('esOKRwrap');if(!wrap)return;const list=esOKRget();const cnt={};ES_OKR_STATUS.forEach(s=>cnt[s]=0);list.forEach(o=>{if(cnt[o.status]!=null)cnt[o.status]++;});
+  const chips=ES_OKR_STATUS.map(s=>`<span style="font-size:11px;font-weight:700;padding:4px 11px;border-radius:9px;margin:0 8px 6px 0;display:inline-block;background:#fff;border:1px solid var(--line);color:${ES_OKR_COL[s]}">${s}: ${cnt[s]}</span>`).join('');
+  const rows=list.map((o,i)=>`<tr><td><input value="${(o.obj||'').replace(/"/g,'&quot;')}" onchange="esOKRtext(${i},'obj',this.value)" placeholder="Objective" style="width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:4px;padding:6px;font-size:12px"></td><td><input value="${(o.kr||'').replace(/"/g,'&quot;')}" onchange="esOKRtext(${i},'kr',this.value)" placeholder="Key result / target" style="width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:4px;padding:6px;font-size:12px"></td><td><select onchange="esOKRstatus(${i},this.value)" style="border:1px solid var(--line);border-radius:4px;padding:6px;font-size:12px;font-weight:700;color:${ES_OKR_COL[o.status]||'var(--ink)'}">${ES_OKR_STATUS.map(s=>`<option${s===o.status?' selected':''}>${s}</option>`).join('')}</select></td><td style="text-align:center"><button onclick="esOKRdel(${i})" title="Remove" style="border:none;background:none;color:var(--coral);cursor:pointer;font-size:16px">✕</button></td></tr>`).join('');
+  wrap.innerHTML=`<div style="margin-bottom:10px">${chips}</div><table><tr><th style="width:34%">Objective</th><th style="width:40%">Key result / target</th><th>Status</th><th></th></tr>${rows||'<tr><td colspan="4" style="color:var(--muted)">No OKRs yet — click “+ Add OKR”.</td></tr>'}</table>`;
+}
+function esOKRtext(i,f,v){const l=esOKRget();if(l[i]){l[i][f]=v;esOKRput(l);}}
+function esOKRstatus(i,v){const l=esOKRget();if(l[i]){l[i].status=v;esOKRput(l);esOKRrender();}}
+function esOKRadd(){const l=esOKRget();l.push({obj:'',kr:'',status:'On Track'});esOKRput(l);esOKRrender();}
+function esOKRdel(i){const l=esOKRget();l.splice(i,1);esOKRput(l);esOKRrender();}
+window.esOKRadd=esOKRadd;window.esOKRdel=esOKRdel;window.esOKRtext=esOKRtext;window.esOKRstatus=esOKRstatus;window.esOKRrender=esOKRrender;
+
+window.STAGE_RENDER={'es-main':renderExecSummary,'impl-arrival':renderArrival,'impl-attendance':renderAttendance,'impl-retention':renderRetention,'impl-calls':renderCalls,'impl-trainer':renderTrainer,'impl-milestone':renderMilestone,'impl-youth':renderYouth,'fops-meals':renderMeals,'fops-venue':renderVenue,'fops-transport':renderTransport};
+renderExecSummary();
 
 /* ===== District → venue drill for Implementation & Field Operations =====
    Click any scorecard or chart on an implementation/field-ops analysis → the drill opens at
