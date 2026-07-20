@@ -1,0 +1,60 @@
+version: 2
+
+# Each ecosystem opens one consolidated PR per week (minor + patch grouped;
+# majors get their own PRs so they're reviewed deliberately).
+updates:
+  # ── GitHub Actions (the workflow itself) ────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, ci]
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+
+  # ── Python (FastAPI backend) ────────────────────────────────────────────────
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, backend]
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+
+  # ── npm (Vite + React frontend) ─────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, frontend]
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+      npm-dev-deps:
+        dependency-type: development
+        update-types: [minor, patch, major]
+
+  # ── Dockerfile base images (python:3.14-slim, nginx:stable-alpine, etc.) ────
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: [dependencies, docker, backend]
+
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: [dependencies, docker, frontend]

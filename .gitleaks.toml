@@ -1,0 +1,20 @@
+# gitleaks configuration — https://github.com/gitleaks/gitleaks
+#
+# Used by the "Secret scan" GitHub Actions workflow. Start from gitleaks'
+# built-in rule set, then layer repo-specific allowlisting on top.
+
+title = "eba-dashboard gitleaks config"
+
+[extend]
+useDefault = true
+
+# Allowlist — ONLY for verified false positives (sample/doc files that contain
+# secret-shaped strings). Never add a path here to silence a real secret; the
+# real fix is to remove the secret and rotate it. The actual credential files
+# are already kept out of git via .gitignore.
+[allowlist]
+description = "Repo-specific false positives"
+paths = [
+  '''(^|/)\.env\.example$''',
+  '''(^|/)README\.md$''',
+]

@@ -1,0 +1,47 @@
+# ─── Credentials — NEVER commit these ────────────────────────────────────────
+backend/.env
+backend/*.json
+backend/key.json
+frontend/.env
+frontend/.env.local
+*.pem
+*.p12
+secret.yaml
+*secret.yaml
+.env
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+backend/.pytest_cache/
+*.egg-info/
+backend/.coverage
+backend/htmlcov/
+
+# ─── Node ─────────────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Editors ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code session files
+task_plan.md
+progress.md
+findings.md
+.claude/settings.local.json
+.planning/
+.plan-attestation
+graphify-out/
+.songa

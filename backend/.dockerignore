@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+.env
+*.json
+.venv/
+venv/
+.git/
+.gitignore
+Dockerfile
+README.md
+tests/

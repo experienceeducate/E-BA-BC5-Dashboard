@@ -1,0 +1,50 @@
+# Metric definitions for the Take Off recruitment funnel.
+# Numerators/denominators are funnel-stage counts; rates are computed in
+# backend/app/routers/overview.py (overview_kpis). Derived from the prototype's
+# ES_MET registry (reference/prototype-index.html). Confirm thresholds with the
+# recruitment team when the BC5 feed lands.
+
+funnel_stages:
+  - Registered   # entered the recruitment system
+  - Interested   # expressed interest
+  - Eligible     # met the eligibility rule (age 18-30, education P5-S3, income <= UGX 30,000)
+  - Assigned     # assigned to treatment (vs control)
+  - Reached      # reached during mobilisation
+  - Confirmed    # attendance confirmed
+  - Verified     # verified at arrival
+  - Acquired     # acquired into the programme
+  - Activated    # activated (early retention)
+  - Retained     # retained through the programme
+
+rates:
+  eligibility_rate:
+    definition: Eligible / Interested
+    good: 80    # % at/above target
+    warn: 70
+  mobilisation_rate:
+    definition: Confirmed / Reached
+    good: 85
+    warn: 75
+  acquisition_rate:
+    definition: Acquired / Confirmed
+    good: 80
+    warn: 70
+  activation_rate:
+    definition: Activated / Acquired
+    good: 90
+    warn: 80
+  retention_rate:
+    definition: Retained / Activated
+    good: 85
+    warn: 75
+
+targets:
+  female_share_pct: 60   # target female share at each funnel stage
+  activation_pct: 90
+  retention_pct: 85
+
+dimensions:
+  district: [BUGIRI, BUGWERI, MAYUGE, IGANGA, KAMULI]   # Busoga; confirm full list from data
+  gender: [Female, Male]
+  cohort: [BC2, BC3, BC4, BC5]
+  geography_hierarchy: District -> Parish -> Site/Venue

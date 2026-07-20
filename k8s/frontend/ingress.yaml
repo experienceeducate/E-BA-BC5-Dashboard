@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/limit-rps: "30"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+  name: eba-dashboard-app
+  namespace: data-ingestion
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: eba-dashboard.educateapps.work
+    http:
+      paths:
+      - backend:
+          service:
+            name: eba-dashboard-app
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - eba-dashboard.educateapps.work
+    secretName: eba-dashboard-tls-cert

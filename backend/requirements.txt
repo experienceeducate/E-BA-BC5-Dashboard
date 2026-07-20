@@ -1,0 +1,14 @@
+fastapi==0.138.2
+uvicorn[standard]==0.49.0
+google-cloud-bigquery==3.42.1
+google-auth==2.55.1
+python-jose[cryptography]==3.5.0
+authlib==1.7.2
+httpx==0.28.1
+itsdangerous==2.2.0
+# Imported directly in app/main.py / app/core/cache.py. Previously resolved only
+# transitively (cachetools via google-auth, python-dotenv via uvicorn[standard]);
+# a fresh image build that dropped cachetools crashlooped the pod. Declare both.
+cachetools==7.1.4
+python-dotenv==1.2.2
+pydantic-settings==2.14.2

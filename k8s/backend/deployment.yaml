@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eba-dashboard-server
+  namespace: data-ingestion
+  labels:
+    app: eba-dashboard-server
+spec:
+  # Single replica is an invariant, not a default: the query cache is in-memory
+  # and process-local. Do NOT scale up or add uvicorn --workers without moving
+  # the cache to Redis first (see docs/CONTEXT.md §single-process).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eba-dashboard-server
+  template:
+    metadata:
+      labels:
+        app: eba-dashboard-server
+    spec:
+      imagePullSecrets:
+        - name: docker-hub-secret
+      containers:
+        - name: eba-dashboard-server
+          image: patrickgichini/eba-dashboard-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eba-dashboard-credentials
+                  key: jwt-secret
+            - name: DASHBOARD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: eba-dashboard-credentials
+                  key: dashboard-password
+            - name: EBA_ID_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: eba-dashboard-credentials
+                  key: eba-id-salt
+            - name: GOOGLE_OAUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: eba-dashboard-credentials
+                  key: google-oauth-client-id
+            - name: GOOGLE_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eba-dashboard-credentials
+                  key: google-oauth-client-secret
+            - name: GOOGLE_OAUTH_REDIRECT_URI
+              valueFrom:
+                secretKeyRef:
+                  name: eba-dashboard-credentials
+                  key: google-oauth-redirect-uri
+            - name: EBA_CLIENT_TOKEN
+              value: eba-dashboard-v1
+            - name: OAUTH_ALLOWED_DOMAIN
+              value: experienceeducate.org
+            - name: FRONTEND_URL
+              value: https://eba-dashboard.educateapps.work
+            - name: BQ_TABLE
+              value: eba_recruitment_funnel
+            - name: BQ_DATASET
+              value: gold_eba
+            - name: BQ_PROJECT_ID
+              value: educate-data-warehouse-test
+            - name: GOOGLE_SERVICE_ACCOUNT_KEY
+              value: /var/secrets/gcp/service-account.json
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: bigquery-secret
+              mountPath: /var/secrets/gcp
+              readOnly: true
+      volumes:
+        - name: bigquery-secret
+          secret:
+            secretName: gcp-service-account-key
+            items:
+              - key: service-account.json
+                path: service-account.json
