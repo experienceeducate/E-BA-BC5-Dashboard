@@ -2,6 +2,20 @@
 
 Short records of the non-obvious choices. Newest first.
 
+## ADR-008 — Demo-data fallback while the feed isn't live
+Until the BC5 feed lands, every data endpoint 503s (ADR-007), which left the SPA
+showing error cards on every panel. To let stakeholders preview the populated
+dashboard, `useApi` now falls back to bundled fixtures when a call returns **503**
+(feed not live) or the API is unreachable — a genuine **500** still shows the
+error card. A root-level probe (`/api/filters`) flips the app into demo mode: a
+banner ("not connected to live data… figures are fabricated") plus a per-card
+"DEMO DATA" badge (via `DemoContext`) keep it honest. It **auto-recovers** to
+live data once the feed lands (503s stop). **Consequence:** the fixtures in
+`frontend/src/demoData.js` must track the router response shapes; they're the
+first split from the single-file `App.jsx` (ADR-004) — allowed because it's pure
+data, no logic. **Trade-off:** a network outage (not just "feed not live") also
+shows demo data; the banner makes that visible rather than silent.
+
 ## ADR-007 — Scaffold the backend ahead of the live data feed
 The BC5 BigQuery tables don't exist yet. Rather than wait, the backend is built
 with placeholder table constants and real parameterised query shapes so it's

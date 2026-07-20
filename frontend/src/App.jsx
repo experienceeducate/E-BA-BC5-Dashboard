@@ -8,17 +8,23 @@
  * Inline styles only — no CSS framework.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, Cell,
 } from "recharts";
+import { DEMO, DEMO_FILTERS } from "./demoData";
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 const API_BASE = import.meta.env.VITE_API_URL || "https://eba-dashboard-api.educateapps.work";
 const CLIENT_TOKEN = import.meta.env.VITE_CLIENT_TOKEN || "eba-dashboard-v1";
 const CLIENT_HEADER = { "X-EBA-Client": CLIENT_TOKEN };
 const TOKEN_KEY = "eba_token";
+
+// True whenever the dashboard is showing bundled demo data instead of live
+// BigQuery results. Set at the root from the /api/filters probe; read by Card to
+// badge every panel. See docs/DECISION.md ADR-008.
+const DemoContext = createContext(false);
 
 // ─── Palette (from the prototype) ─────────────────────────────────────────────
 const C = {
@@ -63,6 +69,7 @@ function useApi(endpoint) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isDemo, setIsDemo] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -71,6 +78,7 @@ function useApi(endpoint) {
     /* eslint-disable react-hooks/set-state-in-effect */
     setLoading(true);
     setError(null);
+    setIsDemo(false);
     /* eslint-enable react-hooks/set-state-in-effect */
     const token = getToken();
     fetch(`${API_BASE}${endpoint}`, {
@@ -78,29 +86,43 @@ function useApi(endpoint) {
     })
       .then((res) => {
         if (res.status === 401) { logout(); return null; }
-        if (!res.ok) throw new Error(`API ${res.status}`);
+        if (!res.ok) { const err = new Error(`API ${res.status}`); err.status = res.status; throw err; }
         return res.json();
       })
       .then((json) => { if (alive && json !== null) setData(json); })
-      .catch((e) => { if (alive) setError(e.message); })
+      .catch((e) => {
+        if (!alive) return;
+        // "Not connected to live data" cases — a 503 (upstream BigQuery table
+        // missing, i.e. the BC5 feed isn't live) or an unreachable API — fall
+        // back to bundled demo data so the panel still shows how it will look.
+        // A genuine server error (500, etc.) still surfaces as an error card.
+        const demo = DEMO[endpoint.split("?")[0]];
+        const disconnected = e.status === 503 || e.status === undefined;
+        if (demo && disconnected) { setData(demo); setIsDemo(true); }
+        else { setError(e.message); }
+      })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [endpoint]);
 
-  return { data, error, loading };
+  return { data, error, loading, isDemo };
 }
 
 // ─── Presentational primitives ─────────────────────────────────────────────────
 function Card({ title, subtitle, children, chip }) {
+  const demo = useContext(DemoContext);
   return (
     <div style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 8, padding: 18, marginBottom: 18 }}>
-      {(title || chip) && (
+      {(title || chip || demo) && (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
           <div>
             {title && <h3 style={{ fontSize: 15, color: C.ink, fontWeight: 700 }}>{title}</h3>}
             {subtitle && <p style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{subtitle}</p>}
           </div>
-          {chip && <span style={{ background: C.gold, color: C.ink, fontSize: 9, fontWeight: 700, padding: "3px 8px", borderRadius: 3, textTransform: "uppercase" }}>{chip}</span>}
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+            {demo && <span style={{ background: C.coral, color: C.white, fontSize: 9, fontWeight: 700, padding: "3px 8px", borderRadius: 3, textTransform: "uppercase", letterSpacing: 0.3 }}>Demo data</span>}
+            {chip && <span style={{ background: C.gold, color: C.ink, fontSize: 9, fontWeight: 700, padding: "3px 8px", borderRadius: 3, textTransform: "uppercase" }}>{chip}</span>}
+          </div>
         </div>
       )}
       {children}
@@ -532,6 +554,7 @@ export default function App() {
   const [tabKey, setTabKey] = useState(() => sessionStorage.getItem("eba_tab") || "es-main");
   const [filters, setFilters] = useState({ district: "", gender: "", cohort: "" });
   const [options, setOptions] = useState({});
+  const [demoMode, setDemoMode] = useState(false);
 
   // Fetch current user whenever the token changes.
   useEffect(() => {
@@ -545,13 +568,24 @@ export default function App() {
       .finally(() => setUserLoading(false));
   }, [token]);
 
-  // Load filter options once authenticated.
+  // Load filter options once authenticated. This call also doubles as the global
+  // "connected to live data?" probe: if it 503s (BC5 feed not live) or is
+  // unreachable, fall back to demo filter options and flip the dashboard into
+  // demo mode (banner + per-card "DEMO DATA" badges). Recovers automatically
+  // once the feed lands and the call succeeds.
   useEffect(() => {
     if (!user) return;
     fetch(`${API_BASE}/api/filters`, { headers: { Authorization: `Bearer ${token}`, ...CLIENT_HEADER } })
-      .then((r) => (r.ok ? r.json() : {}))
-      .then(setOptions)
-      .catch(() => setOptions({}));
+      .then((r) => {
+        if (r.ok) return r.json();
+        if (r.status === 503) return null;  // not connected → demo
+        throw new Error(`API ${r.status}`);
+      })
+      .then((json) => {
+        if (json) { setOptions(json); setDemoMode(false); }
+        else { setOptions(DEMO_FILTERS); setDemoMode(true); }
+      })
+      .catch(() => { setOptions(DEMO_FILTERS); setDemoMode(true); });
   }, [user, token]);
 
   const group = NAV[groupIdx] || NAV[0];
@@ -594,11 +628,20 @@ export default function App() {
         </div>
       </header>
 
+      {demoMode && (
+        <div style={{ background: "#FBEDEA", borderBottom: `2px solid ${C.coral}`, color: C.coral, padding: "10px 24px", fontSize: 12.5, fontWeight: 600, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ background: C.coral, color: C.white, fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 3, textTransform: "uppercase", letterSpacing: 0.3 }}>Demo data</span>
+          Not connected to live data — the BC5 BigQuery feed isn’t live yet, so every panel below shows illustrative dummy data to preview the dashboard. Figures are fabricated, not real.
+        </div>
+      )}
+
       <FilterBar filters={filters} setFilters={setFilters} options={options} />
 
-      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "20px 24px 80px" }}>
-        {activeTab.render(filters)}
-      </div>
+      <DemoContext.Provider value={demoMode}>
+        <div style={{ maxWidth: 1280, margin: "0 auto", padding: "20px 24px 80px" }}>
+          {activeTab.render(filters)}
+        </div>
+      </DemoContext.Provider>
     </div>
   );
 }
