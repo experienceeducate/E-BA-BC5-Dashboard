@@ -10,6 +10,8 @@ which would bind a copy that the monkeypatch can't reach.
 
 from datetime import date, datetime
 
+from fastapi import HTTPException
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 from google.oauth2 import service_account
 import json
@@ -65,7 +67,19 @@ def run_query(sql: str, params: list | None = None, role: str = "none") -> list[
                     r[k] = v.isoformat()
             rows.append(r)
         return rows
-    return cached_query(key, _run)
+    try:
+        return cached_query(key, _run)
+    except NotFound as exc:
+        # An upstream BigQuery table/dataset doesn't exist (e.g. the BC5 feed is
+        # not live yet — see docs/CONTEXT.md). Translate to a handled 503 so the
+        # response flows back through CORSMiddleware and the SPA renders its
+        # graceful "data unavailable" state instead of a CORS-less 500 that the
+        # browser reports as "Failed to fetch". NotFound is not cached (only
+        # successful results are), so it re-raises on every call until the feed lands.
+        raise HTTPException(
+            status_code=503,
+            detail="Data source not available (upstream table not found)",
+        ) from exc
 
 
 # ─── SQL parameter helpers ─────────────────────────────────────────────────────

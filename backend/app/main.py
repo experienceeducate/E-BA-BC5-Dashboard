@@ -46,6 +46,36 @@ app.add_middleware(
 # Google and the callback. JWT_SECRET doubles as the session signing key.
 app.add_middleware(SessionMiddleware, secret_key=settings.JWT_SECRET)
 
+
+def _error_cors_headers(request: Request) -> dict:
+    """CORS headers to attach to error responses that bypass CORSMiddleware.
+
+    Unhandled exceptions become a 500 in Starlette's ServerErrorMiddleware, which
+    sits OUTSIDE CORSMiddleware — so that 500 would otherwise carry no
+    Access-Control-Allow-Origin header, and the browser reports it as an opaque
+    "Failed to fetch" instead of a readable error. Mirror the allowlist echo
+    CORSMiddleware would have done so genuine 500s stay debuggable from the SPA.
+    """
+    origin = request.headers.get("origin")
+    if origin in ALLOWED_ORIGINS:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+    return {}
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    # Only reached for non-HTTPException errors: HTTPException is handled by
+    # ExceptionMiddleware (below CORSMiddleware) and already gets CORS headers.
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+        headers=_error_cors_headers(request),
+    )
+
 app.include_router(auth_router)
 
 # One router per URL-prefix domain. New routes go in the matching routers/<domain>.py,
