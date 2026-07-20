@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eba-dashboard-app
+  namespace: data-ingestion
+  labels:
+    app: eba-dashboard-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eba-dashboard-app
+  template:
+    metadata:
+      labels:
+        app: eba-dashboard-app
+    spec:
+      imagePullSecrets:
+        - name: docker-hub-secret
+      containers:
+        - name: eba-dashboard-app
+          image: patrickgichini/eba-dashboard-app:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
