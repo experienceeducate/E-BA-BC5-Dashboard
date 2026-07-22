@@ -8,7 +8,7 @@
  * Inline styles only — no CSS framework.
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, Cell,
@@ -1594,8 +1594,175 @@ function TransportTab({ filters }) {
 function fmtPct(v) { return v == null ? "—" : `${v}%`; }
 function fmtNum(v) { return v == null ? "—" : Number(v).toLocaleString(); }
 
+// ─── Guide ────────────────────────────────────────────────────────────────────
+// Static reference page — no live data, doesn't react to the global filter bar.
+// Keep this in sync with NAV below when tabs are added/renamed/re-wired to live
+// data (chip tone flips from "sim" to "real" the day a placeholder is wired up).
+const GUIDE_PAGES = [
+  { group: "Executive Summary", page: "Summary", tone: "real",
+    summary: "Full funnel, gender split, cohort comparison, OKRs.",
+    what: "Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired funnel; gender split vs the 60% female target; eligibility-barrier breakdown; cohort comparison (BC2–BC4); an editable OKR tracker (saved in your browser only)." },
+  { group: "Recruitment", page: "Awareness", tone: "real",
+    summary: "Registered → interested → eligible by district/parish/mobiliser.",
+    what: "4 sub-pages — Funnel Overview, Mobilisers, KYC / Youth Profile, Forecast. Registered → interested → eligible by district, parish and mobiliser; youth demographics; registration-pace forecast." },
+  { group: "Recruitment", page: "Mobilisation", tone: "real",
+    summary: "Assigned → reached → confirmed, 4-week vs 2.5-week cycles.",
+    what: "5 sub-pages — Recruitment Funnel, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
+  { group: "Recruitment", page: "Acquisition", tone: "real",
+    summary: "Verified → acquired by district; venue risk categories.",
+    what: "2 sub-pages — Overview, Arrival & Verification. Verified → acquired by district; venue risk categories (Target Achieved / On Track / Low Risk / High Risk)." },
+  { group: "Recruitment", page: "Mobilisers", tone: "sample",
+    summary: "Leaderboard of reach/confirmed by mobiliser.",
+    what: "Leaderboard of reach/confirmed by mobiliser. Still placeholder data — no live table yet carries both a named mobiliser and reach/confirm counts together." },
+  { group: "Recruitment", page: "TAM Analysis", tone: "sample",
+    summary: "Parish-level predicted vs. actual market coverage.",
+    what: "Parish-level predicted vs. actual market coverage. Still placeholder data." },
+  { group: "Implementation", page: "Retention", tone: "real",
+    summary: "Acquired → activated → retained by venue vs targets.",
+    what: "Acquired → activated → retained by venue, against activation/retention targets." },
+  { group: "Implementation", page: "Trainer Quality", tone: "real",
+    summary: "Per-lesson scores, banded Exceeds / Meets / Below.",
+    what: "Per-lesson classroom observation scores, banded Exceeds / Meets / Below expectations. Trainer names are staff-only (PII)." },
+  { group: "Implementation", page: "Youth Experience", tone: "sample",
+    summary: "Weekly NPS trend (Programme / Venue / Meals).",
+    what: "Programme / Venue / Meals NPS weekly trend. Still placeholder data." },
+  { group: "Field Operations", page: "Venue", tone: "sample",
+    summary: "Compliance rate by venue.",
+    what: "Compliance rate by venue. Still placeholder data." },
+  { group: "Field Operations", page: "Transport", tone: "sample",
+    summary: "Per-site timeliness score.",
+    what: "Per-site timeliness score. Still placeholder data." },
+];
+
+// Row-expands-in-place table for GUIDE_PAGES — keeps the page-by-page summary
+// brief by default (one-line `summary`), click a row to drill into the full
+// `what` description without leaving the Guide.
+function GuidePageTable({ rows }) {
+  const [openKey, setOpenKey] = useState(null);
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr>
+            {["Group", "Page", "What it shows", "Status"].map((h, i) => (
+              <th key={h} style={{ textAlign: i === 3 ? "right" : "left", padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const key = `${r.group}|${r.page}`;
+            const open = openKey === key;
+            return (
+              <Fragment key={key}>
+                <tr onClick={() => setOpenKey(open ? null : key)} style={{ cursor: "pointer" }}>
+                  <td style={{ padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text }}>{r.group}</td>
+                  <td style={{ padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text, fontWeight: 600 }}>
+                    <span style={{ display: "inline-block", width: 14, color: C.muted }}>{open ? "▾" : "▸"}</span>{r.page}
+                  </td>
+                  <td style={{ padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text }}>{r.summary}</td>
+                  <td style={{ textAlign: "right", padding: "8px 10px", borderBottom: `1px solid ${C.line}` }}>
+                    <Chip tone={r.tone === "real" ? "real" : "sim"}>{r.tone === "real" ? "LIVE" : "SAMPLE"}</Chip>
+                  </td>
+                </tr>
+                {open && (
+                  <tr>
+                    <td colSpan={4} style={{ padding: "4px 10px 14px 32px", borderBottom: `1px solid ${C.line}`, color: C.muted, fontSize: 12.5, lineHeight: 1.5, background: C.cream }}>
+                      {r.what}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function GuideTab() {
+  const groupCounts = {};
+  GUIDE_PAGES.forEach((p) => { groupCounts[p.group] = (groupCounts[p.group] || 0) + 1; });
+  return (
+    <div>
+      <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Dashboard Guide</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14, maxWidth: 720 }}>
+        Start here — what this dashboard covers, and how to find your way around: filters,
+        navigation, and what each data-status tag means. This page doesn't use live data and
+        doesn't change with the filter bar above.
+      </p>
+
+      <ExecBand num="1" title="What's in this dashboard" />
+      <Grid cols={4}>
+        <KpiTile label="Guide" value="You are here" sub="No live data — a reference page." tone="pii" />
+        <KpiTile label="Executive Summary" value="1 page" sub="The whole funnel at a glance, plus gender split and recommendations." />
+        <KpiTile label="Recruitment" value="5 pages" sub="Awareness, Mobilisation, Acquisition, Mobilisers, TAM Analysis." />
+        <KpiTile label="Implementation" value="3 pages" sub="Retention, Trainer Quality, Youth Experience." />
+        <KpiTile label="Field Operations" value="2 pages" sub="Venue, Transport." />
+      </Grid>
+
+      <Card title="Page-by-page summary" subtitle="What each tab covers, grouped the same way as the tabs above — click a row to drill into the full description.">
+        <GuidePageTable rows={GUIDE_PAGES} />
+      </Card>
+
+      <ExecBand num="2" title="Global filters — district, gender, cohort" />
+      <div style={{ marginBottom: 20 }}>
+        <Insight tone="neutral">
+          The filter bar at the top of the screen is sticky — it stays visible as you scroll and switch
+          pages. Set a district, gender and/or cohort there and <b>every page recalculates</b>, not just
+          the one you're looking at. Use <b>Reset</b> to clear all three.
+        </Insight>
+      </div>
+
+      <ExecBand num="3" title="Navigating the dashboard" />
+      <div style={{ marginBottom: 20 }}>
+        <Insight tone="neutral">
+          Navigation has two levels. The <b>bold tabs</b> along the top (Executive Summary,
+          Recruitment, Implementation, Field Operations, Guide) switch between groups. Below them, a
+          second row switches between the pages inside that group. Awareness, Mobilisation and
+          Acquisition have a third level — a row of pill-shaped buttons just under the page title —
+          click those to switch sub-pages without leaving the tab.
+        </Insight>
+      </div>
+
+      <ExecBand num="4" title="Reading the data-status tags" />
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 12 }}>
+        Every card is tagged with where its numbers come from — never mix these up when reporting out:
+      </p>
+      <Card>
+        <DataTable
+          columns={[
+            { key: "tag", label: "Tag", render: (_, r) => <Chip tone={r.chipTone}>{r.tag}</Chip> },
+            { key: "meaning", label: "What it means" },
+          ]}
+          rows={[
+            { tag: "REAL", chipTone: "real", meaning: "Queried directly from the live BigQuery feed." },
+            { tag: "DERIVED", chipTone: "sim", meaning: "Calculated from real data using a stated formula (e.g. share-of-stage, cumulative attrition against Registered) — directionally sound, not a direct raw count." },
+            { tag: "PII", chipTone: "pii", meaning: "Contains names or other personal data — shown to staff accounts only; guest sign-in sees initials, never a raw phone/ID." },
+            { tag: "EDITABLE", chipTone: "sim", meaning: "Leader-entered, not from BigQuery at all (the OKR tracker) — saved only in your own browser." },
+            { tag: "SAMPLE", chipTone: "sim", meaning: "That page's underlying BigQuery table isn't wired up yet — the numbers are illustrative placeholders, not real counts." },
+          ]}
+        />
+      </Card>
+      <div style={{ marginTop: 16 }}>
+        <Insight tone="warn">
+          A red <b>"Demo data"</b> banner across the whole dashboard (with a matching badge on every
+          card) means something different from a per-card <b>SAMPLE</b> tag above: it means the BC5
+          BigQuery feed itself is unreachable right now, so <i>every</i> panel — including the normally
+          live ones — is temporarily showing illustrative dummy data. It clears automatically once the
+          feed is reachable again.
+        </Insight>
+      </div>
+    </div>
+  );
+}
+
 // ─── Navigation model ─────────────────────────────────────────────────────────
 const NAV = [
+  { key: "guide", group: "Guide", tabs: [
+    { key: "guide-main", label: "Guide", render: () => <GuideTab /> },
+  ]},
   { key: "es", group: "Executive Summary", tabs: [
     { key: "es-main", label: "Summary", render: (f) => <ExecutiveSummaryTab filters={f} /> },
   ]},
@@ -1691,7 +1858,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [userLoading, setUserLoading] = useState(!!token);
   const [groupIdx, setGroupIdx] = useState(() => Number(sessionStorage.getItem("eba_group") || 0));
-  const [tabKey, setTabKey] = useState(() => sessionStorage.getItem("eba_tab") || "es-main");
+  const [tabKey, setTabKey] = useState(() => sessionStorage.getItem("eba_tab") || "guide-main");
   const [filters, setFilters] = useState({ district: "", gender: "", cohort: "" });
   const [options, setOptions] = useState({});
   const [demoMode, setDemoMode] = useState(false);
