@@ -7,7 +7,8 @@
 funnel_stages:
   - Registered   # entered the recruitment system
   - Interested   # expressed interest
-  - Eligible     # met the eligibility rule (age 18-30, education P5-S3, income <= UGX 30,000)
+  - Eligible     # met the eligibility rule (age 18-30, education P5-S3, income <= UGX 30,000,
+                 # training interest, no prior Educate! training)
   - Assigned     # assigned to treatment (vs control)
   - Reached      # reached during mobilisation
   - Confirmed    # attendance confirmed
