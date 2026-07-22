@@ -5,7 +5,7 @@ Trainer Quality, Milestones, Youth Experience (NPS).
 Trainer names are masked for the guest role.
 """
 
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
@@ -16,7 +16,6 @@ from app.core.pii import mask_name
 from app.core.sql import build_where, cohort_clause
 from app.core.tables import (
     ATTENDANCE_DAILY,
-    RETENTION_CALLS,
     MILESTONES,
     YOUTH_NPS,
     NOT_TEST_DATA,
@@ -27,6 +26,7 @@ from app.core.tables import (
     ACTIVE_COHORT_START_DATE,
     ACTIVE_COHORT_END_DATE,
     active_cohort_clause,
+    retention_calls_detail_sql,
 )
 
 router = APIRouter()
@@ -133,17 +133,30 @@ def retention(
 @router.get("/api/implementation/retention-calls")
 def retention_calls(
     user: User = Depends(current_user),
-    venue: List[str] = Query(default=[]),
-    cohort: List[str] = Query(default=[]),
+    district: List[str] = Query(default=[]),
+    gender:   Optional[str] = Query(None),
+    venue:    List[str] = Query(default=[]),
 ):
-    """Daily follow-up call funnel: called -> reached -> promised -> returned."""
-    where, params = build_where(venues=venue, extra=_filter_extra(cohort, "rc"), prefix="rc")
+    """Daily follow-up call funnel for absent youth: called -> reached -> promised -> returned.
+
+    No RETENTION_CALLS mart exists yet — built directly from the two raw
+    silver sources retention_calls_detail_sql() joins (see tables.py and
+    Retention_calls_sql.sql at the repo root, the recruitment team's
+    reference query). Once a dedicated table lands, only that one function
+    needs to change — this aggregation query doesn't.
+    """
+    where, params = build_where(
+        districts=district, gender=gender, venues=venue,
+        prefix="rc", district_col="youth_district", gender_col="youth_gender", venue_col="venue_name",
+    )
     sql = f"""
     SELECT event_date,
-           SUM(called) AS called, SUM(reached) AS reached,
-           SUM(promised) AS promised, SUM(returned) AS returned
-    FROM {RETENTION_CALLS}
-    WHERE {where} AND event_date IS NOT NULL
+           SUM(calls_made_today) AS called,
+           SUM(calls_reached_today) AS reached,
+           SUM(promised_return_today) AS promised,
+           SUM(returned) AS returned
+    FROM ({retention_calls_detail_sql()}) AS rc
+    WHERE {where}
     GROUP BY event_date
     ORDER BY event_date
     """

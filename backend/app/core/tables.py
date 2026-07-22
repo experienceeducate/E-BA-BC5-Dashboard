@@ -114,6 +114,75 @@ TRAINER_OBSERVATIONS         = f"{_SILVER}.raw_eba_2025_monitoring_tool_v2_ug"
 ACTIVE_COHORT_START_DATE     = "2026-05-06"
 ACTIVE_COHORT_END_DATE       = "2026-05-30"
 
+# Retention calls (absent-youth follow-up) — no dedicated mart exists yet;
+# Afra is planning a silver model for this later. Until then, built directly
+# from the two raw silver sources this joins (see Retention_calls_sql.sql at
+# the repo root, the recruitment team's reference query). Kept as a single
+# subquery function specifically so the swap is a one-line change later: once
+# a real table lands, replace this function's body with `f"SELECT * FROM
+# {{NEW_TABLE}}"` — the endpoint's outer aggregation query doesn't change.
+RETENTION_ATTENDANCE_RAW = f"{_SILVER}.eba_bootcamp_attendance"
+RETENTION_FOLLOWUP_RAW   = f"{_SILVER}.eba_2025_youth_absent_flow_up_script"
+RETENTION_TRACKING_START_DATE = "2026-05-04"
+
+
+def retention_calls_detail_sql():
+    """One row per (youth, absence date): follow-up call outcome that day, and
+    whether they ever returned. Mirrors Retention_calls_sql.sql's logic minus
+    the columns /api/implementation/retention-calls doesn't currently
+    aggregate (PII youth_name, next-day-specific vs. eventual-return detail,
+    reason text) — add columns back here if a future endpoint needs them."""
+    return f"""
+    WITH attendance_base AS (
+      SELECT TRIM(UPPER(youth_id)) AS youth_id, youth_gender,
+             UPPER(youth_district) AS youth_district, venue_name, report_date, status
+      FROM {RETENTION_ATTENDANCE_RAW}
+      WHERE report_date >= DATE('{RETENTION_TRACKING_START_DATE}') AND youth_status = 'ACTIVE'
+    ),
+    absent_events AS (
+      SELECT DISTINCT youth_id, youth_gender, youth_district, venue_name, report_date AS absent_date
+      FROM attendance_base
+      WHERE UPPER(TRIM(status)) != 'PRESENT'
+        AND CONCAT(youth_id, '_', CAST(report_date AS STRING)) NOT IN (
+          SELECT CONCAT(TRIM(UPPER(youth_id)), '_', CAST(report_date AS STRING))
+          FROM {RETENTION_ATTENDANCE_RAW}
+          WHERE UPPER(TRIM(status)) = 'PRESENT'
+        )
+    ),
+    followup_calls AS (
+      SELECT TRIM(UPPER(youth_id)) AS youth_id, DATE(submission_date) AS followup_date,
+        CASE WHEN LOWER(TRIM(will_return)) = 'yes' THEN 'Yes'
+             WHEN LOWER(TRIM(will_return)) = 'no' THEN 'No'
+             ELSE 'Unknown' END AS will_return_clean
+      FROM {RETENTION_FOLLOWUP_RAW}
+      WHERE DATE(submission_date) >= DATE('{RETENTION_TRACKING_START_DATE}')
+    ),
+    absence_with_followup AS (
+      SELECT a.youth_id, a.youth_gender, a.youth_district, a.venue_name, a.absent_date,
+        COUNT(f.followup_date) AS calls_made_today,
+        COUNTIF(f.will_return_clean IN ('Yes', 'No')) AS calls_reached_today,
+        COUNTIF(f.will_return_clean = 'Yes') AS promised_return_today
+      FROM absent_events a
+      LEFT JOIN followup_calls f ON a.youth_id = f.youth_id AND f.followup_date = a.absent_date
+      GROUP BY 1, 2, 3, 4, 5
+    ),
+    eventual_return AS (
+      SELECT a.youth_id, a.absent_date, MIN(att.report_date) AS first_return_date
+      FROM absent_events a
+      JOIN attendance_base att
+        ON a.youth_id = att.youth_id
+       AND UPPER(TRIM(att.status)) = 'PRESENT'
+       AND att.report_date > a.absent_date
+      GROUP BY 1, 2
+    )
+    SELECT
+      f.absent_date AS event_date, f.youth_gender, f.youth_district, f.venue_name,
+      f.calls_made_today, f.calls_reached_today, f.promised_return_today,
+      CASE WHEN e.first_return_date IS NOT NULL THEN 1 ELSE 0 END AS returned
+    FROM absence_with_followup f
+    LEFT JOIN eventual_return e ON f.youth_id = e.youth_id AND f.absent_date = e.absent_date
+    """
+
 # Per-youth KYC/registration record (age, education, income, eligibility flag,
 # names/phone/location). Backs /api/overview/eligibility-barriers — each of the
 # three documented eligibility criteria (docs/metrics.yaml: age 18-30,
@@ -161,7 +230,6 @@ CHANNEL_PERF         = f"{_GOLD}.eba_channel_performance"     # TODO: confirm �
 ATTENDANCE_DAILY     = f"{_GOLD}.eba_attendance_daily"        # TODO: confirm — daily present/churn per venue
 ATTENDANCE_LESSON    = f"{_GOLD}.eba_attendance_lesson"       # TODO: confirm — per-lesson attendance %
 RETENTION_VENUE      = f"{_GOLD}.eba_retention_venue"         # TODO: confirm — acquired/activated/retained per venue
-RETENTION_CALLS      = f"{_GOLD}.eba_retention_calls"         # TODO: confirm — daily follow-up call outcomes
 TRAINER_QUALITY      = f"{_GOLD}.eba_trainer_quality"         # TODO: confirm — trainer observation scores
 MILESTONES           = f"{_GOLD}.eba_milestones"             # TODO: confirm — weekly pitch milestone completion
 YOUTH_NPS            = f"{_GOLD}.eba_youth_experience_nps"    # TODO: confirm — programme/venue/meals NPS by week

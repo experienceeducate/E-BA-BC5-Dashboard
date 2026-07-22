@@ -1854,6 +1854,56 @@ function RetentionTab({ filters }) {
   );
 }
 
+function AttendanceTab({ filters }) {
+  const { data, loading, error } = useApi(`/api/implementation/attendance${buildParams(filters)}`);
+  const rows = data?.daily || [];
+  return (
+    <div>
+      <Card title="Daily attendance & churn" subtitle="Youth present per day, and net churn (present minus newly absent) — programme-wide, not yet broken out by venue" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && rows.length === 0}>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip /><Legend />
+              <Line type="monotone" dataKey="present" name="Present" stroke={C.teal} strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="net_churn" name="Net churn" stroke={C.coral} strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+      <Insight tone="neutral">
+        Per-lesson attendance isn't shown yet — no per-lesson attendance-% table has been confirmed against
+        live BigQuery. This page will grow a lesson-by-lesson breakdown once one is.
+      </Insight>
+    </div>
+  );
+}
+
+function RetentionCallsTab({ filters }) {
+  const { data, loading, error } = useApi(`/api/implementation/retention-calls${buildParams(filters)}`);
+  const rows = data?.daily || [];
+  return (
+    <Card title="Retention follow-up calls" subtitle="Daily follow-up funnel for absent youth — called → reached → promised to return → returned" chip="SAMPLE" chipTone="sim">
+      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
+        <ResponsiveContainer width="100%" height={300}>
+          <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+            <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip /><Legend />
+            <Bar dataKey="called" name="Called" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
+            <Bar dataKey="reached" name="Reached" fill={CHART_COLORS[1]} radius={[4, 4, 0, 0]} />
+            <Bar dataKey="promised" name="Promised to return" fill={CHART_COLORS[2]} radius={[4, 4, 0, 0]} />
+            <Bar dataKey="returned" name="Returned" fill={CHART_COLORS[3]} radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </State>
+    </Card>
+  );
+}
+
 function TrainersTab({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/trainers${buildParams(filters)}`);
@@ -1889,6 +1939,36 @@ function TrainersTab({ filters }) {
             { key: "district", label: "District" },
             { key: "rating", label: "Rating" },
             { key: "score", label: "Score", align: "right", onHeaderClick: openScoreDrill },
+          ]}
+          rows={rows}
+        />
+      </State>
+    </Card>
+  );
+}
+
+function MilestonesTab({ filters }) {
+  const { data, loading, error } = useApi(`/api/implementation/milestones${buildParams(filters)}`);
+  const rows = data?.weekly || [];
+  return (
+    <Card title="Weekly business-pitch milestones" subtitle="Below / meets / exceeds expectations by week, plus completion and parental-attendance rate" chip="SAMPLE" chipTone="sim">
+      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
+        <ResponsiveContainer width="100%" height={300}>
+          <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+            <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip /><Legend />
+            <Bar dataKey="below" name="Below" stackId="w" fill={C.coral} />
+            <Bar dataKey="meet" name="Meets" stackId="w" fill={C.gold} />
+            <Bar dataKey="exceed" name="Exceeds" stackId="w" fill={C.green} radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+        <DataTable
+          columns={[
+            { key: "week_number", label: "Week" },
+            { key: "completion_pct", label: "Completion", align: "right", render: (v) => fmtPct(v) },
+            { key: "parent_present_pct", label: "Parent present", align: "right", render: (v) => fmtPct(v) },
           ]}
           rows={rows}
         />
@@ -1991,9 +2071,18 @@ const GUIDE_PAGES = [
   { group: "Implementation", page: "Retention", tone: "real", navGroup: "impl", navTab: "ret",
     summary: "Acquired → activated → retained by venue vs targets.",
     what: "Acquired → activated → retained by venue, against activation/retention targets." },
+  { group: "Implementation", page: "Attendance", tone: "real", navGroup: "impl", navTab: "attendance",
+    summary: "Daily present & net churn, programme-wide.",
+    what: "Daily attendance and net churn (present minus newly absent). Programme-wide only — no per-venue breakdown or per-lesson attendance-% yet; those need a table that isn't confirmed against live BigQuery." },
+  { group: "Implementation", page: "Retention Calls", tone: "sample", navGroup: "impl", navTab: "retcalls",
+    summary: "Follow-up funnel for absent youth.",
+    what: "Daily follow-up funnel for absent youth: called → reached → promised to return → returned. Still placeholder data." },
   { group: "Implementation", page: "Trainer Quality", tone: "real", navGroup: "impl", navTab: "train",
     summary: "Per-lesson scores, banded Exceeds / Meets / Below.",
     what: "Per-lesson classroom observation scores, banded Exceeds / Meets / Below expectations. Trainer names are staff-only (PII)." },
+  { group: "Implementation", page: "Milestones", tone: "sample", navGroup: "impl", navTab: "milestones",
+    summary: "Weekly pitch quality, below/meets/exceeds.",
+    what: "Weekly business-pitch milestone distribution (below / meets / exceeds expectations), completion rate, and parental-attendance rate. Still placeholder data." },
   { group: "Implementation", page: "Youth Experience", tone: "sample", navGroup: "impl", navTab: "nps",
     summary: "Weekly NPS trend (Programme / Venue / Meals).",
     what: "Programme / Venue / Meals NPS weekly trend. Still placeholder data." },
@@ -2079,7 +2168,7 @@ function GuideTab({ navigate }) {
         <KpiTile label="Guide" value="You are here" sub="No live data — a reference page." tone="pii" />
         <KpiTile label="Executive Summary" value="1 page" sub="The whole funnel at a glance, plus gender split and recommendations." onClick={navigate ? () => navigate("es", "es-main") : undefined} />
         <KpiTile label="Recruitment" value="5 pages" sub="Awareness, Mobilisation, Acquisition, Mobilisers, TAM Analysis." onClick={navigate ? () => navigate("rec") : undefined} />
-        <KpiTile label="Implementation" value="3 pages" sub="Retention, Trainer Quality, Youth Experience." onClick={navigate ? () => navigate("impl") : undefined} />
+        <KpiTile label="Implementation" value="6 pages" sub="Retention, Attendance, Retention Calls, Trainer Quality, Milestones, Youth Experience." onClick={navigate ? () => navigate("impl") : undefined} />
         <KpiTile label="Field Operations" value="2 pages" sub="Venue, Transport." onClick={navigate ? () => navigate("fops") : undefined} />
       </Grid>
 
@@ -2173,7 +2262,10 @@ const NAV = [
   ]},
   { key: "impl", group: "Implementation", tabs: [
     { key: "ret", label: "Retention", render: (f) => <RetentionTab filters={f} /> },
+    { key: "attendance", label: "Attendance", render: (f) => <AttendanceTab filters={f} /> },
+    { key: "retcalls", label: "Retention Calls", render: (f) => <RetentionCallsTab filters={f} /> },
     { key: "train", label: "Trainer Quality", render: (f) => <TrainersTab filters={f} /> },
+    { key: "milestones", label: "Milestones", render: (f) => <MilestonesTab filters={f} /> },
     { key: "nps", label: "Youth Experience", render: (f) => <NpsTab filters={f} /> },
   ]},
   { key: "fops", group: "Field Operations", tabs: [
