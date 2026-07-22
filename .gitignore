@@ -45,3 +45,9 @@ findings.md
 .plan-attestation
 graphify-out/
 .songa
+
+# ─── Local reference files (not part of the app) ─────────────────────────────
+/index.html
+/milestone_quality_sql_raw.sql
+/tam_sql.sql
+/trainer_quality_summary_sql.sql
