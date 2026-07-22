@@ -25,6 +25,11 @@ ALLOWED_ORIGINS = [
     "https://eba-dashboard.educateapps.work",
     "http://localhost:3000",
 ]
+# FRONTEND_URL is already the configured local dev origin (used for the OAuth
+# callback redirect) — trust it here too, so local dev isn't broken when port
+# 3000 is taken and Vite falls back to another port.
+if settings.FRONTEND_URL not in ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS.append(settings.FRONTEND_URL)
 ALLOWED_CLIENT_TOKEN = settings.EBA_CLIENT_TOKEN
 # Paths exempt from the client-header requirement: health/docs, plus the OAuth
 # endpoints — browsers don't attach custom headers on cross-site redirects, so

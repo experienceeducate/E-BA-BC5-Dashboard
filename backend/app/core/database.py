@@ -25,18 +25,28 @@ TABLE      = settings.BQ_TABLE
 SA_KEY     = settings.GOOGLE_SERVICE_ACCOUNT_KEY
 
 
+# bigquery scope covers native tables; drive.readonly is additionally required
+# for BigQuery tables backed by a Google Sheet (e.g. the TAM census table) — the
+# underlying Sheet must ALSO be shared with the service account's email, this
+# scope alone isn't sufficient.
+_BQ_SCOPES = [
+    "https://www.googleapis.com/auth/bigquery",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+
+
 def get_bq_client() -> bigquery.Client:
     if SA_KEY:
         try:
             key_data = json.loads(SA_KEY)
             credentials = service_account.Credentials.from_service_account_info(
                 key_data,
-                scopes=["https://www.googleapis.com/auth/bigquery"]
+                scopes=_BQ_SCOPES,
             )
         except json.JSONDecodeError:
             credentials = service_account.Credentials.from_service_account_file(
                 SA_KEY,
-                scopes=["https://www.googleapis.com/auth/bigquery"]
+                scopes=_BQ_SCOPES,
             )
         return bigquery.Client(credentials=credentials, project=PROJECT_ID)
     else:

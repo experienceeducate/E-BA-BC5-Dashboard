@@ -24,6 +24,9 @@ def build_where(
     channel:   str       = None,
     extra:     list      = None,
     prefix:    str       = "bw",
+    district_col: str    = "district",
+    gender_col:   str    = "gender",
+    venue_col:    str    = "venue",
 ):
     """
     Build a WHERE clause string + BigQuery parameter list for the standard
@@ -33,6 +36,12 @@ def build_where(
     NOT_TEST_DATA constant) OR (clause, params) tuples so callers can mix in
     their own parameterised fragments. `prefix` namespaces the parameter names
     so multiple build_where() calls in one query don't collide.
+
+    `district_col`/`gender_col`/`venue_col` let callers point at a real table's
+    actual column name (e.g. "youth_district", "agent_district", "venue_name")
+    when it differs from the scaffold's "district"/"gender"/"venue" — these are
+    fixed literals set by the caller, never user input, so splicing them into
+    the SQL is safe.
     """
     filters: list[str] = []
     params:  list      = []
@@ -46,10 +55,10 @@ def build_where(
             filters.append(item)
 
     if districts:
-        filters.append(f"UPPER(district) IN UNNEST(@{prefix}_districts)")
+        filters.append(f"UPPER({district_col}) IN UNNEST(@{prefix}_districts)")
         params.append(_array(f"{prefix}_districts", "STRING", [d.upper() for d in districts]))
     if gender:
-        filters.append(f"UPPER(COALESCE(gender, 'UNKNOWN')) = @{prefix}_gender")
+        filters.append(f"UPPER(COALESCE({gender_col}, 'UNKNOWN')) = @{prefix}_gender")
         params.append(_scalar(f"{prefix}_gender", "STRING", gender.upper()))
     if stages:
         filters.append(f"stage IN UNNEST(@{prefix}_stages)")
@@ -58,7 +67,7 @@ def build_where(
         filters.append(f"UPPER(parish) IN UNNEST(@{prefix}_parishes)")
         params.append(_array(f"{prefix}_parishes", "STRING", [p.upper() for p in parishes]))
     if venues:
-        filters.append(f"venue IN UNNEST(@{prefix}_venues)")
+        filters.append(f"{venue_col} IN UNNEST(@{prefix}_venues)")
         params.append(_array(f"{prefix}_venues", "STRING", list(venues)))
     if channel:
         filters.append(f"channel = @{prefix}_channel")
