@@ -75,6 +75,20 @@ function sumBy(rows, key) {
   return (rows || []).reduce((s, r) => s + (Number(r[key]) || 0), 0);
 }
 
+// One-shot fetch for on-demand loads (e.g. a drill panel's per-district
+// queries fired on click) where a `useApi()` hook's mount-time auto-fetch
+// doesn't apply. No demo-data fallback — a drill that can't reach the API
+// surfaces its error in the panel rather than silently showing dummy rows.
+function apiGet(endpoint) {
+  return fetch(`${API_BASE}${endpoint}`, {
+    headers: { Authorization: `Bearer ${getToken()}`, ...CLIENT_HEADER },
+  }).then((res) => {
+    if (res.status === 401) { logout(); throw new Error("Session expired"); }
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    return res.json();
+  });
+}
+
 // ─── Data hook ──────────────────────────────────────────────────────────────────
 function useApi(endpoint) {
   const [data, setData] = useState(null);
@@ -178,13 +192,15 @@ function Card({ title, subtitle, children, chip, chipTone = "real" }) {
 
 // Matches the reference's .card KPI tile: compact padding, a colored top
 // border + tiny corner tag as the real/sample data-provenance signal.
-function KpiTile({ label, value, sub, tone = "real", tag }) {
+// onClick, when given, makes the tile a drill trigger — matches the reference
+// design's "hover and you'll see a click-to-drill cue" convention.
+function KpiTile({ label, value, sub, tone = "real", tag, onClick }) {
   const t = CHIP_TONE[tone] || CHIP_TONE.real;
   return (
-    <div style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: "11px 13px 10px", borderTop: `3px solid ${t.color}`, position: "relative" }}>
+    <div onClick={onClick} style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: "11px 13px 10px", borderTop: `3px solid ${t.color}`, position: "relative", cursor: onClick ? "pointer" : undefined }}>
       {tag && <span style={{ position: "absolute", top: 8, right: 9, fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: t.color }}>{tag}</span>}
       <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, fontWeight: 600, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 600, color: C.ink, lineHeight: 1.1 }}>{value ?? "—"}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, color: C.ink, lineHeight: 1.1 }}>{value ?? "—"}{onClick && <span style={{ fontSize: 12, color: C.muted, marginLeft: 6 }}>›</span>}</div>
       {sub && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 3, lineHeight: 1.35 }}>{sub}</div>}
     </div>
   );
@@ -321,7 +337,7 @@ function Insight({ tone = "neutral", children }) {
 
 // Horizontal funnel visualization — bar width proportional to the first
 // stage's count, worst single drop-off outlined.
-function FunnelViz({ stages }) {
+function FunnelViz({ stages, onStageClick }) {
   const max = Math.max(1, ...stages.map((s) => s.count || 0));
   let worstIdx = -1, worstLost = -1;
   stages.forEach((s, i) => { if (i > 0 && (s.lost || 0) > worstLost) { worstLost = s.lost; worstIdx = i; } });
@@ -331,11 +347,11 @@ function FunnelViz({ stages }) {
         const pct = max ? Math.round((100 * (s.count || 0)) / max) : 0;
         const worst = i === worstIdx;
         return (
-          <div key={s.stage} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div key={s.stage} onClick={onStageClick ? () => onStageClick(s) : undefined} style={{ display: "flex", alignItems: "center", gap: 12, cursor: onStageClick ? "pointer" : undefined }}>
             <div style={{ width: 110, flexShrink: 0, fontSize: 12.5, fontWeight: 700, color: C.ink, textAlign: "right" }}>{s.stage}</div>
             <div style={{ flex: 1, position: "relative", height: 38, background: "#F4EFE3", borderRadius: 6, overflow: "hidden", outline: worst ? `2px solid ${C.coral}` : "none", outlineOffset: 1 }}>
               <div style={{ width: `${pct}%`, height: "100%", display: "flex", alignItems: "center", paddingLeft: 12, color: C.white, fontWeight: 700, fontSize: 13.5, borderRadius: 6, background: worst ? C.coral : C.teal, transition: "width .3s" }}>
-                {fmtNum(s.count)}
+                {fmtNum(s.count)}{onStageClick && <span style={{ marginLeft: 6, opacity: 0.8 }}>›</span>}
               </div>
             </div>
             <div style={{ width: 190, flexShrink: 0, fontSize: 11, color: C.muted }}>
@@ -345,6 +361,178 @@ function FunnelViz({ stages }) {
         );
       })}
     </div>
+  );
+}
+
+// ─── Drill panel ────────────────────────────────────────────────────────────────
+// One reusable slide-over (matches the reference design's #drillPanel /
+// #drillBackdrop) shared by every tab: click a metric -> a root-level table
+// (e.g. by district), click a root row -> a child-level table for just that
+// row (e.g. by venue/parish), "‹ Back" to go up. `openDrill(spec)` is exposed
+// via useDrill() to any component; spec:
+//   title       - panel heading
+//   tone/tagLabel - Chip shown next to the title (e.g. tone="real", tagLabel="REAL")
+//   rootKey/rootLabel   - field holding the root row's name + its column header
+//   columns     - value columns shown in both the root and child tables
+//   rootRows    - array, OR () => rows | Promise<rows> (lazy — e.g. the N+1
+//                 per-district fetch pages need this since no single response
+//                 already returns a by-district breakdown)
+//   childKey/childLabel - same as root but for the drilled-into level; omit
+//                 childLabel entirely for a metric with no deeper level
+//   getChildRows(rootRow) - rows | Promise<rows> for that one root row
+const DrillContext = createContext(null);
+
+function useDrill() {
+  return useContext(DrillContext);
+}
+
+function DrillTable({ nameKey, nameLabel, columns, rows, onRowClick }) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: "left", padding: "7px 8px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 10.5 }}>{nameLabel}</th>
+            {columns.map((c) => (
+              <th key={c.key} style={{ textAlign: c.align || "right", padding: "7px 8px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 10.5 }}>{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={r[nameKey] ?? i} onClick={onRowClick ? () => onRowClick(r) : undefined} style={onRowClick ? { cursor: "pointer" } : undefined}>
+              <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.line}`, color: C.ink, fontWeight: 600 }}>
+                {onRowClick && <span style={{ color: C.muted, marginRight: 4 }}>›</span>}{r[nameKey] ?? "—"}
+              </td>
+              {columns.map((c) => (
+                <td key={c.key} style={{ textAlign: c.align || "right", padding: "7px 8px", borderBottom: `1px solid ${C.line}`, color: C.text }}>
+                  {c.render ? c.render(r[c.key], r) : (r[c.key] ?? "—")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DrillPanelUI({ open, spec, rootRows, rootLoading, rootError, child, onClose, onDrillInto, onBack }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  return (
+    <>
+      <div onClick={onClose} style={{
+        position: "fixed", inset: 0, background: "rgba(15,34,56,.40)", zIndex: 80,
+        opacity: open ? 1 : 0, pointerEvents: open ? "auto" : "none", transition: "opacity .2s",
+      }} />
+      <aside role="dialog" aria-label="Metric breakdown" style={{
+        position: "fixed", top: 0, right: 0, height: "100%", width: 520, maxWidth: "92vw",
+        background: C.cream, zIndex: 90, transform: open ? "translateX(0)" : "translateX(100%)",
+        transition: "transform .25s cubic-bezier(.2,.8,.2,1)", display: "flex", flexDirection: "column",
+        boxShadow: "-8px 0 28px rgba(0,0,0,.14)",
+      }}>
+        {spec && (
+          <>
+            <div style={{ padding: "20px 24px 16px", borderBottom: `1px solid ${C.line}`, background: C.white, flexShrink: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                <Chip tone={spec.tone || "real"}>{spec.tagLabel || (spec.tone === "sim" ? "SAMPLE" : "REAL")}</Chip>
+                <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", fontSize: 22, color: C.muted, cursor: "pointer", padding: "0 6px", lineHeight: 1 }}>&times;</button>
+              </div>
+              <div style={{ fontSize: 17, fontWeight: 700, marginTop: 6, color: C.ink }}>
+                {child ? `${spec.title} — ${child.rootRow[spec.rootKey]}` : spec.title}
+              </div>
+              {child && (
+                <div onClick={onBack} style={{ marginTop: 6, fontSize: 12, color: C.teal, fontWeight: 600, cursor: "pointer" }}>
+                  ‹ Back to {spec.rootLabel.toLowerCase()}s
+                </div>
+              )}
+            </div>
+            <div style={{ padding: "18px 24px 30px", overflowY: "auto", flex: 1 }}>
+              {!child && (
+                <State loading={rootLoading} error={rootError} empty={!rootLoading && !rootError && (rootRows || []).length === 0}>
+                  <DrillTable nameKey={spec.rootKey} nameLabel={spec.rootLabel} columns={spec.columns} rows={rootRows || []}
+                    onRowClick={spec.getChildRows ? onDrillInto : undefined} />
+                </State>
+              )}
+              {child && (
+                <State loading={child.loading} error={child.error} empty={!child.loading && !child.error && (child.rows || []).length === 0}>
+                  <DrillTable nameKey={spec.childKey} nameLabel={spec.childLabel} columns={spec.columns} rows={child.rows || []} />
+                </State>
+              )}
+            </div>
+          </>
+        )}
+      </aside>
+    </>
+  );
+}
+
+function DrillProvider({ children }) {
+  const [spec, setSpec] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [rootRows, setRootRows] = useState(null);
+  const [rootLoading, setRootLoading] = useState(false);
+  const [rootError, setRootError] = useState(null);
+  const [child, setChild] = useState(null);
+
+  // Opens showing the root (e.g. district) table.
+  const openDrill = useCallback((newSpec) => {
+    setSpec(newSpec);
+    setOpen(true);
+    setChild(null);
+    setRootRows(null);
+    setRootError(null);
+  }, []);
+
+  // Opens straight into the child (e.g. venue) table for a known root row —
+  // e.g. a chart bar click already identifies its district, no need to make
+  // the user pick it again from a root list. "‹ Back" still lazy-loads root.
+  const openAt = useCallback((newSpec, rootRow) => {
+    setSpec(newSpec);
+    setOpen(true);
+    setRootRows(null);
+    setRootError(null);
+    setChild({ rootRow, rows: null, loading: true, error: null });
+    Promise.resolve(newSpec.getChildRows(rootRow))
+      .then((rows) => setChild({ rootRow, rows, loading: false, error: null }))
+      .catch((e) => setChild({ rootRow, rows: null, loading: false, error: e.message || "Failed to load" }));
+  }, []);
+
+  const close = useCallback(() => setOpen(false), []);
+
+  const drillInto = useCallback((row) => {
+    if (!spec?.getChildRows) return;
+    setChild({ rootRow: row, rows: null, loading: true, error: null });
+    Promise.resolve(spec.getChildRows(row))
+      .then((rows) => setChild({ rootRow: row, rows, loading: false, error: null }))
+      .catch((e) => setChild({ rootRow: row, rows: null, loading: false, error: e.message || "Failed to load" }));
+  }, [spec]);
+
+  const backToRoot = useCallback(() => setChild(null), []);
+
+  // Lazy-load the root table whenever it's needed and not yet loaded —
+  // covers both a fresh openDrill() and "‹ Back" from an openAt() launch.
+  useEffect(() => {
+    if (!open || child || rootRows !== null || rootLoading || !spec) return;
+    /* eslint-disable-next-line react-hooks/set-state-in-effect -- kicking off the async load IS the sync point */
+    setRootLoading(true);
+    Promise.resolve(typeof spec.rootRows === "function" ? spec.rootRows() : (spec.rootRows || []))
+      .then((rows) => { setRootRows(rows); setRootLoading(false); })
+      .catch((e) => { setRootError(e.message || "Failed to load"); setRootLoading(false); });
+  }, [open, child, rootRows, rootLoading, spec]);
+
+  return (
+    <DrillContext.Provider value={{ open: openDrill, openAt }}>
+      {children}
+      <DrillPanelUI open={open} spec={spec} rootRows={rootRows} rootLoading={rootLoading} rootError={rootError}
+        child={child} onClose={close} onDrillInto={drillInto} onBack={backToRoot} />
+    </DrillContext.Provider>
   );
 }
 
@@ -416,13 +604,17 @@ function OkrTracker() {
   );
 }
 
+// column.onHeaderClick, when given, makes that header a drill trigger —
+// matches the reference design's "column headers ... clickable" convention.
 function DataTable({ columns, rows }) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr>{columns.map((c) => (
-            <th key={c.key} style={{ textAlign: c.align || "left", padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11 }}>{c.label}</th>
+            <th key={c.key} onClick={c.onHeaderClick} style={{ textAlign: c.align || "left", padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11, cursor: c.onHeaderClick ? "pointer" : undefined }}>
+              {c.label}{c.onHeaderClick && " ›"}
+            </th>
           ))}</tr>
         </thead>
         <tbody>
@@ -455,7 +647,7 @@ const RATE_TARGETS = {
 function headlineFunnelStages(stages) {
   return stages
     .filter((s) => s.stage !== "Activated" && s.stage !== "Retained")
-    .map((s) => (s.stage === "Assigned" ? { ...s, stage: "Randomised" } : s));
+    .map((s) => (s.stage === "Assigned" ? { ...s, stage: "Randomised", apiStage: "Assigned" } : { ...s, apiStage: s.stage }));
 }
 
 function buildExecInsights(rates, stages, genderStages) {
@@ -509,15 +701,55 @@ function ExecutiveSummaryTab({ filters }) {
   );
 }
 
+// Overview endpoints only ever return one aggregate for whatever district
+// filter is already applied — no single response carries a by_district
+// breakdown (unlike Awareness/Acquisition/Retention). Since they DO already
+// accept a `district` param, the district-level drill table is built by
+// firing one request per district (lazily, only when a drill is opened) and
+// reusing the same endpoint + extractor rather than needing new backend SQL.
+function fetchPerDistrict(endpoint, filters, districts, extract) {
+  return Promise.all(
+    districts.map((d) =>
+      apiGet(`${endpoint}${buildParamsOverride(filters, { district: d })}`)
+        .then((json) => ({ district: d, value: extract(json) }))
+        .catch(() => ({ district: d, value: null }))
+    )
+  ).then((rows) => rows.sort((a, b) => (b.value || 0) - (a.value || 0)));
+}
+
 function ExecutiveSummaryPage({ filters }) {
+  const drill = useDrill();
   const q = buildParams(filters);
   const kpis = useApi(`/api/overview/kpis${q}`);
   const funnel = useApi(`/api/overview/funnel${q}`);
   const stageProgress = useApi(`/api/overview/stage-progress${q}`);
   const gender = useApi(`/api/overview/gender${q}`);
   const barriers = useApi(`/api/overview/eligibility-barriers${q}`);
+  const filterMeta = useApi("/api/filters");
+  const allDistricts = filterMeta.data?.districts || [];
 
   const rates = kpis.data?.rates || {};
+
+  function openRateDrill(rateKey, label) {
+    drill.open({
+      title: `${label} rate — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: "value", label: `${label} rate`, align: "right", render: fmtPct }],
+      rootRows: () => fetchPerDistrict("/api/overview/kpis", filters, allDistricts, (json) => json?.rates?.[rateKey] ?? null),
+    });
+  }
+
+  function openStageDrill(stage) {
+    drill.open({
+      title: `${stage.stage} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: "value", label: "Count", align: "right", render: fmtNum }],
+      rootRows: () => fetchPerDistrict("/api/overview/funnel", filters, allDistricts,
+        (json) => (json?.stages || []).find((s) => s.stage === stage.apiStage)?.count ?? null),
+    });
+  }
   const stages = funnel.data?.stages || [];
   const genderStages = gender.data?.stages || [];
   const headlineStages = headlineFunnelStages(stages);
@@ -536,11 +768,11 @@ function ExecutiveSummaryPage({ filters }) {
       <ExecBand num={1} title="Executive conversion metrics" />
       <State loading={kpis.loading} error={kpis.error} empty={!kpis.loading && !kpis.error && Object.keys(rates).length === 0}>
         <Grid cols={4}>
-          <KpiTile label="Eligibility" value={fmtPct(rates.eligibility_rate)} sub="Eligible / Interested" />
-          <KpiTile label="Mobilisation" value={fmtPct(rates.mobilisation_rate)} sub="Confirmed / Reached" />
-          <KpiTile label="Acquisition" value={fmtPct(rates.acquisition_rate)} sub="Acquired / Confirmed" />
-          <KpiTile label="Activation" value={fmtPct(rates.activation_rate)} sub="Activated / Acquired" />
-          <KpiTile label="Retention" value={fmtPct(rates.retention_rate)} sub="Retained / Activated" />
+          <KpiTile label="Eligibility" value={fmtPct(rates.eligibility_rate)} sub="Eligible / Interested" onClick={() => openRateDrill("eligibility_rate", "Eligibility")} />
+          <KpiTile label="Mobilisation" value={fmtPct(rates.mobilisation_rate)} sub="Confirmed / Reached" onClick={() => openRateDrill("mobilisation_rate", "Mobilisation")} />
+          <KpiTile label="Acquisition" value={fmtPct(rates.acquisition_rate)} sub="Acquired / Confirmed" onClick={() => openRateDrill("acquisition_rate", "Acquisition")} />
+          <KpiTile label="Activation" value={fmtPct(rates.activation_rate)} sub="Activated / Acquired" onClick={() => openRateDrill("activation_rate", "Activation")} />
+          <KpiTile label="Retention" value={fmtPct(rates.retention_rate)} sub="Retained / Activated" onClick={() => openRateDrill("retention_rate", "Retention")} />
         </Grid>
       </State>
 
@@ -576,9 +808,9 @@ function ExecutiveSummaryPage({ filters }) {
       </Card>
 
       <ExecBand num={4} title="Overall recruitment funnel" />
-      <Card title="Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired" subtitle="Each stage shows count and % of the previous stage. The largest single drop-off is outlined." chip="REAL">
+      <Card title="Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired" subtitle="Each stage shows count and % of the previous stage. The largest single drop-off is outlined. Click a stage to drill by district." chip="REAL">
         <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
-          <FunnelViz stages={headlineStages} />
+          <FunnelViz stages={headlineStages} onStageClick={openStageDrill} />
         </State>
       </Card>
 
@@ -750,7 +982,15 @@ function AwarenessTab({ filters }) {
   );
 }
 
+// Awareness's district rows call the reached count "registered"; its parish
+// rows call the same thing "reached" — normalise so one drill spec's columns
+// work against either grain.
+function withEligibilityRate(r) {
+  return { ...r, eligibility_rate: r.interested ? Math.round((1000 * r.eligible) / r.interested) / 10 : null };
+}
+
 function AwarenessOverviewPage({ filters }) {
+  const drill = useDrill();
   const total = useApi(`/api/recruitment/awareness${buildParams(filters)}`);
   const female = useApi(`/api/recruitment/awareness${buildParamsOverride(filters, { gender: "Female" })}`);
   const male = useApi(`/api/recruitment/awareness${buildParamsOverride(filters, { gender: "Male" })}`);
@@ -762,6 +1002,22 @@ function AwarenessOverviewPage({ filters }) {
   const eligible = sumBy(rows, "eligible");
   const target = sumBy(rows, "target");
   const eligibilityRate = interested ? Math.round((1000 * eligible) / interested) / 10 : null;
+
+  function openMetricDrill(metricKey, label, formatter = fmtNum) {
+    const rootRows = rows.map(withEligibilityRate).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: metricKey, label, align: "right", render: formatter }],
+      rootRows,
+      childKey: "parish", childLabel: "Parish",
+      getChildRows: (root) => (parish.data?.parishes || [])
+        .filter((p) => p.district === root.district)
+        .map((p) => withEligibilityRate({ ...p, registered: p.reached }))
+        .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+    });
+  }
 
   const fRows = female.data?.by_district || [];
   const mRows = male.data?.by_district || [];
@@ -780,11 +1036,11 @@ function AwarenessOverviewPage({ filters }) {
   return (
     <div>
       <Grid cols={4}>
-        <KpiTile label="Reached" value={fmtNum(reached)} />
-        <KpiTile label="Interested" value={fmtNum(interested)} />
-        <KpiTile label="Eligible" value={fmtNum(eligible)} />
-        <KpiTile label="Registration target" value={fmtNum(target)} />
-        <KpiTile label="Eligibility rate" value={fmtPct(eligibilityRate)} sub="Eligible / Interested" />
+        <KpiTile label="Reached" value={fmtNum(reached)} onClick={() => openMetricDrill("registered", "Reached")} />
+        <KpiTile label="Interested" value={fmtNum(interested)} onClick={() => openMetricDrill("interested", "Interested")} />
+        <KpiTile label="Eligible" value={fmtNum(eligible)} onClick={() => openMetricDrill("eligible", "Eligible")} />
+        <KpiTile label="Registration target" value={fmtNum(target)} onClick={() => openMetricDrill("target", "Registration target")} />
+        <KpiTile label="Eligibility rate" value={fmtPct(eligibilityRate)} sub="Eligible / Interested" onClick={() => openMetricDrill("eligibility_rate", "Eligibility rate", fmtPct)} />
       </Grid>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
@@ -998,9 +1254,28 @@ function AwarenessForecastPage({ filters }) {
   );
 }
 
-function DistrictBarTab({ endpoint, filters, title, subtitle, bars }) {
+// `drill`, when given, makes each bar clickable — jumps straight to that
+// district's venue-level breakdown (the chart itself already IS the district
+// root view, so there's no need to make the user pick the district again).
+// Shape: { childKey, childLabel, columns, getChildRows(districtRow) }
+function DistrictBarTab({ endpoint, filters, title, subtitle, bars, drill }) {
+  const drillCtx = useDrill();
   const { data, loading, error } = useApi(`${endpoint}${buildParams(filters)}`);
   const rows = data?.by_district || [];
+
+  function onBarClick(row) {
+    if (!drill) return;
+    drillCtx.openAt({
+      title: `${title} — by venue`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: drill.columns,
+      rootRows: rows,
+      childKey: drill.childKey, childLabel: drill.childLabel,
+      getChildRows: drill.getChildRows,
+    }, row);
+  }
+
   return (
     <Card title={title} subtitle={subtitle} chip="REAL">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
@@ -1010,16 +1285,26 @@ function DistrictBarTab({ endpoint, filters, title, subtitle, bars }) {
             <XAxis dataKey="district" tick={{ fontSize: 11 }} />
             <YAxis tick={{ fontSize: 11 }} />
             <Tooltip /><Legend />
-            {bars.map((b, i) => <Bar key={b.key} dataKey={b.key} name={b.label} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />)}
+            {bars.map((b, i) => (
+              <Bar key={b.key} dataKey={b.key} name={b.label} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]}
+                cursor={drill ? "pointer" : undefined}
+                onClick={drill ? (d) => onBarClick(d.payload || d) : undefined} />
+            ))}
           </BarChart>
         </ResponsiveContainer>
       </State>
+      {drill && <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>Click a bar to see that district's venues.</p>}
     </Card>
   );
 }
 
 function AcquisitionTab({ filters }) {
   const [page, setPage] = useState("overview");
+  // Fetched here (not inside DistrictBarTab) so a district-bar click can drill
+  // straight to that district's venues — the venue grain lives on the Arrival
+  // & Verification sub-page's endpoint, already fetched either way once this
+  // tab is open.
+  const arrival = useApi(`/api/recruitment/acquisition-arrival${buildParams(filters)}`);
   return (
     <div>
       <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Acquisition</h2>
@@ -1035,7 +1320,18 @@ function AcquisitionTab({ filters }) {
         ]}
       />
       {page === "overview" && (
-        <DistrictBarTab endpoint="/api/recruitment/acquisition" filters={filters} title="Acquisition" subtitle="Verified → Acquired by district" bars={[{ key: "verified", label: "Verified" }, { key: "acquired", label: "Acquired" }]} />
+        <DistrictBarTab endpoint="/api/recruitment/acquisition" filters={filters} title="Acquisition" subtitle="Verified → Acquired by district"
+          bars={[{ key: "verified", label: "Verified" }, { key: "acquired", label: "Acquired" }]}
+          drill={{
+            childKey: "venue", childLabel: "Venue",
+            columns: [
+              { key: "verified", label: "Verified", align: "right", render: fmtNum },
+              { key: "acquired", label: "Acquired", align: "right", render: fmtNum },
+              { key: "acquisition_rate", label: "Rate", align: "right", render: fmtPct },
+            ],
+            getChildRows: (root) => (arrival.data?.by_venue || []).filter((v) => v.district === root.district),
+          }}
+        />
       )}
       {page === "arrival" && <AcquisitionArrivalPage filters={filters} />}
     </div>
@@ -1111,10 +1407,26 @@ function MobilisationTab({ filters }) {
 }
 
 function MobRecruitmentFunnelPage({ filters }) {
+  const drill = useDrill();
   const mob = useApi(`/api/recruitment/mobilisation${buildParams(filters)}`);
   const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
+  const filterMeta = useApi("/api/filters");
+  const allDistricts = filterMeta.data?.districts || [];
   const data = mob.data;
   const cells = heatmap.data?.cells || [];
+
+  // Same N+1-per-district approach as Executive Summary: /api/recruitment/
+  // mobilisation already accepts a `district` filter but only ever returns
+  // one aggregate — no by_district breakdown in a single response.
+  function openMobDrill(metricKey, label, formatter = fmtNum) {
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: "value", label, align: "right", render: formatter }],
+      rootRows: () => fetchPerDistrict("/api/recruitment/mobilisation", filters, allDistricts, (json) => json?.[metricKey] ?? null),
+    });
+  }
 
   const venueTotals = {};
   cells.forEach((c) => {
@@ -1142,13 +1454,13 @@ function MobRecruitmentFunnelPage({ filters }) {
       <ExecBand num="◆" title="Progress on target" />
       <State loading={mob.loading} error={mob.error} empty={!mob.loading && !data}>
         <Grid cols={4}>
-          <KpiTile label="Assigned to treatment" value={fmtNum(data?.assigned)} tag="REAL" />
-          <KpiTile label="Youth reached" value={fmtNum(data?.reached)} sub={`of ${fmtNum(data?.four_week?.assigned)} assigned (4-week cycle)`} tag="REAL" />
-          <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} sub="reached ÷ assigned (4-week cycle)" tag="REAL" />
-          <KpiTile label="Youth confirmed" value={fmtNum(data?.confirmed)} sub={`of ${fmtNum(data?.assigned)} assigned`} tag="REAL" />
-          <KpiTile label="Confirmed female" value={fmtNum(data?.confirmed_female)} sub={`${fmtPct(data?.confirmed_female_pct)} of confirmed · target 60%`} tag="REAL" />
-          <KpiTile label="Mobilisation rate" value={fmtPct(data?.mobilisation_rate)} sub="confirmed ÷ assigned to treatment" tag="REAL" />
-          <KpiTile label="Progress on target" value={fmtPct(data?.progress_pct)} sub={`confirmed ÷ target (${fmtNum(data?.target)})`} tag="REAL" />
+          <KpiTile label="Assigned to treatment" value={fmtNum(data?.assigned)} tag="REAL" onClick={() => openMobDrill("assigned", "Assigned to treatment")} />
+          <KpiTile label="Youth reached" value={fmtNum(data?.reached)} sub={`of ${fmtNum(data?.four_week?.assigned)} assigned (4-week cycle)`} tag="REAL" onClick={() => openMobDrill("reached", "Youth reached")} />
+          <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} sub="reached ÷ assigned (4-week cycle)" tag="REAL" onClick={() => openMobDrill("reach_rate", "Reach rate", fmtPct)} />
+          <KpiTile label="Youth confirmed" value={fmtNum(data?.confirmed)} sub={`of ${fmtNum(data?.assigned)} assigned`} tag="REAL" onClick={() => openMobDrill("confirmed", "Youth confirmed")} />
+          <KpiTile label="Confirmed female" value={fmtNum(data?.confirmed_female)} sub={`${fmtPct(data?.confirmed_female_pct)} of confirmed · target 60%`} tag="REAL" onClick={() => openMobDrill("confirmed_female", "Confirmed female")} />
+          <KpiTile label="Mobilisation rate" value={fmtPct(data?.mobilisation_rate)} sub="confirmed ÷ assigned to treatment" tag="REAL" onClick={() => openMobDrill("mobilisation_rate", "Mobilisation rate", fmtPct)} />
+          <KpiTile label="Progress on target" value={fmtPct(data?.progress_pct)} sub={`confirmed ÷ target (${fmtNum(data?.target)})`} tag="REAL" onClick={() => openMobDrill("progress_pct", "Progress on target", fmtPct)} />
         </Grid>
         <Card title="4-week vs 2.5-week cycle" subtitle="The 2.5-week pilot subcounties are auto-confirmed by policy — blending them into one rate hides the real call-center conversion" chip="REAL">
           <DataTable
@@ -1482,9 +1794,46 @@ function TamTab({ filters }) {
 }
 
 // ─── Implementation tabs ─────────────────────────────────────────────────────
+// Groups already-loaded venue-grain rows by district, re-deriving rate fields
+// from the summed counts (rather than averaging the per-venue rates) so a
+// district's rate is consistent with its own acquired/activated/retained
+// totals. Shared by Retention and Trainer Quality's district-rollup drills.
+function groupByDistrict(rows, countKeys, rateFns) {
+  const byDistrict = {};
+  rows.forEach((r) => {
+    const d = byDistrict[r.district] || (byDistrict[r.district] = { district: r.district });
+    countKeys.forEach((k) => { d[k] = (d[k] || 0) + (Number(r[k]) || 0); });
+  });
+  return Object.values(byDistrict).map((d) => {
+    const withRates = { ...d };
+    Object.entries(rateFns || {}).forEach(([k, fn]) => { withRates[k] = fn(d); });
+    return withRates;
+  });
+}
+
 function RetentionTab({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/retention${buildParams(filters)}`);
   const rows = data?.by_venue || [];
+  const rateFns = {
+    activation_rate: (d) => (d.acquired ? Math.round((1000 * d.activated) / d.acquired) / 10 : null),
+    retention_rate: (d) => (d.activated ? Math.round((1000 * d.retained) / d.activated) / 10 : null),
+  };
+
+  function openMetricDrill(metricKey, label, formatter = fmtNum) {
+    const rootRows = groupByDistrict(rows, ["acquired", "activated", "retained"], rateFns)
+      .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: metricKey, label, align: "right", render: formatter }],
+      rootRows,
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => rows.filter((r) => r.district === root.district).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+    });
+  }
+
   return (
     <Card title="Retention by venue" subtitle={`Targets — activation ${data?.targets?.activation ?? 90}%, retention ${data?.targets?.retention ?? 85}%`} chip="REAL">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
@@ -1492,11 +1841,11 @@ function RetentionTab({ filters }) {
           columns={[
             { key: "district", label: "District" },
             { key: "venue", label: "Venue" },
-            { key: "acquired", label: "Acquired", align: "right" },
-            { key: "activated", label: "Activated", align: "right" },
-            { key: "retained", label: "Retained", align: "right" },
-            { key: "activation_rate", label: "Activation %", align: "right", render: (v) => fmtPct(v) },
-            { key: "retention_rate", label: "Retention %", align: "right", render: (v) => fmtPct(v) },
+            { key: "acquired", label: "Acquired", align: "right", onHeaderClick: () => openMetricDrill("acquired", "Acquired") },
+            { key: "activated", label: "Activated", align: "right", onHeaderClick: () => openMetricDrill("activated", "Activated") },
+            { key: "retained", label: "Retained", align: "right", onHeaderClick: () => openMetricDrill("retained", "Retained") },
+            { key: "activation_rate", label: "Activation %", align: "right", render: (v) => fmtPct(v), onHeaderClick: () => openMetricDrill("activation_rate", "Activation rate", fmtPct) },
+            { key: "retention_rate", label: "Retention %", align: "right", render: (v) => fmtPct(v), onHeaderClick: () => openMetricDrill("retention_rate", "Retention rate", fmtPct) },
           ]}
           rows={rows}
         />
@@ -1506,8 +1855,30 @@ function RetentionTab({ filters }) {
 }
 
 function TrainersTab({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/trainers${buildParams(filters)}`);
   const rows = data?.trainers || [];
+
+  function openScoreDrill() {
+    const byDistrict = {};
+    rows.forEach((r) => {
+      const d = byDistrict[r.district] || (byDistrict[r.district] = { district: r.district, _sum: 0, _n: 0 });
+      if (r.score != null) { d._sum += Number(r.score) || 0; d._n += 1; }
+    });
+    const rootRows = Object.values(byDistrict)
+      .map((d) => ({ district: d.district, score: d._n ? Math.round((d._sum / d._n) * 100) / 100 : null }))
+      .sort((a, b) => (b.score || 0) - (a.score || 0));
+    drill.open({
+      title: "Avg observation score — by district",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: "score", label: "Avg score", align: "right", render: (v) => (v == null ? "—" : v.toFixed(2)) }],
+      rootRows,
+      childKey: "trainer_name", childLabel: "Trainer",
+      getChildRows: (root) => rows.filter((r) => r.district === root.district).sort((a, b) => (b.score || 0) - (a.score || 0)),
+    });
+  }
+
   return (
     <Card title="Trainer quality" subtitle="Observation scores — names shown to staff only" chip="PII" chipTone="pii">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
@@ -1517,7 +1888,7 @@ function TrainersTab({ filters }) {
             { key: "venue", label: "Venue" },
             { key: "district", label: "District" },
             { key: "rating", label: "Rating" },
-            { key: "score", label: "Score", align: "right" },
+            { key: "score", label: "Score", align: "right", onHeaderClick: openScoreDrill },
           ]}
           rows={rows}
         />
@@ -1599,37 +1970,37 @@ function fmtNum(v) { return v == null ? "—" : Number(v).toLocaleString(); }
 // Keep this in sync with NAV below when tabs are added/renamed/re-wired to live
 // data (chip tone flips from "sim" to "real" the day a placeholder is wired up).
 const GUIDE_PAGES = [
-  { group: "Executive Summary", page: "Summary", tone: "real",
+  { group: "Executive Summary", page: "Summary", tone: "real", navGroup: "es", navTab: "es-main",
     summary: "Full funnel, gender split, cohort comparison, OKRs.",
     what: "Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired funnel; gender split vs the 60% female target; eligibility-barrier breakdown; cohort comparison (BC2–BC4); an editable OKR tracker (saved in your browser only)." },
-  { group: "Recruitment", page: "Awareness", tone: "real",
+  { group: "Recruitment", page: "Awareness", tone: "real", navGroup: "rec", navTab: "aware",
     summary: "Registered → interested → eligible by district/parish/mobiliser.",
     what: "4 sub-pages — Funnel Overview, Mobilisers, KYC / Youth Profile, Forecast. Registered → interested → eligible by district, parish and mobiliser; youth demographics; registration-pace forecast." },
-  { group: "Recruitment", page: "Mobilisation", tone: "real",
+  { group: "Recruitment", page: "Mobilisation", tone: "real", navGroup: "rec", navTab: "mob",
     summary: "Assigned → reached → confirmed, 4-week vs 2.5-week cycles.",
     what: "5 sub-pages — Recruitment Funnel, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
-  { group: "Recruitment", page: "Acquisition", tone: "real",
+  { group: "Recruitment", page: "Acquisition", tone: "real", navGroup: "rec", navTab: "acq",
     summary: "Verified → acquired by district; venue risk categories.",
     what: "2 sub-pages — Overview, Arrival & Verification. Verified → acquired by district; venue risk categories (Target Achieved / On Track / Low Risk / High Risk)." },
-  { group: "Recruitment", page: "Mobilisers", tone: "sample",
+  { group: "Recruitment", page: "Mobilisers", tone: "sample", navGroup: "rec", navTab: "mobs",
     summary: "Leaderboard of reach/confirmed by mobiliser.",
     what: "Leaderboard of reach/confirmed by mobiliser. Still placeholder data — no live table yet carries both a named mobiliser and reach/confirm counts together." },
-  { group: "Recruitment", page: "TAM Analysis", tone: "sample",
+  { group: "Recruitment", page: "TAM Analysis", tone: "sample", navGroup: "rec", navTab: "tam",
     summary: "Parish-level predicted vs. actual market coverage.",
     what: "Parish-level predicted vs. actual market coverage. Still placeholder data." },
-  { group: "Implementation", page: "Retention", tone: "real",
+  { group: "Implementation", page: "Retention", tone: "real", navGroup: "impl", navTab: "ret",
     summary: "Acquired → activated → retained by venue vs targets.",
     what: "Acquired → activated → retained by venue, against activation/retention targets." },
-  { group: "Implementation", page: "Trainer Quality", tone: "real",
+  { group: "Implementation", page: "Trainer Quality", tone: "real", navGroup: "impl", navTab: "train",
     summary: "Per-lesson scores, banded Exceeds / Meets / Below.",
     what: "Per-lesson classroom observation scores, banded Exceeds / Meets / Below expectations. Trainer names are staff-only (PII)." },
-  { group: "Implementation", page: "Youth Experience", tone: "sample",
+  { group: "Implementation", page: "Youth Experience", tone: "sample", navGroup: "impl", navTab: "nps",
     summary: "Weekly NPS trend (Programme / Venue / Meals).",
     what: "Programme / Venue / Meals NPS weekly trend. Still placeholder data." },
-  { group: "Field Operations", page: "Venue", tone: "sample",
+  { group: "Field Operations", page: "Venue", tone: "sample", navGroup: "fops", navTab: "venue",
     summary: "Compliance rate by venue.",
     what: "Compliance rate by venue. Still placeholder data." },
-  { group: "Field Operations", page: "Transport", tone: "sample",
+  { group: "Field Operations", page: "Transport", tone: "sample", navGroup: "fops", navTab: "transport",
     summary: "Per-site timeliness score.",
     what: "Per-site timeliness score. Still placeholder data." },
 ];
@@ -1637,7 +2008,11 @@ const GUIDE_PAGES = [
 // Row-expands-in-place table for GUIDE_PAGES — keeps the page-by-page summary
 // brief by default (one-line `summary`), click a row to drill into the full
 // `what` description without leaving the Guide.
-function GuidePageTable({ rows }) {
+// navigate, when given, adds an "Open ›" link on the page name that jumps
+// straight to that tab (matches the reference design's guideGo() cross-link)
+// — a separate click target from the row itself, which toggles the
+// description, via stopPropagation.
+function GuidePageTable({ rows, navigate }) {
   const [openKey, setOpenKey] = useState(null);
   return (
     <div style={{ overflowX: "auto" }}>
@@ -1659,6 +2034,14 @@ function GuidePageTable({ rows }) {
                   <td style={{ padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text }}>{r.group}</td>
                   <td style={{ padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text, fontWeight: 600 }}>
                     <span style={{ display: "inline-block", width: 14, color: C.muted }}>{open ? "▾" : "▸"}</span>{r.page}
+                    {navigate && r.navGroup && (
+                      <span
+                        onClick={(e) => { e.stopPropagation(); navigate(r.navGroup, r.navTab); }}
+                        style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: C.teal }}
+                      >
+                        Open ›
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text }}>{r.summary}</td>
                   <td style={{ textAlign: "right", padding: "8px 10px", borderBottom: `1px solid ${C.line}` }}>
@@ -1681,9 +2064,7 @@ function GuidePageTable({ rows }) {
   );
 }
 
-function GuideTab() {
-  const groupCounts = {};
-  GUIDE_PAGES.forEach((p) => { groupCounts[p.group] = (groupCounts[p.group] || 0) + 1; });
+function GuideTab({ navigate }) {
   return (
     <div>
       <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Dashboard Guide</h2>
@@ -1696,17 +2077,34 @@ function GuideTab() {
       <ExecBand num="1" title="What's in this dashboard" />
       <Grid cols={4}>
         <KpiTile label="Guide" value="You are here" sub="No live data — a reference page." tone="pii" />
-        <KpiTile label="Executive Summary" value="1 page" sub="The whole funnel at a glance, plus gender split and recommendations." />
-        <KpiTile label="Recruitment" value="5 pages" sub="Awareness, Mobilisation, Acquisition, Mobilisers, TAM Analysis." />
-        <KpiTile label="Implementation" value="3 pages" sub="Retention, Trainer Quality, Youth Experience." />
-        <KpiTile label="Field Operations" value="2 pages" sub="Venue, Transport." />
+        <KpiTile label="Executive Summary" value="1 page" sub="The whole funnel at a glance, plus gender split and recommendations." onClick={navigate ? () => navigate("es", "es-main") : undefined} />
+        <KpiTile label="Recruitment" value="5 pages" sub="Awareness, Mobilisation, Acquisition, Mobilisers, TAM Analysis." onClick={navigate ? () => navigate("rec") : undefined} />
+        <KpiTile label="Implementation" value="3 pages" sub="Retention, Trainer Quality, Youth Experience." onClick={navigate ? () => navigate("impl") : undefined} />
+        <KpiTile label="Field Operations" value="2 pages" sub="Venue, Transport." onClick={navigate ? () => navigate("fops") : undefined} />
       </Grid>
 
-      <Card title="Page-by-page summary" subtitle="What each tab covers, grouped the same way as the tabs above — click a row to drill into the full description.">
-        <GuidePageTable rows={GUIDE_PAGES} />
+      <Card title="Page-by-page summary" subtitle="What each tab covers, grouped the same way as the tabs above — click a row to drill into the full description, or Open › to jump straight there.">
+        <GuidePageTable rows={GUIDE_PAGES} navigate={navigate} />
       </Card>
 
-      <ExecBand num="2" title="Global filters — district, gender, cohort" />
+      <ExecBand num="2" title="Key definitions" />
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 12 }}>
+        What each funnel stage means, precisely — the eligibility rule and the pass/fail bar for every
+        stage from recruitment through graduation.
+      </p>
+      <Grid cols={2}>
+        <Insight tone="neutral"><b>Awareness / Recruitment.</b> Youth recruited that are eligible per criteria: aged 18–30, P5–S3 education, income 0–30k UGX/2wks, no past E! training, expressed interest. Target: 70% female, 30% male.</Insight>
+        <Insight tone="neutral"><b>Acquisition.</b> Youth who were verified AND signed the consent waiver by Day 2. Measured as the acquisition rate.</Insight>
+        <Insight tone="neutral"><b>Randomisation.</b> Stratified random assignment of eligible youth to Treatment (active programme) or Control (comparison group).</Insight>
+        <Insight tone="neutral"><b>Activation.</b> Youth who were acquired AND attended at least one lesson on Day 1 or Day 2.</Insight>
+        <Insight tone="neutral"><b>Mobilisation — Confirmed.</b> Treatment youth who confirmed interest during the mobilisation call after hearing programme details.</Insight>
+        <Insight tone="neutral"><b>Retention.</b> Youth who attended at least 80% of all scheduled sessions (≥20 out of 25 lessons). Target: 80% of activated.</Insight>
+        <Insight tone="neutral"><b>Arrival — Verified.</b> Youth who showed up to the venue by Day 2 and completed identity verification.</Insight>
+        <Insight tone="neutral"><b>Graduation.</b> Youth who attended 50% or more of sessions (≥13 out of 25 lessons). Threshold for programme certificate eligibility.</Insight>
+        <Insight tone="neutral"><b>Karibu Day.</b> Day 2 of bootcamp — introduction day. Youth marked PRESENT on Karibu Day are those who attended the orientation session.</Insight>
+      </Grid>
+
+      <ExecBand num="3" title="Global filters — district, gender, cohort" />
       <div style={{ marginBottom: 20 }}>
         <Insight tone="neutral">
           The filter bar at the top of the screen is sticky — it stays visible as you scroll and switch
@@ -1715,7 +2113,7 @@ function GuideTab() {
         </Insight>
       </div>
 
-      <ExecBand num="3" title="Navigating the dashboard" />
+      <ExecBand num="4" title="Navigating the dashboard" />
       <div style={{ marginBottom: 20 }}>
         <Insight tone="neutral">
           Navigation has two levels. The <b>bold tabs</b> along the top (Executive Summary,
@@ -1726,7 +2124,7 @@ function GuideTab() {
         </Insight>
       </div>
 
-      <ExecBand num="4" title="Reading the data-status tags" />
+      <ExecBand num="5" title="Reading the data-status tags" />
       <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 12 }}>
         Every card is tagged with where its numbers come from — never mix these up when reporting out:
       </p>
@@ -1761,7 +2159,7 @@ function GuideTab() {
 // ─── Navigation model ─────────────────────────────────────────────────────────
 const NAV = [
   { key: "guide", group: "Guide", tabs: [
-    { key: "guide-main", label: "Guide", render: () => <GuideTab /> },
+    { key: "guide-main", label: "Guide", render: (_f, navigate) => <GuideTab navigate={navigate} /> },
   ]},
   { key: "es", group: "Executive Summary", tabs: [
     { key: "es-main", label: "Summary", render: (f) => <ExecutiveSummaryTab filters={f} /> },
@@ -1908,6 +2306,16 @@ export default function App() {
   }, []);
   const selectTab = useCallback((k) => { setTabKey(k); sessionStorage.setItem("eba_tab", k); }, []);
 
+  // Lets the Guide tab's cards/table rows jump straight to the tab they
+  // describe (matches the reference design's guideGo() cross-links).
+  const navigateTo = useCallback((groupKey, tabKey2) => {
+    const gi = NAV.findIndex((g) => g.key === groupKey);
+    if (gi === -1) return;
+    setGroupIdx(gi); sessionStorage.setItem("eba_group", gi);
+    const tk = tabKey2 || NAV[gi].tabs[0].key;
+    setTabKey(tk); sessionStorage.setItem("eba_tab", tk);
+  }, []);
+
   if (!token || (!userLoading && !user)) return <LoginScreen onLogin={() => setToken(getToken())} />;
   if (userLoading) return <div style={{ minHeight: "100vh", background: C.ink }} />;
 
@@ -1915,6 +2323,7 @@ export default function App() {
   const stab = (active) => ({ padding: "8px 12px", cursor: "pointer", fontSize: 11.5, fontWeight: 600, textTransform: "uppercase", color: active ? C.white : "#9FB0BF", borderBottom: `3px solid ${active ? C.gold : "transparent"}` });
 
   return (
+    <DrillProvider>
     <div style={{ minHeight: "100vh", background: C.cream }}>
       <header style={{ background: C.ink, color: C.white, padding: "8px 24px 0" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -1946,9 +2355,10 @@ export default function App() {
 
       <DemoContext.Provider value={demoMode}>
         <div style={{ maxWidth: 1280, margin: "0 auto", padding: "20px 24px 80px" }}>
-          {activeTab.render(filters)}
+          {activeTab.render(filters, navigateTo)}
         </div>
       </DemoContext.Provider>
     </div>
+    </DrillProvider>
   );
 }
