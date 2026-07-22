@@ -3,8 +3,8 @@
 import app.auth as auth_module
 
 _YOUTH_ROW = {
-    "phone_number": "+256700123456",
-    "name": "Nabirye Sarah",
+    "youth_phone": "+256700123456",
+    "youth_name": "Nabirye Sarah",
     "gender": "Female",
     "age": 22,
     "district": "BUGIRI",
@@ -23,7 +23,7 @@ def test_personas_never_serialises_raw_phone(as_staff, mock_run_query):
     # Raw phone must not appear anywhere in the response, even for staff.
     assert "+256700123456" not in r.text
     youth = r.json()["youth"][0]
-    assert "phone_number" not in youth
+    assert "youth_phone" not in youth
     assert youth["youth_id"].startswith("Y-")
 
 

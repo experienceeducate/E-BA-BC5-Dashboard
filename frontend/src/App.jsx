@@ -64,6 +64,17 @@ function buildParams(filters) {
   return s ? `?${s}` : "";
 }
 
+// Same as buildParams, but overriding specific filter keys — for panels that
+// need a forced gender split (e.g. a Female/Male breakdown chart) regardless
+// of the global filter bar's current gender selection.
+function buildParamsOverride(filters, overrides) {
+  return buildParams({ ...filters, ...overrides });
+}
+
+function sumBy(rows, key) {
+  return (rows || []).reduce((s, r) => s + (Number(r[key]) || 0), 0);
+}
+
 // ─── Data hook ──────────────────────────────────────────────────────────────────
 function useApi(endpoint) {
   const [data, setData] = useState(null);
@@ -109,19 +120,54 @@ function useApi(endpoint) {
 }
 
 // ─── Presentational primitives ─────────────────────────────────────────────────
-function Card({ title, subtitle, children, chip }) {
+// Chip tones match the reference design's .chip.real/.chip.sim pill badges —
+// "real" (green) for live-BigQuery panels, "sim" (coral) for anything not yet
+// backed by real data. PII is a separate concern (masking), not a tone, but
+// reuses the pill shape.
+const CHIP_TONE = {
+  real: { bg: "#E4EEE3", color: C.green },
+  sim:  { bg: "#F5E2DA", color: C.coral },
+  pii:  { bg: C.line, color: C.text },
+};
+function Chip({ children, tone = "real" }) {
+  const t = CHIP_TONE[tone] || CHIP_TONE.real;
+  return (
+    <span style={{ background: t.bg, color: t.color, fontSize: 10, fontWeight: 700, letterSpacing: 0.4, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>
+      {children}
+    </span>
+  );
+}
+
+// CSS-grid card row — matches the reference's .grid/.grid.g3/.grid.g2 (4/3/2
+// equal columns, collapsing to 2 under 900px).
+function Grid({ cols = 4, children }) {
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth <= 900);
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth <= 900);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const effectiveCols = narrow ? Math.min(cols, 2) : cols;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(${effectiveCols}, 1fr)`, gap: 14, marginBottom: 20 }}>
+      {children}
+    </div>
+  );
+}
+
+function Card({ title, subtitle, children, chip, chipTone = "real" }) {
   const demo = useContext(DemoContext);
   return (
-    <div style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 8, padding: 18, marginBottom: 18 }}>
+    <div style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: 20, marginBottom: 20 }}>
       {(title || chip || demo) && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
           <div>
-            {title && <h3 style={{ fontSize: 15, color: C.ink, fontWeight: 700 }}>{title}</h3>}
-            {subtitle && <p style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{subtitle}</p>}
+            {title && <h3 style={{ fontSize: 17, color: C.ink, fontWeight: 600 }}>{title}</h3>}
+            {subtitle && <p style={{ fontSize: 12, color: C.muted, marginTop: 3, maxWidth: 560 }}>{subtitle}</p>}
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-            {demo && <span style={{ background: C.coral, color: C.white, fontSize: 9, fontWeight: 700, padding: "3px 8px", borderRadius: 3, textTransform: "uppercase", letterSpacing: 0.3 }}>Demo data</span>}
-            {chip && <span style={{ background: C.gold, color: C.ink, fontSize: 9, fontWeight: 700, padding: "3px 8px", borderRadius: 3, textTransform: "uppercase" }}>{chip}</span>}
+            {demo && <Chip tone="sim">Demo data</Chip>}
+            {chip && <Chip tone={chipTone}>{chip}</Chip>}
           </div>
         </div>
       )}
@@ -130,12 +176,16 @@ function Card({ title, subtitle, children, chip }) {
   );
 }
 
-function KpiTile({ label, value, sub }) {
+// Matches the reference's .card KPI tile: compact padding, a colored top
+// border + tiny corner tag as the real/sample data-provenance signal.
+function KpiTile({ label, value, sub, tone = "real", tag }) {
+  const t = CHIP_TONE[tone] || CHIP_TONE.real;
   return (
-    <div style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 8, padding: 16, flex: "1 1 160px" }}>
-      <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600 }}>{label}</div>
-      <div style={{ fontSize: 28, fontWeight: 800, color: C.ink, marginTop: 4 }}>{value ?? "—"}</div>
-      {sub && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{sub}</div>}
+    <div style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: "11px 13px 10px", borderTop: `3px solid ${t.color}`, position: "relative" }}>
+      {tag && <span style={{ position: "absolute", top: 8, right: 9, fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: t.color }}>{tag}</span>}
+      <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, fontWeight: 600, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, color: C.ink, lineHeight: 1.1 }}>{value ?? "—"}</div>
+      {sub && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 3, lineHeight: 1.35 }}>{sub}</div>}
     </div>
   );
 }
@@ -149,6 +199,221 @@ function State({ loading, error, empty, children }) {
   );
   if (empty) return <div style={{ padding: 40, textAlign: "center", color: C.muted }}>No data for the current filters.</div>;
   return children;
+}
+
+// Second-level page nav inside a tab that has multiple sub-pages (e.g.
+// Awareness's Funnel Overview / Mobilisers / KYC / Forecast) — matches the
+// reference design's .pbtn pill buttons.
+function PageNav({ pages, active, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 24 }}>
+      {pages.map((p) => {
+        const isActive = active === p.key;
+        return (
+          <div key={p.key} onClick={() => onChange(p.key)} style={{
+            background: isActive ? C.ink : C.white,
+            border: `1px solid ${isActive ? C.ink : C.line}`,
+            color: isActive ? C.white : C.inkSoft,
+            padding: "8px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 600,
+            cursor: "pointer",
+          }}>{p.label}</div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Simple horizontal-bar gauge — % filled, with a target tick mark. Used for
+// "female share vs 60% target" style panels; deliberately not a recharts
+// radial gauge, to keep this first pass to plain inline-style primitives.
+function Gauge({ label, pct, target }) {
+  const filled = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+  const belowTarget = target != null && pct != null && pct < target;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+        <span style={{ color: C.text, fontWeight: 600 }}>{label}</span>
+        <span style={{ color: belowTarget ? C.coral : C.green, fontWeight: 700 }}>{fmtPct(pct)}</span>
+      </div>
+      <div style={{ background: C.line, borderRadius: 6, height: 10, position: "relative" }}>
+        <div style={{ width: `${filled}%`, background: belowTarget ? C.coral : C.teal, height: "100%", borderRadius: 6 }} />
+        {target != null && (
+          <div title={`Target ${target}%`} style={{ position: "absolute", left: `${target}%`, top: -3, bottom: -3, width: 2, background: C.ink }} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Day × category heatmap — cell background intensity scales with value. Caps
+// to the top N categories by total value to keep the table readable; the
+// caller should surface how many were dropped rather than hiding it silently.
+function Heatmap({ data, xKey, yKey, valueKey, topN = 15 }) {
+  const totalsByY = {};
+  data.forEach((d) => { totalsByY[d[yKey]] = (totalsByY[d[yKey]] || 0) + (d[valueKey] || 0); });
+  const yValues = Object.keys(totalsByY).sort((a, b) => totalsByY[b] - totalsByY[a]).slice(0, topN);
+  const droppedCount = Object.keys(totalsByY).length - yValues.length;
+  const xValues = [...new Set(data.map((d) => d[xKey]))].sort();
+  const cellMap = {};
+  data.forEach((d) => { cellMap[`${d[yKey]}|${d[xKey]}`] = d[valueKey]; });
+  const max = Math.max(1, ...data.map((d) => d[valueKey] || 0));
+  return (
+    <div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 11 }}>
+          <thead>
+            <tr>
+              <th style={{ padding: 6 }}></th>
+              {xValues.map((x) => <th key={x} style={{ padding: 6, fontSize: 9.5, color: C.muted, whiteSpace: "nowrap", fontWeight: 600 }}>{x}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {yValues.map((y) => (
+              <tr key={y}>
+                <td style={{ padding: 6, fontSize: 10.5, color: C.ink, fontWeight: 600, whiteSpace: "nowrap" }}>{y}</td>
+                {xValues.map((x) => {
+                  const v = cellMap[`${y}|${x}`] || 0;
+                  const intensity = max ? v / max : 0;
+                  return (
+                    <td key={x} title={`${y} · ${x}: ${v}`} style={{
+                      padding: "6px 8px", textAlign: "center", minWidth: 30,
+                      background: v ? `rgba(46,110,115,${0.15 + 0.85 * intensity})` : C.cream,
+                      color: intensity > 0.5 ? C.white : C.text,
+                    }}>{v || ""}</td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {droppedCount > 0 && (
+        <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+          Showing the top {topN} by volume — {droppedCount} more not shown.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Numbered section divider, matching the reference design's "exec-band" style.
+function ExecBand({ num, title }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "26px 0 14px" }}>
+      <span style={{ width: 26, height: 26, borderRadius: "50%", background: C.ink, color: C.white, fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{num}</span>
+      <h3 style={{ fontSize: 16, fontWeight: 700, color: C.ink }}>{title}</h3>
+      <div style={{ flex: 1, height: 1, background: C.line }} />
+    </div>
+  );
+}
+
+// Left-accent-bordered callout card for auto-generated insights/recommendations.
+function Insight({ tone = "neutral", children }) {
+  const border = { pos: C.green, warn: C.gold, risk: C.coral, neutral: C.teal }[tone];
+  const icon = { pos: "✔", warn: "▲", risk: "✕", neutral: "◆" }[tone];
+  return (
+    <div style={{ display: "flex", gap: 12, background: C.white, border: `1px solid ${C.line}`, borderLeft: `4px solid ${border}`, borderRadius: 6, padding: "13px 16px", fontSize: 13, lineHeight: 1.5 }}>
+      <span style={{ fontWeight: 700, color: border, flexShrink: 0 }}>{icon}</span>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+// Horizontal funnel visualization — bar width proportional to the first
+// stage's count, worst single drop-off outlined.
+function FunnelViz({ stages }) {
+  const max = Math.max(1, ...stages.map((s) => s.count || 0));
+  let worstIdx = -1, worstLost = -1;
+  stages.forEach((s, i) => { if (i > 0 && (s.lost || 0) > worstLost) { worstLost = s.lost; worstIdx = i; } });
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {stages.map((s, i) => {
+        const pct = max ? Math.round((100 * (s.count || 0)) / max) : 0;
+        const worst = i === worstIdx;
+        return (
+          <div key={s.stage} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 110, flexShrink: 0, fontSize: 12.5, fontWeight: 700, color: C.ink, textAlign: "right" }}>{s.stage}</div>
+            <div style={{ flex: 1, position: "relative", height: 38, background: "#F4EFE3", borderRadius: 6, overflow: "hidden", outline: worst ? `2px solid ${C.coral}` : "none", outlineOffset: 1 }}>
+              <div style={{ width: `${pct}%`, height: "100%", display: "flex", alignItems: "center", paddingLeft: 12, color: C.white, fontWeight: 700, fontSize: 13.5, borderRadius: 6, background: worst ? C.coral : C.teal, transition: "width .3s" }}>
+                {fmtNum(s.count)}
+              </div>
+            </div>
+            <div style={{ width: 190, flexShrink: 0, fontSize: 11, color: C.muted }}>
+              {i === 0 ? "start" : `${s.pct_of_previous}% of previous · ${fmtNum(s.lost)} lost`}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── OKR tracker — leader-entered, persisted in localStorage only ──────────────
+const OKR_STORAGE_KEY = "eba_okrs";
+function loadOkrs() {
+  try { return JSON.parse(localStorage.getItem(OKR_STORAGE_KEY)) || []; } catch { return []; }
+}
+function saveOkrs(okrs) { localStorage.setItem(OKR_STORAGE_KEY, JSON.stringify(okrs)); }
+
+function OkrTracker() {
+  const [okrs, setOkrs] = useState(loadOkrs);
+  const [form, setForm] = useState({ objective: "", kr: "", target: "", current: "", status: "On Track" });
+  const inputStyle = { fontSize: 12, padding: "8px 10px", border: `1px solid ${C.line}`, borderRadius: 5 };
+  const statusColor = { "Completed": C.green, "On Track": "#A87A1E", "At Risk": "#A87A1E", "Off Track": C.coral };
+
+  function addOkr(e) {
+    e.preventDefault();
+    if (!form.objective.trim() || !form.kr.trim()) return;
+    const next = [...okrs, { ...form, id: Date.now() }];
+    setOkrs(next); saveOkrs(next);
+    setForm({ objective: "", kr: "", target: "", current: "", status: "On Track" });
+  }
+  function removeOkr(id) {
+    const next = okrs.filter((o) => o.id !== id);
+    setOkrs(next); saveOkrs(next);
+  }
+
+  return (
+    <Card title="This cycle's Objectives & Key Results" subtitle="Add your OKRs directly — saved locally in your browser, so they're here next time you open this dashboard" chip="EDITABLE — LEADER-ENTERED" chipTone="sim">
+      <form onSubmit={addOkr} style={{ display: "grid", gridTemplateColumns: "1.6fr 1.6fr 0.7fr 0.7fr 0.9fr auto", gap: 8, marginBottom: 16 }}>
+        <input placeholder="Objective" value={form.objective} onChange={(e) => setForm({ ...form, objective: e.target.value })} style={inputStyle} />
+        <input placeholder="Key Result" value={form.kr} onChange={(e) => setForm({ ...form, kr: e.target.value })} style={inputStyle} />
+        <input placeholder="Target" value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })} style={inputStyle} />
+        <input placeholder="Current" value={form.current} onChange={(e) => setForm({ ...form, current: e.target.value })} style={inputStyle} />
+        <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} style={inputStyle}>
+          <option>On Track</option><option>Completed</option><option>At Risk</option><option>Off Track</option>
+        </select>
+        <button type="submit" style={{ background: C.ink, color: C.white, border: "none", borderRadius: 5, fontSize: 12.5, fontWeight: 700, padding: "8px 16px", cursor: "pointer" }}>+ Add</button>
+      </form>
+      {okrs.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: C.muted, fontStyle: "italic", textAlign: "center", padding: 20, border: `1px dashed ${C.line}`, borderRadius: 6 }}>
+          No OKRs added yet — use the form above to add your first one.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {okrs.map((o) => {
+            const target = Number(o.target) || 0;
+            const current = Number(o.current) || 0;
+            const pct = target ? Math.min(100, Math.round((100 * current) / target)) : 0;
+            return (
+              <div key={o.id} style={{ display: "grid", gridTemplateColumns: "1.6fr 1.6fr 1fr 1fr auto", gap: 10, alignItems: "center", background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: "12px 14px", fontSize: 12.5 }}>
+                <div style={{ fontWeight: 700, color: C.ink, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.2 }}>{o.objective}</div>
+                <div style={{ color: C.text }}>{o.kr}</div>
+                <div>
+                  <div style={{ background: "#EEE6D4", borderRadius: 3, height: 6, overflow: "hidden" }}>
+                    <div style={{ width: `${pct}%`, height: "100%", borderRadius: 3, background: pct >= 100 ? C.green : pct >= 60 ? C.gold : C.coral }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{o.current || "—"} / {o.target || "—"}</div>
+                </div>
+                <span style={{ fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 10, background: "#FBF3E3", color: statusColor[o.status] || C.muted, justifySelf: "start", whiteSpace: "nowrap" }}>{o.status}</span>
+                <button onClick={() => removeOkr(o.id)} style={{ background: "none", border: "none", color: C.muted, fontSize: 16, cursor: "pointer", justifySelf: "end" }}>×</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
 }
 
 function DataTable({ columns, rows }) {
@@ -175,67 +440,134 @@ function DataTable({ columns, rows }) {
 }
 
 // ─── Executive Summary ───────────────────────────────────────────────────────
-function ExecutiveSummary({ filters }) {
+const RATE_TARGETS = {
+  eligibility_rate:  { good: 80, warn: 70, label: "Eligibility" },
+  mobilisation_rate: { good: 85, warn: 75, label: "Mobilisation" },
+  acquisition_rate:  { good: 80, warn: 70, label: "Acquisition" },
+  activation_rate:   { good: 90, warn: 80, label: "Activation" },
+  retention_rate:    { good: 85, warn: 75, label: "Retention" },
+};
+
+// Headline funnel visual scope matches the reference design: Registered
+// through Acquired (Activation/Retention get their own dedicated treatment
+// elsewhere), with "Assigned" relabelled "Randomised" (RCT terminology) —
+// display-only, the underlying data key is unchanged.
+function headlineFunnelStages(stages) {
+  return stages
+    .filter((s) => s.stage !== "Activated" && s.stage !== "Retained")
+    .map((s) => (s.stage === "Assigned" ? { ...s, stage: "Randomised" } : s));
+}
+
+function buildExecInsights(rates, stages, genderStages) {
+  const insights = [];
+  const drops = stages.slice(1)
+    .map((s, i) => ({ from: stages[i].stage, to: s.stage, lost: s.lost }))
+    .sort((a, b) => b.lost - a.lost);
+  if (drops[0]?.lost > 0) {
+    insights.push({ tone: "risk", text: <><b>{fmtNum(drops[0].lost)} youth lost</b> between {drops[0].from} and {drops[0].to} — the largest single drop-off in the funnel.</> });
+  }
+  Object.entries(RATE_TARGETS).forEach(([key, { good, warn, label }]) => {
+    const v = rates[key];
+    if (v == null) return;
+    if (v >= good) insights.push({ tone: "pos", text: <><b>{label} rate is {v}%</b> — at or above the {good}% target.</> });
+    else if (v < warn) insights.push({ tone: "risk", text: <><b>{label} rate is {v}%</b> — below the {warn}% warning threshold (target {good}%).</> });
+    else insights.push({ tone: "warn", text: <><b>{label} rate is {v}%</b> — between the {warn}% warning line and the {good}% target.</> });
+  });
+  (genderStages || []).forEach((s) => {
+    if (s.pct_female != null && Math.abs(s.pct_female - 60) > 5) {
+      const dir = s.pct_female < 60 ? "below" : "above";
+      insights.push({ tone: s.pct_female < 60 ? "warn" : "pos", text: <><b>{s.stage} female share is {fmtPct(s.pct_female)}</b> — {dir} the 60% target by {Math.abs(Math.round((s.pct_female - 60) * 10) / 10)}pp.</> });
+    }
+  });
+  return insights;
+}
+
+function buildExecRecommendations(insights) {
+  const risks = insights.filter((i) => i.tone === "risk" || i.tone === "warn");
+  if (!risks.length) return ["No rate or gender gap is currently flagged — maintain current pace and mobiliser mix."];
+  return risks.map((i, idx) => <span key={idx}>Investigate and address: {i.text}</span>);
+}
+
+function ExecutiveSummaryTab({ filters }) {
+  const [page, setPage] = useState("summary");
+  return (
+    <div>
+      <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Executive Summary</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
+        The whole Take Off recruitment funnel on one screen — are we on track, where are youth
+        dropping off, and where should we act. Read top-to-bottom: Awareness → Mobilisation →
+        Acquisition. Everything below responds to the filters above.
+      </p>
+      <PageNav
+        active={page}
+        onChange={setPage}
+        pages={[{ key: "summary", label: "Summary" }, { key: "cohort", label: "Cohort Comparison" }]}
+      />
+      {page === "summary" && <ExecutiveSummaryPage filters={filters} />}
+      {page === "cohort" && <CohortComparisonPage />}
+    </div>
+  );
+}
+
+function ExecutiveSummaryPage({ filters }) {
   const q = buildParams(filters);
   const kpis = useApi(`/api/overview/kpis${q}`);
   const funnel = useApi(`/api/overview/funnel${q}`);
+  const stageProgress = useApi(`/api/overview/stage-progress${q}`);
   const gender = useApi(`/api/overview/gender${q}`);
   const barriers = useApi(`/api/overview/eligibility-barriers${q}`);
-  const cohorts = useApi(`/api/overview/cohort-comparison`);
 
   const rates = kpis.data?.rates || {};
   const stages = funnel.data?.stages || [];
+  const genderStages = gender.data?.stages || [];
+  const headlineStages = headlineFunnelStages(stages);
+  const registeredBase = stages[0]?.count || 0;
+
+  const dropoffs = stages.slice(1)
+    .map((s, i) => ({ from_stage: stages[i].stage, to_stage: s.stage, lost: s.lost }))
+    .sort((a, b) => b.lost - a.lost)
+    .slice(0, 5);
+
+  const insights = buildExecInsights(rates, stages, genderStages);
+  const recommendations = buildExecRecommendations(insights);
 
   return (
     <div>
-      <Card title="Executive conversion metrics" subtitle="Headline rates across the Take Off recruitment funnel">
-        <State loading={kpis.loading} error={kpis.error} empty={!kpis.loading && !kpis.error && Object.keys(rates).length === 0}>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <KpiTile label="Eligibility" value={fmtPct(rates.eligibility_rate)} sub="Eligible / Interested" />
-            <KpiTile label="Mobilisation" value={fmtPct(rates.mobilisation_rate)} sub="Confirmed / Reached" />
-            <KpiTile label="Acquisition" value={fmtPct(rates.acquisition_rate)} sub="Acquired / Confirmed" />
-            <KpiTile label="Activation" value={fmtPct(rates.activation_rate)} sub="Activated / Acquired" />
-            <KpiTile label="Retention" value={fmtPct(rates.retention_rate)} sub="Retained / Activated" />
-          </div>
-        </State>
-      </Card>
+      <ExecBand num={1} title="Executive conversion metrics" />
+      <State loading={kpis.loading} error={kpis.error} empty={!kpis.loading && !kpis.error && Object.keys(rates).length === 0}>
+        <Grid cols={4}>
+          <KpiTile label="Eligibility" value={fmtPct(rates.eligibility_rate)} sub="Eligible / Interested" />
+          <KpiTile label="Mobilisation" value={fmtPct(rates.mobilisation_rate)} sub="Confirmed / Reached" />
+          <KpiTile label="Acquisition" value={fmtPct(rates.acquisition_rate)} sub="Acquired / Confirmed" />
+          <KpiTile label="Activation" value={fmtPct(rates.activation_rate)} sub="Activated / Acquired" />
+          <KpiTile label="Retention" value={fmtPct(rates.retention_rate)} sub="Retained / Activated" />
+        </Grid>
+      </State>
 
-      <Card title="Overall recruitment funnel" subtitle="Registered → … → Retained. % is of the previous stage." chip="Funnel">
-        <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
-          <ResponsiveContainer width="100%" height={320}>
-            <BarChart data={stages} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-              <XAxis dataKey="stage" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" height={60} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Bar dataKey="count" fill={C.teal} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </State>
-      </Card>
+      <ExecBand num={2} title="Progress on target — by stage" />
+      <State loading={stageProgress.loading} error={stageProgress.error} empty={!stageProgress.loading && (stageProgress.data?.stages || []).length === 0}>
+        <Grid cols={3}>
+          {(stageProgress.data?.stages || []).map((s) => (
+            <KpiTile
+              key={s.stage}
+              label={s.stage}
+              value={fmtNum(s.count)}
+              sub={s.target ? `${fmtPct(s.pct_of_target)} of ${fmtNum(s.target)} target${s.target_is_implied ? " (implied)" : ""}` : "no target set"}
+              tone={s.target_is_implied ? "sim" : "real"}
+              tag={s.target_is_implied ? "IMPLIED" : "REAL"}
+            />
+          ))}
+        </Grid>
+      </State>
 
-      <Card title="Gender performance by stage" subtitle="Female share of each stage vs the 60% target">
-        <State loading={gender.loading} error={gender.error} empty={!gender.loading && (gender.data?.stages || []).length === 0}>
-          <DataTable
-            columns={[
-              { key: "stage", label: "Stage" },
-              { key: "female", label: "Female", align: "right" },
-              { key: "male", label: "Male", align: "right" },
-              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
-              { key: "target_female", label: "Target", align: "right", render: (v) => fmtPct(v) },
-            ]}
-            rows={gender.data?.stages || []}
-          />
-        </State>
-      </Card>
-
-      <Card title="Why reached youth do not qualify" subtitle="Eligibility barriers (a youth can fail more than one)">
+      <ExecBand num={3} title="What is locking youth out — eligibility barriers" />
+      <Card title="Why reached youth do not qualify" subtitle="Among youth who did not meet the eligibility rule, which criteria they failed (a youth can fail more than one)" chip="REAL">
         <State loading={barriers.loading} error={barriers.error} empty={!barriers.loading && (barriers.data?.barriers || []).length === 0}>
-          <ResponsiveContainer width="100%" height={260}>
+          <ResponsiveContainer width="100%" height={240}>
             <BarChart data={barriers.data?.barriers || []} layout="vertical" margin={{ left: 40 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
               <XAxis type="number" tick={{ fontSize: 11 }} />
-              <YAxis type="category" dataKey="barrier" tick={{ fontSize: 11 }} width={140} />
+              <YAxis type="category" dataKey="barrier" tick={{ fontSize: 11 }} width={150} />
               <Tooltip />
               <Bar dataKey="count" fill={C.coral} radius={[0, 4, 4, 0]} />
             </BarChart>
@@ -243,17 +575,271 @@ function ExecutiveSummary({ filters }) {
         </State>
       </Card>
 
-      <Card title="Cohort comparison" subtitle="BC2 → BC5 side by side">
-        <State loading={cohorts.loading} error={cohorts.error} empty={!cohorts.loading && (cohorts.data?.cohorts || []).length === 0}>
+      <ExecBand num={4} title="Overall recruitment funnel" />
+      <Card title="Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired" subtitle="Each stage shows count and % of the previous stage. The largest single drop-off is outlined." chip="REAL">
+        <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
+          <FunnelViz stages={headlineStages} />
+        </State>
+      </Card>
+
+      <ExecBand num="4b" title="Attrition through the funnel" />
+      <Card title="Retention against Registered" subtitle="Every stage measured against the same denominator — total Registered — so cumulative attrition reads at a glance" chip="DERIVED">
+        <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
+          <DataTable
+            columns={[
+              { key: "stage", label: "Stage" },
+              { key: "count", label: "Count", align: "right", render: (v) => fmtNum(v) },
+              { key: "pct_of_base", label: "% of Registered", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={stages.map((s) => ({ stage: s.stage, count: s.count, pct_of_base: registeredBase ? Math.round((1000 * s.count) / registeredBase) / 10 : null }))}
+          />
+          <p style={{ fontSize: 11.5, color: C.muted, marginTop: 10 }}>
+            A true treatment-vs-control split isn't reliably trackable across every stage in the
+            live data yet (RCT assignment is only captured for a small subset at registration) —
+            this uses total Registered as the fixed denominator instead.
+          </p>
+        </State>
+      </Card>
+
+      <ExecBand num={5} title="Gender performance summary" />
+      <Card title="Male vs female across the funnel" subtitle="Share of each stage that is female against the 60% target. Gaps over 5pp are flagged." chip="REAL">
+        <State loading={gender.loading} error={gender.error} empty={!gender.loading && genderStages.length === 0}>
+          <DataTable
+            columns={[
+              { key: "stage", label: "Stage" },
+              { key: "female", label: "Female", align: "right", render: (v) => fmtNum(v) },
+              { key: "male", label: "Male", align: "right", render: (v) => fmtNum(v) },
+              {
+                key: "pct_female", label: "% Female", align: "right",
+                render: (v) => <span style={{ color: v != null && Math.abs(v - 60) > 5 ? C.coral : "inherit", fontWeight: v != null && Math.abs(v - 60) > 5 ? 700 : 400 }}>{fmtPct(v)}</span>,
+              },
+              { key: "target_female", label: "Target", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={genderStages}
+          />
+        </State>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 4 }}>
+        <div>
+          <ExecBand num={6} title="Drop-off analysis" />
+          <Card title="Where we lose the most youth" chip="DERIVED">
+            <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && dropoffs.length === 0}>
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={dropoffs} layout="vertical" margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                  <XAxis type="number" tick={{ fontSize: 11 }} />
+                  <YAxis type="category" dataKey="to_stage" tick={{ fontSize: 10.5 }} width={90} />
+                  <Tooltip formatter={(v, _n, p) => [`${fmtNum(v)} lost`, `${p.payload.from_stage} → ${p.payload.to_stage}`]} />
+                  <Bar dataKey="lost" fill={C.coral} radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </State>
+          </Card>
+        </div>
+        <div>
+          <ExecBand num={7} title="Executive insights" />
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {insights.map((ins, i) => <Insight key={i} tone={ins.tone}>{ins.text}</Insight>)}
+          </div>
+        </div>
+      </div>
+
+      <ExecBand num={8} title="Recommended actions" />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 22 }}>
+        {recommendations.map((r, i) => <Insight key={i} tone="neutral">{r}</Insight>)}
+      </div>
+
+      <ExecBand num="+" title="OKR tracker" />
+      <OkrTracker />
+    </div>
+  );
+}
+
+function CohortComparisonPage() {
+  const { data, loading, error } = useApi(`/api/overview/cohort-comparison`);
+  const awareness = data?.awareness || [];
+  const mobilisation = data?.mobilisation || [];
+  const acquisition = data?.acquisition || [];
+
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+        Cohort comparison across the whole funnel — Awareness, Mobilisation and Acquisition —
+        for every cycle in the live data (BOOTCAMP_2 through the current cycle).
+      </p>
+      <State loading={loading} error={error} empty={!loading && !awareness.length && !mobilisation.length && !acquisition.length}>
+        <ExecBand num="A" title="Awareness by cohort" />
+        <Card chip="REAL">
           <DataTable
             columns={[
               { key: "cohort", label: "Cohort" },
-              { key: "eligible", label: "Eligible", align: "right" },
-              { key: "acquired", label: "Acquired", align: "right" },
+              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+              { key: "eligibility_rate", label: "Eligibility rate", align: "right", render: (v) => fmtPct(v) },
               { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
-              { key: "overall_conversion", label: "Conversion", align: "right", render: (v) => fmtPct(v) },
+              { key: "progress_pct", label: "Progress on target", align: "right", render: (v) => fmtPct(v) },
+              { key: "parishes", label: "# Parishes", align: "right", render: (v) => fmtNum(v) },
             ]}
-            rows={cohorts.data?.cohorts || []}
+            rows={awareness}
+          />
+        </Card>
+
+        <ExecBand num="M" title="Mobilisation by cohort" />
+        <Card chip="REAL">
+          <DataTable
+            columns={[
+              { key: "cohort", label: "Cohort" },
+              { key: "assigned", label: "# Assigned", align: "right", render: (v) => fmtNum(v) },
+              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "progress_pct", label: "Progress on target", align: "right", render: (v) => fmtPct(v) },
+              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={mobilisation}
+          />
+        </Card>
+
+        <ExecBand num="Q" title="Acquisition by cohort" />
+        <Card chip="REAL">
+          <DataTable
+            columns={[
+              { key: "cohort", label: "Cohort" },
+              { key: "acquired", label: "# Acquired", align: "right", render: (v) => fmtNum(v) },
+              { key: "acquisition_rate", label: "Acquisition rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "overall_conversion", label: "Overall conversion", align: "right", render: (v) => fmtPct(v) },
+              { key: "progress_pct", label: "Progress on target", align: "right", render: (v) => fmtPct(v) },
+              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={acquisition}
+          />
+        </Card>
+      </State>
+    </div>
+  );
+}
+
+// ─── Recruitment tabs ──────────────────────────────────────────────────────────
+
+// Awareness — the top of the funnel: 4 sub-pages (Funnel Overview, Mobilisers,
+// KYC/Youth Profile, Forecast), matching the design's multi-page layout.
+function AwarenessTab({ filters }) {
+  const [page, setPage] = useState("overview");
+  return (
+    <div>
+      <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Awareness</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
+        The top of the recruitment funnel: youth reached at awareness events, how many express
+        training interest, and how many are eligible — by district, parish and mobiliser.
+        Target: 60% of eligible youth female.
+      </p>
+      <PageNav
+        active={page}
+        onChange={setPage}
+        pages={[
+          { key: "overview", label: "Funnel Overview" },
+          { key: "mobilisers", label: "Mobilisers" },
+          { key: "kyc", label: "KYC / Youth Profile" },
+          { key: "forecast", label: "Forecast" },
+        ]}
+      />
+      {page === "overview" && <AwarenessOverviewPage filters={filters} />}
+      {page === "mobilisers" && <AwarenessMobilisersPage filters={filters} />}
+      {page === "kyc" && <AwarenessKycPage filters={filters} />}
+      {page === "forecast" && <AwarenessForecastPage filters={filters} />}
+    </div>
+  );
+}
+
+function AwarenessOverviewPage({ filters }) {
+  const total = useApi(`/api/recruitment/awareness${buildParams(filters)}`);
+  const female = useApi(`/api/recruitment/awareness${buildParamsOverride(filters, { gender: "Female" })}`);
+  const male = useApi(`/api/recruitment/awareness${buildParamsOverride(filters, { gender: "Male" })}`);
+  const parish = useApi(`/api/recruitment/awareness-parish${buildParams(filters)}`);
+
+  const rows = total.data?.by_district || [];
+  const reached = sumBy(rows, "registered");
+  const interested = sumBy(rows, "interested");
+  const eligible = sumBy(rows, "eligible");
+  const target = sumBy(rows, "target");
+  const eligibilityRate = interested ? Math.round((1000 * eligible) / interested) / 10 : null;
+
+  const fRows = female.data?.by_district || [];
+  const mRows = male.data?.by_district || [];
+  const stageStats = [
+    { key: "registered", label: "Reached" },
+    { key: "interested", label: "Interested" },
+    { key: "eligible", label: "Eligible" },
+  ].map(({ key, label }) => {
+    const f = sumBy(fRows, key), m = sumBy(mRows, key);
+    const t = f + m;
+    return { stage: label, female: f, male: m, pct_female: t ? Math.round((1000 * f) / t) / 10 : null };
+  });
+  const genderLoading = total.loading || female.loading || male.loading;
+  const genderError = total.error || female.error || male.error;
+
+  return (
+    <div>
+      <Grid cols={4}>
+        <KpiTile label="Reached" value={fmtNum(reached)} />
+        <KpiTile label="Interested" value={fmtNum(interested)} />
+        <KpiTile label="Eligible" value={fmtNum(eligible)} />
+        <KpiTile label="Registration target" value={fmtNum(target)} />
+        <KpiTile label="Eligibility rate" value={fmtPct(eligibilityRate)} sub="Eligible / Interested" />
+      </Grid>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title="Awareness funnel — Reached → Interested → Eligible" subtitle="Female vs male at each stage" chip="REAL">
+          <State loading={genderLoading} error={genderError} empty={!genderLoading && stageStats.every((s) => !s.female && !s.male)}>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={stageStats} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis dataKey="stage" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip /><Legend />
+                <Bar dataKey="female" name="Female" fill={C.coral} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="male" name="Male" fill={C.teal} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+        <Card title="Female representation vs 60% target" subtitle="Share of each funnel stage that is female" chip="DERIVED">
+          <State loading={genderLoading} error={genderError} empty={!genderLoading && stageStats.every((s) => s.pct_female == null)}>
+            <div style={{ paddingTop: 8 }}>
+              {stageStats.map((s) => <Gauge key={s.stage} label={s.stage} pct={s.pct_female} target={60} />)}
+            </div>
+          </State>
+        </Card>
+      </div>
+
+      <Card title="District comparison" subtitle="Reached, interested, eligible, target and female share by district" chip="REAL">
+        <State loading={total.loading} error={total.error} empty={!total.loading && rows.length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "registered", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
+              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={rows}
+          />
+        </State>
+      </Card>
+
+      <Card title="Category detail — by parish" subtitle="Reached, interested, target, eligible and % female per parish" chip="REAL">
+        <State loading={parish.loading} error={parish.error} empty={!parish.loading && (parish.data?.parishes || []).length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "parish", label: "Parish" },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
+              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={parish.data?.parishes || []}
           />
         </State>
       </Card>
@@ -261,12 +847,162 @@ function ExecutiveSummary({ filters }) {
   );
 }
 
-// ─── Recruitment tabs ──────────────────────────────────────────────────────────
+function AwarenessMobilisersPage({ filters }) {
+  const { data, loading, error } = useApi(`/api/recruitment/awareness-mobilisers${buildParams(filters)}`);
+  const rows = data?.mobilisers || [];
+  return (
+    <Card title="Performance by mobiliser" subtitle="Who is reaching youth, and whether their reach converts to eligible — and to eligible female" chip="PII" chipTone="pii">
+      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
+        <DataTable
+          columns={[
+            { key: "mobiliser_name", label: "Mobiliser" },
+            { key: "district", label: "District" },
+            { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+            { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+            { key: "eligible_female", label: "Eligible (F)", align: "right", render: (v) => fmtNum(v) },
+            { key: "pct_eligible_female", label: "% Eligible Female", align: "right", render: (v) => fmtPct(v) },
+          ]}
+          rows={rows}
+        />
+      </State>
+    </Card>
+  );
+}
+
+function AwarenessKycPage({ filters }) {
+  const { data, loading, error } = useApi(`/api/recruitment/awareness-kyc${buildParams(filters)}`);
+  const demo = data?.demographics || {};
+  const bizByGenderDistrict = data?.business?.by_gender_district || [];
+
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+        Who the eligible youth are and what locks others out — persona of the eligible pool,
+        current activity, why they enrol, and how they heard about us. Eligibility rule:
+        interested AND age 18–30 AND education P5–S3 AND income ≤ UGX 30,000.
+      </p>
+
+      <Card title="Eligible youth profile" subtitle="Persona snapshot of the eligible pool" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && !demo.eligible_count}>
+          <Grid cols={5}>
+            <KpiTile label="Eligible youth" value={fmtNum(demo.eligible_count)} />
+            <KpiTile label="% Female" value={fmtPct(demo.pct_female)} />
+            <KpiTile label="Average age" value={demo.avg_age ?? "—"} />
+            <KpiTile label="Already own a business" value={fmtNum(demo.owns_business_count)} />
+            <KpiTile label="Duplicate records" value={fmtNum(demo.duplicate_count)} sub={fmtPct(demo.duplicate_rate)} />
+          </Grid>
+        </State>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title="What youth are currently doing" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && (data?.activity || []).length === 0}>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={data?.activity || []} layout="vertical" margin={{ left: 40 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="activity" tick={{ fontSize: 10 }} width={110} />
+                <Tooltip />
+                <Bar dataKey="count" fill={C.teal} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+        <Card title="Why youth are enrolling" subtitle="Value-proposition alignment" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && (data?.reasons || []).length === 0}>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={data?.reasons || []} layout="vertical" margin={{ left: 40 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="reason" tick={{ fontSize: 9.5 }} width={150} />
+                <Tooltip />
+                <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title="Who already owns a business" subtitle="Share of eligible youth, by gender and district" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && bizByGenderDistrict.length === 0}>
+            <DataTable
+              columns={[
+                { key: "district", label: "District" },
+                { key: "gender", label: "Gender" },
+                { key: "owners", label: "Owners", align: "right", render: (v) => fmtNum(v) },
+                { key: "total", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+                { key: "pct_owns_business", label: "% Owning", align: "right", render: (v) => fmtPct(v) },
+              ]}
+              rows={bizByGenderDistrict}
+            />
+          </State>
+        </Card>
+        <Card title="Why they're enrolling — owners vs non-owners" subtitle="Top reasons given, split by business ownership" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && (data?.business?.reasons_by_ownership || []).length === 0}>
+            <DataTable
+              columns={[
+                { key: "owns_business", label: "Owns business", render: (v) => (v ? "Yes" : "No") },
+                { key: "reason", label: "Reason" },
+                { key: "count", label: "Count", align: "right", render: (v) => fmtNum(v) },
+              ]}
+              rows={data?.business?.reasons_by_ownership || []}
+            />
+          </State>
+        </Card>
+      </div>
+
+      <Card title="Recruitment channels — how they heard about us" subtitle="Eligible vs ineligible split by channel" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && (data?.channels || []).length === 0}>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={data?.channels || []} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="channel" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={70} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip /><Legend />
+              <Bar dataKey="eligible" name="Eligible" fill={C.green} radius={[4, 4, 0, 0]} />
+              <Bar dataKey="ineligible" name="Ineligible" fill={C.coral} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+    </div>
+  );
+}
+
+function AwarenessForecastPage({ filters }) {
+  const { data, loading, error } = useApi(`/api/recruitment/awareness-forecast${buildParams(filters)}`);
+  const daily = data?.daily || [];
+  return (
+    <div>
+      <Grid cols={4}>
+        <KpiTile label="Registered to date" value={fmtNum(data?.registered_to_date)} />
+        <KpiTile label="Registration target" value={fmtNum(data?.target)} />
+        <KpiTile label="Avg daily rate" value={fmtNum(data?.avg_daily_rate)} />
+        <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub="At current pace" />
+      </Grid>
+      <Card title="Daily registration trend" subtitle="Registered youth per day" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Line type="monotone" dataKey="registered" stroke={C.teal} strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+    </div>
+  );
+}
+
 function DistrictBarTab({ endpoint, filters, title, subtitle, bars }) {
   const { data, loading, error } = useApi(`${endpoint}${buildParams(filters)}`);
   const rows = data?.by_district || [];
   return (
-    <Card title={title} subtitle={subtitle}>
+    <Card title={title} subtitle={subtitle} chip="REAL">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
         <ResponsiveContainer width="100%" height={320}>
           <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
@@ -282,20 +1018,424 @@ function DistrictBarTab({ endpoint, filters, title, subtitle, bars }) {
   );
 }
 
-function MobilisationTab({ filters }) {
-  const { data, loading, error } = useApi(`/api/recruitment/mobilisation${buildParams(filters)}`);
+function AcquisitionTab({ filters }) {
+  const [page, setPage] = useState("overview");
   return (
-    <Card title="Mobilisation" subtitle="Assigned → Reached → Confirmed">
-      <State loading={loading} error={error} empty={!loading && !data}>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <KpiTile label="Assigned" value={fmtNum(data?.assigned)} />
-          <KpiTile label="Reached" value={fmtNum(data?.reached)} />
-          <KpiTile label="Confirmed" value={fmtNum(data?.confirmed)} />
-          <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} />
-          <KpiTile label="Mobilisation rate" value={fmtPct(data?.mobilisation_rate)} />
+    <div>
+      <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Acquisition</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
+        Verified → acquired at Karibu Day arrival, by district and by venue.
+      </p>
+      <PageNav
+        active={page}
+        onChange={setPage}
+        pages={[
+          { key: "overview", label: "Overview" },
+          { key: "arrival", label: "Arrival & Verification" },
+        ]}
+      />
+      {page === "overview" && (
+        <DistrictBarTab endpoint="/api/recruitment/acquisition" filters={filters} title="Acquisition" subtitle="Verified → Acquired by district" bars={[{ key: "verified", label: "Verified" }, { key: "acquired", label: "Acquired" }]} />
+      )}
+      {page === "arrival" && <AcquisitionArrivalPage filters={filters} />}
+    </div>
+  );
+}
+
+function AcquisitionArrivalPage({ filters }) {
+  const { data, loading, error } = useApi(`/api/recruitment/acquisition-arrival${buildParams(filters)}`);
+  const rows = data?.by_venue || [];
+  const venueRows = rows.map((r) => ({
+    venue: r.venue, district: r.district, verified: r.verified, acquired: r.acquired,
+    rate: r.acquisition_rate, category: categorizeVenue(r.acquisition_rate),
+  }));
+  const totalVerified = rows.reduce((a, r) => a + (r.verified || 0), 0);
+  const totalAcquired = rows.reduce((a, r) => a + (r.acquired || 0), 0);
+  const totalAcquiredFemale = rows.reduce((a, r) => a + (r.acquired_female || 0), 0);
+  const pctFemaleAcquired = totalAcquired ? Math.round((1000 * totalAcquiredFemale) / totalAcquired) / 10 : null;
+  const acqRate = totalVerified ? Math.round((1000 * totalAcquired) / totalVerified) / 10 : null;
+
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+        Arrival & verification at Karibu Day, at venue grain — the same live SITE_FUNNEL_METRICS mart as
+        the Overview page above, broken out by venue instead of district.
+      </p>
+      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
+        <Grid cols={4}>
+          <KpiTile label="Verified" value={fmtNum(totalVerified)} tag="REAL" />
+          <KpiTile label="Acquired (waiver)" value={fmtNum(totalAcquired)} sub="verified & waiver signed" tag="REAL" />
+          <KpiTile label="Acquisition rate" value={fmtPct(acqRate)} sub="acquired ÷ verified" tag="REAL" />
+          <KpiTile label="Acquired female" value={fmtNum(totalAcquiredFemale)} sub={`${fmtPct(pctFemaleAcquired)} of acquired · target 60% (verified has no gender split in the live feed)`} tag="REAL" />
+        </Grid>
+        <ExecBand num="◆" title="Performance categorisation — venues vs target (filters)" />
+        <VenueCategorisation
+          venueRows={venueRows}
+          metricA={{ key: "verified", label: "Verified" }}
+          metricB={{ key: "acquired", label: "Acquired" }}
+          rateFraction="acquired ÷ verified"
+        />
+      </State>
+    </div>
+  );
+}
+
+function MobilisationTab({ filters }) {
+  const [page, setPage] = useState("funnel");
+  return (
+    <div>
+      <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Mobilisation</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
+        Treatment assigned → reached at mobilisation → attendance confirmed. Reach rate and
+        mobilisation rate, the funnel by day and venue, daily pace against target, and the
+        randomised control arm.
+      </p>
+      <PageNav
+        active={page}
+        onChange={setPage}
+        pages={[
+          { key: "funnel", label: "Recruitment Funnel" },
+          { key: "forecast", label: "Mobilisation Forecasts" },
+          { key: "mobilisers", label: "Mobiliser Performance" },
+          { key: "control", label: "Control Mobilisation Calls" },
+          { key: "insights", label: "Call Centre Insights" },
+        ]}
+      />
+      {page === "funnel" && <MobRecruitmentFunnelPage filters={filters} />}
+      {page === "forecast" && <MobForecastsPage filters={filters} />}
+      {page === "mobilisers" && <MobPerformancePage filters={filters} />}
+      {page === "control" && <MobControlCallsPage />}
+      {page === "insights" && <MobCallCentreInsightsPage />}
+    </div>
+  );
+}
+
+function MobRecruitmentFunnelPage({ filters }) {
+  const mob = useApi(`/api/recruitment/mobilisation${buildParams(filters)}`);
+  const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
+  const data = mob.data;
+  const cells = heatmap.data?.cells || [];
+
+  const venueTotals = {};
+  cells.forEach((c) => {
+    const v = venueTotals[c.venue] || { reached: 0, confirmed: 0 };
+    v.reached += c.reached || 0;
+    v.confirmed += c.confirmed || 0;
+    venueTotals[c.venue] = v;
+  });
+  const venueRows = Object.entries(venueTotals).map(([venue, v]) => {
+    const rate = v.reached ? Math.round((1000 * v.confirmed) / v.reached) / 10 : null;
+    const category = categorizeVenue(rate);
+    return { venue, ...v, rate, category };
+  }).sort((a, b) => b.confirmed - a.confirmed);
+
+  const busiestDay = cells.reduce((best, c) => {
+    const day = best[c.event_date] || 0;
+    best[c.event_date] = day + (c.confirmed || 0);
+    return best;
+  }, {});
+  const busiestDayEntry = Object.entries(busiestDay).sort((a, b) => b[1] - a[1])[0];
+  const topVenue = venueRows[0];
+
+  return (
+    <div>
+      <ExecBand num="◆" title="Progress on target" />
+      <State loading={mob.loading} error={mob.error} empty={!mob.loading && !data}>
+        <Grid cols={4}>
+          <KpiTile label="Assigned to treatment" value={fmtNum(data?.assigned)} tag="REAL" />
+          <KpiTile label="Youth reached" value={fmtNum(data?.reached)} sub={`of ${fmtNum(data?.four_week?.assigned)} assigned (4-week cycle)`} tag="REAL" />
+          <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} sub="reached ÷ assigned (4-week cycle)" tag="REAL" />
+          <KpiTile label="Youth confirmed" value={fmtNum(data?.confirmed)} sub={`of ${fmtNum(data?.assigned)} assigned`} tag="REAL" />
+          <KpiTile label="Confirmed female" value={fmtNum(data?.confirmed_female)} sub={`${fmtPct(data?.confirmed_female_pct)} of confirmed · target 60%`} tag="REAL" />
+          <KpiTile label="Mobilisation rate" value={fmtPct(data?.mobilisation_rate)} sub="confirmed ÷ assigned to treatment" tag="REAL" />
+          <KpiTile label="Progress on target" value={fmtPct(data?.progress_pct)} sub={`confirmed ÷ target (${fmtNum(data?.target)})`} tag="REAL" />
+        </Grid>
+        <Card title="4-week vs 2.5-week cycle" subtitle="The 2.5-week pilot subcounties are auto-confirmed by policy — blending them into one rate hides the real call-center conversion" chip="REAL">
+          <DataTable
+            columns={[
+              { key: "label", label: "Cycle" },
+              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={[
+              { label: "4-week cycle", ...data?.four_week },
+              { label: "2.5-week cycle (auto-confirm)", ...data?.two_half_week },
+              { label: "Overall (blended)", assigned: data?.assigned, reached: data?.reached, confirmed: data?.confirmed, reach_rate: data?.reach_rate, mobilisation_rate: data?.mobilisation_rate },
+            ]}
+          />
+        </Card>
+      </State>
+
+      <Card title="Heat map — unique calls & confirmed youth, by day" subtitle="Colour intensity = confirmed youth that day. Read across each row to spot high-effort / low-yield venues." chip="REAL">
+        <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && cells.length === 0}>
+          <Heatmap data={cells} xKey="event_date" yKey="venue" valueKey="confirmed" />
+        </State>
+      </Card>
+
+      <ExecBand num="!" title="Insights" />
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && cells.length === 0}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {busiestDayEntry && (
+            <Insight tone="neutral"><b>{busiestDayEntry[0]}</b> was the highest-yield day, with {fmtNum(busiestDayEntry[1])} youth confirmed across all venues.</Insight>
+          )}
+          {topVenue && (
+            <Insight tone="pos"><b>{topVenue.venue}</b> confirmed the most youth overall ({fmtNum(topVenue.confirmed)}, {fmtPct(topVenue.rate)} of reached).</Insight>
+          )}
+          {venueRows.filter((v) => v.category === "High Risk").length > 0 && (
+            <Insight tone="risk"><b>{venueRows.filter((v) => v.category === "High Risk").length} venue(s)</b> are confirming fewer than 75% of reached youth — see the table below.</Insight>
+          )}
         </div>
       </State>
+
+      <ExecBand num="◆" title="Performance categorisation — venues vs target (filters)" />
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && venueRows.length === 0}>
+        <VenueCategorisation
+          venueRows={venueRows}
+          metricA={{ key: "reached", label: "Reached" }}
+          metricB={{ key: "confirmed", label: "Confirmed" }}
+          rateFraction="confirmed ÷ reached"
+        />
+      </State>
+    </div>
+  );
+}
+
+// Categories mirror the reference design's venue risk bands, but the rate is
+// confirmed ÷ reached (call-center conversion) rather than confirmed ÷
+// assigned — no live table carries a per-venue assigned/target figure (see
+// tables.py's DAILY_ACQUISITION_SUMMARY note), so reached is the closest real
+// per-venue denominator available.
+const VENUE_CATEGORY_ORDER = ["Target Achieved", "On Track", "Low Risk", "High Risk", "Not Started"];
+const VENUE_CATEGORY_COLOR = { "Target Achieved": C.green, "On Track": C.teal, "Low Risk": C.gold, "High Risk": C.coral, "Not Started": C.muted };
+function categorizeVenue(rate) {
+  if (rate == null) return "Not Started";
+  if (rate >= 95) return "Target Achieved";
+  if (rate >= 85) return "On Track";
+  if (rate >= 75) return "Low Risk";
+  return "High Risk";
+}
+
+const PAGER_BTN = { fontSize: 11, fontWeight: 700, padding: "5px 10px", border: `1px solid ${C.line}`, borderRadius: 4, background: C.white, color: C.inkSoft, cursor: "pointer" };
+
+function VenuePagedTable({ title, subtitle, chip, chipTone, rows, metricA, metricB }) {
+  const [page, setPage] = useState(0);
+  const pageSize = 5;
+  const maxPage = Math.max(0, Math.ceil(rows.length / pageSize) - 1);
+  const clamped = Math.min(page, maxPage);
+  const slice = rows.slice(clamped * pageSize, clamped * pageSize + pageSize);
+  return (
+    <Card title={title} subtitle={subtitle} chip={chip} chipTone={chipTone}>
+      <DataTable
+        columns={[
+          { key: "venue", label: "Venue" },
+          { key: metricA.key, label: metricA.label, align: "right", render: (v) => fmtNum(v) },
+          { key: metricB.key, label: metricB.label, align: "right", render: (v) => fmtNum(v) },
+          { key: "rate", label: "Rate", align: "right", render: (v) => fmtPct(v) },
+          { key: "category", label: "Status", render: (v) => <span style={{ color: VENUE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+        ]}
+        rows={slice}
+      />
+      {rows.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
+          <span>{clamped * pageSize + 1}–{Math.min(rows.length, clamped * pageSize + pageSize)} of {rows.length}</span>
+          <span style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => setPage(Math.max(0, clamped - 1))} disabled={clamped === 0} style={{ ...PAGER_BTN, opacity: clamped === 0 ? 0.5 : 1 }}>‹ Prev</button>
+            <button onClick={() => setPage(Math.min(maxPage, clamped + 1))} disabled={clamped === maxPage} style={{ ...PAGER_BTN, opacity: clamped === maxPage ? 0.5 : 1 }}>Next ›</button>
+          </span>
+        </div>
+      )}
     </Card>
+  );
+}
+
+function VenueCategorisation({ venueRows, metricA, metricB, rateFraction }) {
+  const [cat, setCat] = useState("All");
+  const counts = { All: venueRows.length };
+  VENUE_CATEGORY_ORDER.forEach((c) => { counts[c] = venueRows.filter((v) => v.category === c).length; });
+  const filtered = cat === "All" ? venueRows : venueRows.filter((v) => v.category === cat);
+  const sortedDesc = [...filtered].sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
+  const sortedAsc = [...sortedDesc].reverse();
+  const sumA = filtered.reduce((a, v) => a + (v[metricA.key] || 0), 0);
+  const sumB = filtered.reduce((a, v) => a + (v[metricB.key] || 0), 0);
+  const filteredRate = sumA ? Math.round((1000 * sumB) / sumA) / 10 : null;
+
+  const closestToTarget = [...filtered]
+    .filter((v) => v.category === "Low Risk" || v.category === "High Risk")
+    .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1))[0];
+
+  return (
+    <div>
+      <Insight tone="neutral">
+        <b>How to use these filters.</b> Click a category to filter the score cards and venue tables below to just those venues. Click <b>All</b> to reset.
+      </Insight>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "12px 0 16px" }}>
+        {["All", ...VENUE_CATEGORY_ORDER].map((c) => {
+          const active = cat === c;
+          const color = c === "All" ? C.ink : VENUE_CATEGORY_COLOR[c];
+          return (
+            <div key={c} onClick={() => setCat(c)} style={{
+              cursor: "pointer", flex: 1, minWidth: 110, textAlign: "center", padding: "10px 8px",
+              borderRadius: 8, border: `2px solid ${active ? color : C.line}`,
+              background: active ? "rgba(15,34,56,.04)" : C.white,
+              boxShadow: active ? "0 1px 5px rgba(0,0,0,.10)" : "none",
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color }}>{c}</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color }}>{counts[c] ?? 0}</div>
+              <div style={{ fontSize: 10, color: C.muted }}>{c === "All" ? "all venues" : "venues"}</div>
+            </div>
+          );
+        })}
+      </div>
+      <Grid cols={4}>
+        <KpiTile label="Venues in view" value={String(filtered.length)} sub={cat} tag="REAL" />
+        <KpiTile label={`${metricA.label} (sum)`} value={fmtNum(sumA)} sub="sum of these venues" tag="REAL" />
+        <KpiTile label={`${metricB.label} (sum)`} value={fmtNum(sumB)} sub="sum of these venues" tag="REAL" />
+        <KpiTile label="Rate" value={fmtPct(filteredRate)} sub={rateFraction} tag="DERIVED" tone="sim" />
+      </Grid>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <VenuePagedTable title="Top venues" subtitle={`Highest rate (${rateFraction})`} chip="STRONGEST" chipTone="real" rows={sortedDesc} metricA={metricA} metricB={metricB} />
+        <VenuePagedTable title="Bottom venues" subtitle="Lowest — priority for a closing follow-up round" chip="FOLLOW UP" chipTone="sim" rows={sortedAsc} metricA={metricA} metricB={metricB} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+        <Insight tone={counts["Target Achieved"] + counts["On Track"] >= filtered.length / 2 ? "pos" : "neutral"}>
+          <b>{counts["Target Achieved"]}</b> venue(s) have hit Target Achieved and <b>{counts["On Track"]}</b> are On Track, out of {venueRows.length} reporting venues.
+        </Insight>
+        {closestToTarget && (
+          <Insight tone="warn">
+            <b>{closestToTarget.venue}</b> is the closest venue below target ({fmtPct(closestToTarget.rate)} {rateFraction}) — one follow-up round would likely tip it into On Track.
+          </Insight>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MobForecastsPage({ filters }) {
+  const { data, loading, error } = useApi(`/api/recruitment/mobilisation-forecast${buildParams(filters)}`);
+  const daily = data?.daily || [];
+  return (
+    <div>
+      <Grid cols={4}>
+        <KpiTile label="Confirmed to date" value={fmtNum(data?.confirmed_to_date)} tag="REAL" />
+        <KpiTile label="Mobilisation target" value={fmtNum(data?.target)} tag="REAL" />
+        <KpiTile label="Avg daily rate" value={fmtNum(data?.avg_daily_rate)} tag="REAL" />
+        <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub="At current pace" tag="DERIVED" tone="sim" />
+      </Grid>
+      <Card title="Daily trend — youth confirmed vs unique call attempts" subtitle="Daily reach/confirm volume against the mobilisation target" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip /><Legend />
+              <Line type="monotone" dataKey="reached" name="Reached" stroke={C.teal} strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="confirmed" name="Confirmed" stroke={C.gold} strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+    </div>
+  );
+}
+
+function MobPerformancePage({ filters }) {
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+        Named mobiliser performance and the offline (field mobiliser) vs online (telemarketer)
+        channel split. No live table currently has both a named mobiliser/channel tag AND
+        reach/confirm counts together — <code>daily_acquisition_summary</code>'s
+        <code>mobilizer_name</code>, <code>collection_type</code> and <code>offline_venue</code>{" "}
+        columns are all 100% empty. Same gap as the Recruitment → Mobilisers tab.
+      </p>
+      <MobilisersTab filters={filters} />
+    </div>
+  );
+}
+
+function MobControlCallsPage() {
+  const { data, loading, error } = useApi(`/api/recruitment/control-calls`);
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+        The randomised control/comparison arm — eligible youth tracked for status and
+        reachability only (no mobilisation pitch), so the team can measure what mobilisation
+        actually adds. Decision/interest fields are empty by design for this arm.
+      </p>
+      <State loading={loading} error={error} empty={!loading && !data}>
+        <Grid cols={4}>
+          <KpiTile label="Control youth tracked" value={fmtNum(data?.total)} sub={`${fmtNum(data?.control)} control · ${fmtNum(data?.mobilization)} mobilization arm`} tag="REAL" />
+          <KpiTile label="Successfully reached" value={fmtPct(data?.reach_pct)} sub={`${fmtNum(data?.reached)} of ${fmtNum(data?.total)}`} tag="REAL" />
+          <KpiTile label="Female share" value={fmtPct(data?.pct_female)} sub="target 60%" tag="REAL" />
+          <KpiTile label="Mean age" value={data?.avg_age ?? "—"} sub="years" tag="REAL" />
+        </Grid>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+          <Card title="Call status" subtitle="Outcome of the status-tracking call" chip="REAL">
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={data?.by_status || []} layout="vertical" margin={{ left: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="status" tick={{ fontSize: 10.5 }} width={90} />
+                <Tooltip />
+                <Bar dataKey="n" name="# Youth" fill={C.teal} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+          <Card title="District composition" chip="REAL">
+            <DataTable
+              columns={[
+                { key: "district", label: "District" },
+                { key: "n", label: "# Youth", align: "right", render: (v) => fmtNum(v) },
+              ]}
+              rows={data?.by_district || []}
+            />
+          </Card>
+        </div>
+      </State>
+    </div>
+  );
+}
+
+function MobCallCentreInsightsPage() {
+  const barriers = useApi(`/api/recruitment/call-centre-insights`);
+  const rows = barriers.data?.barriers || [];
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+        What barriers youth raise on mobilisation/acquisition calls, from the call log
+        (a call can raise more than one barrier). "Questions youth ask" has no structured
+        source in the live data yet — a coded call-notes export would be needed to add it.
+      </p>
+      <Card title="Barriers youth raise" subtitle="Reasons given for not attending / hesitating (share of all barriers)" chip="REAL">
+        <State loading={barriers.loading} error={barriers.error} empty={!barriers.loading && rows.length === 0}>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={rows} layout="vertical" margin={{ left: 40 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis type="number" tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey="barrier" tick={{ fontSize: 10 }} width={160} />
+              <Tooltip />
+              <Bar dataKey="count" fill={C.coral} radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+      <Card title="Barriers detail" chip="REAL">
+        <State loading={barriers.loading} error={barriers.error} empty={!barriers.loading && rows.length === 0}>
+          <DataTable
+            columns={[
+              { key: "barrier", label: "Barrier" },
+              { key: "count", label: "# Youth", align: "right", render: (v) => fmtNum(v) },
+              { key: "pct", label: "% of barriers", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={rows}
+          />
+        </State>
+      </Card>
+    </div>
   );
 }
 
@@ -303,7 +1443,7 @@ function MobilisersTab({ filters }) {
   const { data, loading, error } = useApi(`/api/recruitment/mobilisers${buildParams(filters)}`);
   const rows = data?.mobilisers || [];
   return (
-    <Card title="Mobiliser leaderboard" subtitle="Names shown to staff only" chip="PII">
+    <Card title="Mobiliser leaderboard" subtitle="Names shown to staff only" chip="SAMPLE" chipTone="sim">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
         <DataTable
           columns={[
@@ -323,7 +1463,7 @@ function TamTab({ filters }) {
   const { data, loading, error } = useApi(`/api/recruitment/tam${buildParams(filters)}`);
   const rows = data?.parishes || [];
   return (
-    <Card title="TAM / Market share" subtitle="Parish-level predicted vs actual & validation rate">
+    <Card title="TAM / Market share" subtitle="Parish-level predicted vs actual & validation rate" chip="SAMPLE" chipTone="sim">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
         <DataTable
           columns={[
@@ -346,7 +1486,7 @@ function RetentionTab({ filters }) {
   const { data, loading, error } = useApi(`/api/implementation/retention${buildParams(filters)}`);
   const rows = data?.by_venue || [];
   return (
-    <Card title="Retention by venue" subtitle={`Targets — activation ${data?.targets?.activation ?? 90}%, retention ${data?.targets?.retention ?? 85}%`}>
+    <Card title="Retention by venue" subtitle={`Targets — activation ${data?.targets?.activation ?? 90}%, retention ${data?.targets?.retention ?? 85}%`} chip="REAL">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
         <DataTable
           columns={[
@@ -369,7 +1509,7 @@ function TrainersTab({ filters }) {
   const { data, loading, error } = useApi(`/api/implementation/trainers${buildParams(filters)}`);
   const rows = data?.trainers || [];
   return (
-    <Card title="Trainer quality" subtitle="Observation scores — names shown to staff only" chip="PII">
+    <Card title="Trainer quality" subtitle="Observation scores — names shown to staff only" chip="PII" chipTone="pii">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
         <DataTable
           columns={[
@@ -390,7 +1530,7 @@ function NpsTab({ filters }) {
   const { data, loading, error } = useApi(`/api/implementation/youth-experience${buildParams(filters)}`);
   const rows = data?.weekly || [];
   return (
-    <Card title="Youth experience (NPS)" subtitle={`Programme / Venue / Meals NPS by week — target ${data?.target ?? 50}+`}>
+    <Card title="Youth experience (NPS)" subtitle={`Programme / Venue / Meals NPS by week — target ${data?.target ?? 50}+`} chip="SAMPLE" chipTone="sim">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
@@ -411,7 +1551,7 @@ function VenueTab({ filters }) {
   const { data, loading, error } = useApi(`/api/operations/venue${buildParams(filters)}`);
   const rows = data?.by_venue || [];
   return (
-    <Card title="Venue compliance" subtitle="Reports filed, compliant, and rate">
+    <Card title="Venue compliance" subtitle="Reports filed, compliant, and rate" chip="SAMPLE" chipTone="sim">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
         <DataTable
           columns={[
@@ -432,7 +1572,7 @@ function TransportTab({ filters }) {
   const { data, loading, error } = useApi(`/api/operations/transport${buildParams(filters)}`);
   const rows = data?.by_site || [];
   return (
-    <Card title="Transport timeliness" subtitle="Per-site timeliness score (0–100)">
+    <Card title="Transport timeliness" subtitle="Per-site timeliness score (0–100)" chip="SAMPLE" chipTone="sim">
       <State loading={loading} error={error} empty={!loading && rows.length === 0}>
         <ResponsiveContainer width="100%" height={320}>
           <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
@@ -457,12 +1597,12 @@ function fmtNum(v) { return v == null ? "—" : Number(v).toLocaleString(); }
 // ─── Navigation model ─────────────────────────────────────────────────────────
 const NAV = [
   { key: "es", group: "Executive Summary", tabs: [
-    { key: "es-main", label: "Summary", render: (f) => <ExecutiveSummary filters={f} /> },
+    { key: "es-main", label: "Summary", render: (f) => <ExecutiveSummaryTab filters={f} /> },
   ]},
   { key: "rec", group: "Recruitment", tabs: [
-    { key: "aware", label: "Awareness", render: (f) => <DistrictBarTab endpoint="/api/recruitment/awareness" filters={f} title="Awareness" subtitle="Registered → Interested → Eligible by district" bars={[{ key: "registered", label: "Registered" }, { key: "interested", label: "Interested" }, { key: "eligible", label: "Eligible" }]} /> },
+    { key: "aware", label: "Awareness", render: (f) => <AwarenessTab filters={f} /> },
     { key: "mob", label: "Mobilisation", render: (f) => <MobilisationTab filters={f} /> },
-    { key: "acq", label: "Acquisition", render: (f) => <DistrictBarTab endpoint="/api/recruitment/acquisition" filters={f} title="Acquisition" subtitle="Verified → Acquired by district" bars={[{ key: "verified", label: "Verified" }, { key: "acquired", label: "Acquired" }]} /> },
+    { key: "acq", label: "Acquisition", render: (f) => <AcquisitionTab filters={f} /> },
     { key: "mobs", label: "Mobilisers", render: (f) => <MobilisersTab filters={f} /> },
     { key: "tam", label: "TAM Analysis", render: (f) => <TamTab filters={f} /> },
   ]},
@@ -612,7 +1752,7 @@ export default function App() {
       <header style={{ background: C.ink, color: C.white, padding: "8px 24px 0" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 16 }}>EDUCATE<span style={{ color: C.gold }}>!</span> — Take Off Recruitment Funnel</div>
+            <div style={{ fontWeight: 700, fontSize: 16 }}>EDUCATE<span style={{ color: C.gold }}>!</span> — E!BA Dashboard</div>
             <div style={{ color: "#B9C4D0", fontSize: 10 }}>Executive Dashboard · E!BA Recruitment · Busoga region</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
