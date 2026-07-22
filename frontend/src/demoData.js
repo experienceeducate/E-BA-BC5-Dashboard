@@ -134,6 +134,35 @@ export const DEMO = {
     ],
   },
 
+  "/api/implementation/attendance": {
+    daily: [
+      { event_date: "2026-05-06", present: 3820, net_churn: -12 },
+      { event_date: "2026-05-07", present: 3790, net_churn: -30 },
+      { event_date: "2026-05-08", present: 3750, net_churn: -40 },
+      { event_date: "2026-05-11", present: 3700, net_churn: -50 },
+      { event_date: "2026-05-12", present: 3680, net_churn: -20 },
+    ],
+    lessons: [],
+  },
+
+  "/api/implementation/retention-calls": {
+    daily: [
+      { event_date: "2026-05-11", called: 210, reached: 160, promised: 120, returned: 95 },
+      { event_date: "2026-05-12", called: 195, reached: 150, promised: 110, returned: 88 },
+      { event_date: "2026-05-13", called: 180, reached: 140, promised: 105, returned: 84 },
+      { event_date: "2026-05-14", called: 165, reached: 128, promised: 96, returned: 76 },
+    ],
+  },
+
+  "/api/implementation/milestones": {
+    weekly: [
+      { week_number: 1, below: 60, meet: 240, exceed: 100, completion_pct: 92, parent_present_pct: 58 },
+      { week_number: 2, below: 45, meet: 260, exceed: 120, completion_pct: 94, parent_present_pct: 61 },
+      { week_number: 3, below: 38, meet: 255, exceed: 140, completion_pct: 95, parent_present_pct: 63 },
+      { week_number: 4, below: 30, meet: 250, exceed: 155, completion_pct: 96, parent_present_pct: 65 },
+    ],
+  },
+
   "/api/implementation/trainers": {
     trainers: [
       { trainer_name: "T. Wanyama", venue: "Isegero VTC", district: "BUGIRI", rating: "Excellent", score: 92 },
