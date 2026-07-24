@@ -423,10 +423,13 @@ def eligibility_barriers(
 ):
     """Among reached youth who did not qualify, which criteria they failed.
 
-    Backed by the live AWARENESS_KYC per-youth record. Each of the three
+    Backed by the live AWARENESS_KYC per-youth record. Each of the five
     documented eligibility criteria (docs/metrics.yaml: age 18-30, education
-    P5-S3, income <= UGX 30,000/2wk) is counted independently among
-    elligible=FALSE rows — a youth can fail more than one.
+    P5-S3, income <= UGX 30,000/2wk, training interest, no prior Educate!
+    training) is counted independently among elligible=FALSE rows — a youth
+    can fail more than one. training_interest and participated_educate_training
+    are confirmed real BOOLEAN columns on this table (unlike the reference
+    prototype, which only had an illustrative ~12% estimate for prior training).
     """
     where, params = build_where(
         districts=district, extra=[active_cohort_clause("eb")], prefix="eb",
@@ -441,6 +444,12 @@ def eligibility_barriers(
     FROM {AWARENESS_KYC} WHERE {where} AND elligible = FALSE
     UNION ALL
     SELECT 'Income (> UGX 30,000/2wk)' AS barrier, COUNTIF(income_past_2_weeks > 30000) AS count
+    FROM {AWARENESS_KYC} WHERE {where} AND elligible = FALSE
+    UNION ALL
+    SELECT 'No training interest' AS barrier, COUNTIF(training_interest = FALSE) AS count
+    FROM {AWARENESS_KYC} WHERE {where} AND elligible = FALSE
+    UNION ALL
+    SELECT 'Previously trained (E! alumni)' AS barrier, COUNTIF(participated_educate_training = TRUE) AS count
     FROM {AWARENESS_KYC} WHERE {where} AND elligible = FALSE
     ORDER BY count DESC
     """

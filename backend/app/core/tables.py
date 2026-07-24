@@ -185,10 +185,10 @@ def retention_calls_detail_sql():
 
 # Per-youth KYC/registration record (age, education, income, eligibility flag,
 # names/phone/location). Backs /api/overview/eligibility-barriers — each of the
-# three documented eligibility criteria (docs/metrics.yaml: age 18-30,
-# education P5-S3, income <= UGX 30,000/2wk) is counted independently among
-# elligible=FALSE rows, since a youth can fail more than one. Note the source
-# column is spelled "elligible" (sic).
+# five documented eligibility criteria (docs/metrics.yaml: age 18-30, education
+# P5-S3, income <= UGX 30,000/2wk, training_interest, participated_educate_training)
+# is counted independently among elligible=FALSE rows, since a youth can fail
+# more than one. Note the source column is spelled "elligible" (sic).
 AWARENESS_KYC = f"{_SILVER}.eba_bootcamp_awareness"
 
 # Note: current_activty / registration_reasons are JSON-array-as-string columns
