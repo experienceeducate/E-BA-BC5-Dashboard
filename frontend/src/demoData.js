@@ -114,12 +114,22 @@ export const DEMO = {
 
   "/api/recruitment/tam": {
     parishes: [
-      { district: "BUGIRI", parish: "BUBUGO", predicted: 127, actual: 176, validation_rate: 138, status: "Met Target" },
-      { district: "BUGIRI", parish: "NAMBALE", predicted: 171, actual: 344, validation_rate: 201, status: "Met Target" },
-      { district: "BUGWERI", parish: "MAJENGO WARD", predicted: 174, actual: 171, validation_rate: 98, status: "On Track" },
-      { district: "KAMULI", parish: "NAWANGO", predicted: 117, actual: 167, validation_rate: 143, status: "Met Target" },
-      { district: "MAYUGE", parish: "LUGOLOLE", predicted: 306, actual: 162, validation_rate: 53, status: "At Risk" },
-      { district: "IGANGA", parish: "BUKOYO", predicted: 222, actual: 76, validation_rate: 34, status: "Low / Critical" },
+      { district: "BUGIRI", parish: "BUBUGO", predicted: 127, actual: 176, validation_rate: 138, status: "Met Target", pct_female: 61 },
+      { district: "BUGIRI", parish: "NAMBALE", predicted: 171, actual: 344, validation_rate: 201, status: "Met Target", pct_female: 59 },
+      { district: "BUGWERI", parish: "MAJENGO WARD", predicted: 174, actual: 171, validation_rate: 98, status: "On Track", pct_female: 58 },
+      { district: "KAMULI", parish: "NAWANGO", predicted: 117, actual: 167, validation_rate: 143, status: "Met Target", pct_female: 62 },
+      { district: "MAYUGE", parish: "LUGOLOLE", predicted: 306, actual: 162, validation_rate: 53, status: "At Risk", pct_female: 55 },
+      { district: "IGANGA", parish: "BUKOYO", predicted: 222, actual: 76, validation_rate: 34, status: "Low / Critical", pct_female: 52 },
+    ],
+  },
+
+  "/api/recruitment/tam-coverage": {
+    coverage: [
+      { district: "BUGIRI", cycles: "BC4 (2026)", total_parishes: 102, covered_parishes: 16 },
+      { district: "BUGWERI", cycles: "BC4 (2026)", total_parishes: 36, covered_parishes: 14 },
+      { district: "IGANGA", cycles: "BC2 (2024), BC3 (2025)", total_parishes: 53, covered_parishes: 22 },
+      { district: "KAMULI", cycles: "BC2 (2024)", total_parishes: 90, covered_parishes: 5 },
+      { district: "MAYUGE", cycles: "BC2 (2024), BC3 (2025)", total_parishes: 84, covered_parishes: 39 },
     ],
   },
 

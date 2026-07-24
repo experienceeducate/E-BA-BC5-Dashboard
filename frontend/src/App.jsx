@@ -631,6 +631,27 @@ function DataTable({ columns, rows }) {
   );
 }
 
+// Stage-by-stage female/male/target table — shared by the Executive Summary's
+// "Gender performance summary" band and Recruitment's dedicated Gender tab so
+// the two never drift apart.
+function GenderStageTable({ stages }) {
+  return (
+    <DataTable
+      columns={[
+        { key: "stage", label: "Stage" },
+        { key: "female", label: "Female", align: "right", render: (v) => fmtNum(v) },
+        { key: "male", label: "Male", align: "right", render: (v) => fmtNum(v) },
+        {
+          key: "pct_female", label: "% Female", align: "right",
+          render: (v) => <span style={{ color: v != null && Math.abs(v - 60) > 5 ? C.coral : "inherit", fontWeight: v != null && Math.abs(v - 60) > 5 ? 700 : 400 }}>{fmtPct(v)}</span>,
+        },
+        { key: "target_female", label: "Target", align: "right", render: (v) => fmtPct(v) },
+      ]}
+      rows={stages}
+    />
+  );
+}
+
 // ─── Executive Summary ───────────────────────────────────────────────────────
 const RATE_TARGETS = {
   eligibility_rate:  { good: 80, warn: 70, label: "Eligibility" },
@@ -836,19 +857,7 @@ function ExecutiveSummaryPage({ filters }) {
       <ExecBand num={5} title="Gender performance summary" />
       <Card title="Male vs female across the funnel" subtitle="Share of each stage that is female against the 60% target. Gaps over 5pp are flagged." chip="REAL">
         <State loading={gender.loading} error={gender.error} empty={!gender.loading && genderStages.length === 0}>
-          <DataTable
-            columns={[
-              { key: "stage", label: "Stage" },
-              { key: "female", label: "Female", align: "right", render: (v) => fmtNum(v) },
-              { key: "male", label: "Male", align: "right", render: (v) => fmtNum(v) },
-              {
-                key: "pct_female", label: "% Female", align: "right",
-                render: (v) => <span style={{ color: v != null && Math.abs(v - 60) > 5 ? C.coral : "inherit", fontWeight: v != null && Math.abs(v - 60) > 5 ? 700 : 400 }}>{fmtPct(v)}</span>,
-              },
-              { key: "target_female", label: "Target", align: "right", render: (v) => fmtPct(v) },
-            ]}
-            rows={genderStages}
-          />
+          <GenderStageTable stages={genderStages} />
         </State>
       </Card>
 
@@ -1662,7 +1671,7 @@ function MobPerformancePage({ filters }) {
         channel split. No live table currently has both a named mobiliser/channel tag AND
         reach/confirm counts together — <code>daily_acquisition_summary</code>'s
         <code>mobilizer_name</code>, <code>collection_type</code> and <code>offline_venue</code>{" "}
-        columns are all 100% empty. Same gap as the Recruitment → Mobilisers tab.
+        columns are all 100% empty.
       </p>
       <MobilisersTab filters={filters} />
     </div>
@@ -1771,25 +1780,260 @@ function MobilisersTab({ filters }) {
   );
 }
 
+// Status bands come straight off TAM_PARISH.status — matches the reference
+// design's Met Target / On Track / At Risk / Low-Critical coverage bands.
+const TAM_STATUS_COLOR = { "Met Target": C.green, "On Track": C.teal, "At Risk": C.gold, "Low / Critical": C.coral };
+
 function TamTab({ filters }) {
-  const { data, loading, error } = useApi(`/api/recruitment/tam${buildParams(filters)}`);
-  const rows = data?.parishes || [];
+  const q = buildParams(filters);
+  const tam = useApi(`/api/recruitment/tam${q}`);
+  const coverage = useApi(`/api/recruitment/tam-coverage${q}`);
+  const [page, setPage] = useState(0);
+  const pageSize = 8;
+
+  const parishes = tam.data?.parishes || [];
+  const coverageRows = coverage.data?.coverage || [];
+  const loading = tam.loading || coverage.loading;
+  const error = tam.error || coverage.error;
+
+  const totalPredicted = sumBy(parishes, "predicted");
+  const totalActual = sumBy(parishes, "actual");
+  const marketShare = totalPredicted ? Math.round((1000 * totalActual) / totalPredicted) / 10 : null;
+
+  const femaleRows = parishes.filter((p) => p.pct_female != null);
+  const avgFemale = femaleRows.length
+    ? Math.round((10 * femaleRows.reduce((s, p) => s + p.pct_female, 0)) / femaleRows.length) / 10
+    : null;
+
+  const statusCounts = {};
+  parishes.forEach((p) => { statusCounts[p.status] = (statusCounts[p.status] || 0) + 1; });
+  const statusSummary = Object.entries(statusCounts).map(([s, n]) => `${n} ${s.toLowerCase()}`).join(" · ");
+
+  const totalParishUniverse = sumBy(coverageRows, "total_parishes");
+  const totalCovered = sumBy(coverageRows, "covered_parishes");
+  const coverageRate = totalParishUniverse ? Math.round((1000 * totalCovered) / totalParishUniverse) / 10 : null;
+
+  // Merge each district's predicted/actual (summed off the parish rows) onto
+  // its coverage record — the two endpoints share a district key but nothing
+  // else, so this is a plain client-side join rather than new backend SQL.
+  const byDistrict = {};
+  parishes.forEach((p) => {
+    const d = byDistrict[p.district] || (byDistrict[p.district] = { predicted: 0, actual: 0 });
+    d.predicted += p.predicted || 0;
+    d.actual += p.actual || 0;
+  });
+  const saturationRows = coverageRows
+    .map((c) => {
+      const agg = byDistrict[c.district] || { predicted: 0, actual: 0 };
+      return {
+        ...c,
+        market_share: agg.predicted ? Math.round((1000 * agg.actual) / agg.predicted) / 10 : null,
+        coverage_pct: c.total_parishes ? Math.round((1000 * c.covered_parishes) / c.total_parishes) / 10 : null,
+      };
+    })
+    .sort((a, b) => (b.coverage_pct || 0) - (a.coverage_pct || 0));
+
+  const maxPage = Math.max(0, Math.ceil(parishes.length / pageSize) - 1);
+  const clampedPage = Math.min(page, maxPage);
+  const parishSlice = parishes.slice(clampedPage * pageSize, clampedPage * pageSize + pageSize);
+
   return (
-    <Card title="TAM / Market share" subtitle="Parish-level predicted vs actual & validation rate" chip="SAMPLE" chipTone="sim">
-      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
-        <DataTable
-          columns={[
-            { key: "district", label: "District" },
-            { key: "parish", label: "Parish" },
-            { key: "predicted", label: "Predicted", align: "right" },
-            { key: "actual", label: "Actual", align: "right" },
-            { key: "validation_rate", label: "Validation %", align: "right", render: (v) => fmtPct(v) },
-            { key: "status", label: "Status" },
-          ]}
-          rows={rows}
-        />
+    <div>
+      <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>TAM Analysis</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
+        Total addressable market and coverage across the operating districts and parishes —
+        TAM validation, market share captured, and where coverage is thinnest.
+      </p>
+
+      <ExecBand num={1} title="TAM at a glance" />
+      <State loading={loading} error={error} empty={!loading && !error && parishes.length === 0}>
+        <Grid cols={4}>
+          <KpiTile label="Parishes reported" value={fmtNum(parishes.length)} sub={statusSummary || "no status breakdown"} tag="REAL" />
+          <KpiTile label="Market share captured" value={fmtPct(marketShare)} sub={`${fmtNum(totalActual)} actual ÷ ${fmtNum(totalPredicted)} predicted`} tag="REAL" />
+          <KpiTile label="TAM coverage" value={fmtPct(coverageRate)} sub={`${fmtNum(totalCovered)} of ${fmtNum(totalParishUniverse)} parishes covered`} tag="REAL" />
+          <KpiTile label="Female share (TAM parishes)" value={fmtPct(avgFemale)} sub="target 60%" tag="REAL" />
+        </Grid>
       </State>
-    </Card>
+
+      <ExecBand num={2} title="District saturation status" />
+      <Card title="Coverage &amp; market share by district" subtitle="Market share captured = actual youth reached ÷ TAM-predicted youth, summed per district. Coverage = parishes with a TAM record ÷ total parishes in that district." chip="REAL">
+        <State loading={coverage.loading} error={coverage.error} empty={!coverage.loading && saturationRows.length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "cycles", label: "Cohorts covered" },
+              { key: "total_parishes", label: "Total parishes", align: "right", render: (v) => fmtNum(v) },
+              { key: "covered_parishes", label: "Covered", align: "right", render: (v) => fmtNum(v) },
+              { key: "coverage_pct", label: "Coverage", align: "right", render: (v) => fmtPct(v) },
+              { key: "market_share", label: "Market share captured", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={saturationRows}
+          />
+        </State>
+      </Card>
+
+      <ExecBand num={3} title="Parish-level detail" />
+      <Card title="Predicted vs actual by parish" subtitle="Validation rate = actual ÷ predicted. Status bands: Met Target / On Track / At Risk / Low-Critical." chip="REAL">
+        <State loading={tam.loading} error={tam.error} empty={!tam.loading && parishes.length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "parish", label: "Parish" },
+              { key: "predicted", label: "Predicted", align: "right", render: (v) => fmtNum(v) },
+              { key: "actual", label: "Actual", align: "right", render: (v) => fmtNum(v) },
+              { key: "validation_rate", label: "Validation %", align: "right", render: (v) => fmtPct(v) },
+              { key: "status", label: "Status", render: (v) => <span style={{ color: TAM_STATUS_COLOR[v] || C.muted, fontWeight: 700 }}>{v}</span> },
+            ]}
+            rows={parishSlice}
+          />
+          {parishes.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
+              <span>{clampedPage * pageSize + 1}–{Math.min(parishes.length, clampedPage * pageSize + pageSize)} of {parishes.length}</span>
+              <span style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setPage(Math.max(0, clampedPage - 1))} disabled={clampedPage === 0} style={{ ...PAGER_BTN, opacity: clampedPage === 0 ? 0.5 : 1 }}>‹ Prev</button>
+                <button onClick={() => setPage(Math.min(maxPage, clampedPage + 1))} disabled={clampedPage === maxPage} style={{ ...PAGER_BTN, opacity: clampedPage === maxPage ? 0.5 : 1 }}>Next ›</button>
+              </span>
+            </div>
+          )}
+        </State>
+      </Card>
+    </div>
+  );
+}
+
+// Recruitment's own Gender view — same /api/overview/gender data as the
+// Executive Summary's "Gender performance summary" band, but with the full
+// funnel-by-gender chart, per-stage target gauges, and a district comparison
+// (female share of Acquired) that Executive Summary doesn't have room for.
+function RecruitmentGenderTab({ filters }) {
+  const q = buildParams(filters);
+  const gender = useApi(`/api/overview/gender${q}`);
+  const filterMeta = useApi("/api/filters");
+  const allDistricts = filterMeta.data?.districts || [];
+  const stages = gender.data?.stages || [];
+
+  const [districtRows, setDistrictRows] = useState([]);
+  const [districtLoading, setDistrictLoading] = useState(false);
+  const [districtError, setDistrictError] = useState(null);
+
+  // No single /api/overview/gender response carries a by-district breakdown
+  // (same gap as the Executive Summary's rate drills) — fire one request per
+  // district, pulling out just the Acquired stage's female/male split.
+  useEffect(() => {
+    if (!allDistricts.length) return;
+    let alive = true;
+    // Resetting load/error state at the start of a (re)fetch is the intended
+    // React<->network sync point; the strict rule flags it as a false positive.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setDistrictLoading(true);
+    setDistrictError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    Promise.all(
+      allDistricts.map((d) =>
+        apiGet(`/api/overview/gender${buildParamsOverride(filters, { district: d })}`)
+          .then((json) => {
+            const acquired = (json?.stages || []).find((s) => s.stage === "Acquired");
+            return { district: d, female: acquired?.female ?? null, male: acquired?.male ?? null, pct_female: acquired?.pct_female ?? null };
+          })
+          .catch(() => ({ district: d, female: null, male: null, pct_female: null }))
+      )
+    ).then((rows) => {
+      if (!alive) return;
+      rows.sort((a, b) => (b.pct_female ?? -1) - (a.pct_female ?? -1));
+      setDistrictRows(rows);
+      setDistrictLoading(false);
+    }).catch((e) => { if (alive) { setDistrictError(e.message); setDistrictLoading(false); } });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allDistricts.join("|"), filters.district, filters.gender, filters.cohort]);
+
+  const acquiredStage = stages.find((s) => s.stage === "Acquired");
+  const registeredStage = stages.find((s) => s.stage === "Registered");
+  const scoredStages = stages.filter((s) => s.pct_female != null);
+  const flaggedStages = scoredStages.filter((s) => Math.abs(s.pct_female - 60) > 5);
+  const worstStage = scoredStages.reduce((worst, s) => {
+    const gap = Math.abs(s.pct_female - 60);
+    return (!worst || gap > worst.gap) ? { stage: s.stage, pct_female: s.pct_female, gap } : worst;
+  }, null);
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Gender</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
+        Male vs female across every funnel stage, measured against the 60% female target. Any
+        stage more than 5pp off target is flagged automatically.
+      </p>
+
+      <ExecBand num={1} title="Gender at a glance" />
+      <State loading={gender.loading} error={gender.error} empty={!gender.loading && stages.length === 0}>
+        <Grid cols={4}>
+          <KpiTile label="Female share — Acquired" value={fmtPct(acquiredStage?.pct_female)} sub="target 60%" tag="REAL" />
+          <KpiTile label="Female share — Registered" value={fmtPct(registeredStage?.pct_female)} sub="funnel entry point" tag="REAL" />
+          <KpiTile label="Stages within target" value={`${scoredStages.length - flaggedStages.length}/${scoredStages.length}`} sub="within 5pp of the 60% target" tag="DERIVED" />
+          <KpiTile
+            label="Largest gap"
+            value={worstStage ? <span style={{ color: worstStage.gap > 5 ? C.coral : "inherit" }}>{fmtPct(worstStage.pct_female)}</span> : "—"}
+            sub={worstStage ? `${worstStage.stage} — ${Math.round(worstStage.gap * 10) / 10}pp off target` : "no gap flagged"}
+            tag="REAL"
+          />
+        </Grid>
+      </State>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <div>
+          <ExecBand num={2} title="Funnel by gender" />
+          <Card title="Counts by stage" subtitle="Registered through Acquired. Click a legend entry to isolate a series." chip="REAL">
+            <State loading={gender.loading} error={gender.error} empty={!gender.loading && stages.length === 0}>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={stages} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                  <XAxis dataKey="stage" tick={{ fontSize: 10 }} interval={0} angle={-35} textAnchor="end" height={70} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip /><Legend />
+                  <Bar dataKey="female" name="Female" fill={C.coral} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="male" name="Male" fill={C.teal} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </State>
+          </Card>
+        </div>
+        <div>
+          <ExecBand num={3} title="Female share vs 60% target" />
+          <Card title="Share of each stage that is female" subtitle="Gaps over 5pp vs target are highlighted." chip="DERIVED">
+            <State loading={gender.loading} error={gender.error} empty={!gender.loading && stages.length === 0}>
+              <div style={{ paddingTop: 8, maxHeight: 300, overflowY: "auto" }}>
+                {stages.map((s) => <Gauge key={s.stage} label={s.stage} pct={s.pct_female} target={60} />)}
+              </div>
+            </State>
+          </Card>
+        </div>
+      </div>
+
+      <ExecBand num={4} title="Stage-by-stage comparison" />
+      <Card title="Female and male counts vs the 60% target" chip="REAL">
+        <State loading={gender.loading} error={gender.error} empty={!gender.loading && stages.length === 0}>
+          <GenderStageTable stages={stages} />
+        </State>
+      </Card>
+
+      <ExecBand num={5} title="District comparison" />
+      <Card title="Female share of Acquired, by district" subtitle="Same 60% target, one row per district." chip="REAL">
+        <State loading={districtLoading} error={districtError} empty={!districtLoading && (districtRows || []).length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "female", label: "Female", align: "right", render: (v) => fmtNum(v) },
+              { key: "male", label: "Male", align: "right", render: (v) => fmtNum(v) },
+              {
+                key: "pct_female", label: "% Female", align: "right",
+                render: (v) => <span style={{ color: v != null && Math.abs(v - 60) > 5 ? C.coral : "inherit", fontWeight: v != null && Math.abs(v - 60) > 5 ? 700 : 400 }}>{fmtPct(v)}</span>,
+              },
+            ]}
+            rows={districtRows || []}
+          />
+        </State>
+      </Card>
+    </div>
   );
 }
 
@@ -2062,12 +2306,12 @@ const GUIDE_PAGES = [
   { group: "Recruitment", page: "Acquisition", tone: "real", navGroup: "rec", navTab: "acq",
     summary: "Verified → acquired by district; venue risk categories.",
     what: "2 sub-pages — Overview, Arrival & Verification. Verified → acquired by district; venue risk categories (Target Achieved / On Track / Low Risk / High Risk)." },
-  { group: "Recruitment", page: "Mobilisers", tone: "sample", navGroup: "rec", navTab: "mobs",
-    summary: "Leaderboard of reach/confirmed by mobiliser.",
-    what: "Leaderboard of reach/confirmed by mobiliser. Still placeholder data — no live table yet carries both a named mobiliser and reach/confirm counts together." },
-  { group: "Recruitment", page: "TAM Analysis", tone: "sample", navGroup: "rec", navTab: "tam",
-    summary: "Parish-level predicted vs. actual market coverage.",
-    what: "Parish-level predicted vs. actual market coverage. Still placeholder data." },
+  { group: "Recruitment", page: "TAM Analysis", tone: "real", navGroup: "rec", navTab: "tam",
+    summary: "Market share captured & coverage, by district and parish.",
+    what: "TAM at a glance (parishes reported, market share captured, coverage, female share); district saturation status (total vs covered parishes, coverage %, market share); parish-level predicted vs. actual with a Met Target / On Track / At Risk / Low-Critical status band." },
+  { group: "Recruitment", page: "Gender", tone: "real", navGroup: "rec", navTab: "gender",
+    summary: "Funnel by gender, female-share gauges, district comparison.",
+    what: "Funnel by gender (counts per stage); female share vs the 60% target per stage; stage-by-stage female/male table; district comparison of female share of Acquired." },
   { group: "Implementation", page: "Retention", tone: "real", navGroup: "impl", navTab: "ret",
     summary: "Acquired → activated → retained by venue vs targets.",
     what: "Acquired → activated → retained by venue, against activation/retention targets." },
@@ -2167,7 +2411,7 @@ function GuideTab({ navigate }) {
       <Grid cols={4}>
         <KpiTile label="Guide" value="You are here" sub="No live data — a reference page." tone="pii" />
         <KpiTile label="Executive Summary" value="1 page" sub="The whole funnel at a glance, plus gender split and recommendations." onClick={navigate ? () => navigate("es", "es-main") : undefined} />
-        <KpiTile label="Recruitment" value="5 pages" sub="Awareness, Mobilisation, Acquisition, Mobilisers, TAM Analysis." onClick={navigate ? () => navigate("rec") : undefined} />
+        <KpiTile label="Recruitment" value="5 pages" sub="Awareness, Mobilisation, Acquisition, TAM Analysis, Gender." onClick={navigate ? () => navigate("rec") : undefined} />
         <KpiTile label="Implementation" value="6 pages" sub="Retention, Attendance, Retention Calls, Trainer Quality, Milestones, Youth Experience." onClick={navigate ? () => navigate("impl") : undefined} />
         <KpiTile label="Field Operations" value="2 pages" sub="Venue, Transport." onClick={navigate ? () => navigate("fops") : undefined} />
       </Grid>
@@ -2257,8 +2501,8 @@ const NAV = [
     { key: "aware", label: "Awareness", render: (f) => <AwarenessTab filters={f} /> },
     { key: "mob", label: "Mobilisation", render: (f) => <MobilisationTab filters={f} /> },
     { key: "acq", label: "Acquisition", render: (f) => <AcquisitionTab filters={f} /> },
-    { key: "mobs", label: "Mobilisers", render: (f) => <MobilisersTab filters={f} /> },
     { key: "tam", label: "TAM Analysis", render: (f) => <TamTab filters={f} /> },
+    { key: "gender", label: "Gender", render: (f) => <RecruitmentGenderTab filters={f} /> },
   ]},
   { key: "impl", group: "Implementation", tabs: [
     { key: "ret", label: "Retention", render: (f) => <RetentionTab filters={f} /> },
