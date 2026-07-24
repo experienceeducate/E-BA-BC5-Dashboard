@@ -1,4 +1,4 @@
-# Onboarding — Take Off Recruitment Dashboard
+# Onboarding — E!BA Dashboard
 
 Welcome. This is the orientation map. Read the docs in this order:
 
@@ -13,7 +13,7 @@ Welcome. This is the orientation map. Read the docs in this order:
 ## In one paragraph
 
 A two-container, read-only dashboard over BigQuery showing Educate!'s E!BA
-"Take Off" recruitment funnel for Bootcamp 5 in the Busoga region: Awareness →
+recruitment funnel for Bootcamp 5 in the Busoga region: Awareness →
 Mobilisation → Acquisition, plus Implementation (attendance, retention, trainer
 quality, NPS) and Field Operations (meals, venue, transport). FastAPI backend +
 React/Vite SPA, JWT auth (staff Google SSO + guest password), deployed to

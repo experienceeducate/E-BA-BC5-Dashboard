@@ -1,5 +1,5 @@
 """
-Take Off Dashboard Backend (Educate! E!BA Recruitment)
+E!BA Dashboard Backend (Educate! E!BA Recruitment)
 FastAPI + BigQuery service account auth
 """
 
@@ -10,7 +10,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.config import settings
 
-app = FastAPI(title="Take Off Dashboard API", version="1.0.0")
+app = FastAPI(title="E!BA Dashboard API", version="1.0.0")
 
 # Import after settings so auth.py picks up env vars at import time.
 from app.auth import router as auth_router  # noqa: E402

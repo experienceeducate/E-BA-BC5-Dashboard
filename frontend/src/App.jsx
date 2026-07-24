@@ -1,5 +1,5 @@
 /*
- * Take Off Recruitment Dashboard — single-file SPA (by design until >=5 real
+ * E!BA Dashboard — single-file SPA (by design until >=5 real
  * content tabs justify a split; see docs/DECISION.md).
  *
  * Auth shell -> group/sub-tab nav (state in React + sessionStorage, no router)
@@ -686,7 +686,7 @@ function ExecutiveSummaryTab({ filters }) {
     <div>
       <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Executive Summary</h2>
       <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
-        The whole Take Off recruitment funnel on one screen — are we on track, where are youth
+        The whole E!BA recruitment funnel on one screen — are we on track, where are youth
         dropping off, and where should we act. Read top-to-bottom: Awareness → Mobilisation →
         Acquisition. Everything below responds to the filters above.
       </p>
@@ -2325,7 +2325,7 @@ function LoginScreen({ onLogin }) {
     <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: C.ink }}>
       <div style={{ background: C.white, borderRadius: 12, padding: 36, width: 360 }}>
         <div style={{ fontWeight: 800, fontSize: 20, color: C.ink }}>EDUCATE<span style={{ color: C.gold }}>!</span></div>
-        <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>Take Off Recruitment Dashboard</div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>E!BA Dashboard</div>
         <form onSubmit={submit}>
           <input type="password" placeholder="Guest password" value={password} onChange={(e) => setPassword(e.target.value)}
             style={{ width: "100%", padding: 10, border: `1px solid ${C.line}`, borderRadius: 6, marginBottom: 10 }} />

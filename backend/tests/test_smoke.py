@@ -13,4 +13,4 @@ def test_openapi_served(client):
 
 def test_app_title():
     import app.main as main_module
-    assert main_module.app.title == "Take Off Dashboard API"
+    assert main_module.app.title == "E!BA Dashboard API"

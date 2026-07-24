@@ -21,7 +21,7 @@ _Living document. Update as the project evolves._
   and named mobilisers/trainers. `app/core/pii.py` masks personal names to initials
   for the guest role and pseudonymises youth identifiers (HMAC-SHA256 keyed by
   `EBA_ID_SALT`); raw phone numbers / ids never appear in an API response.
-- **Product vs data-layer naming.** UI/docs say "Take Off"; the data layer uses a
+- **Product vs data-layer naming.** UI/docs say "E!BA Dashboard"; the data layer uses a
   neutral `eba_` prefix (tables, image names, `X-EBA-Client` header, `eba_*`
   sessionStorage keys). Do not rename data-layer identifiers to match UI copy.
 - **Windows dev:** `uvicorn --reload` is unstable — run without it. Vite prefers

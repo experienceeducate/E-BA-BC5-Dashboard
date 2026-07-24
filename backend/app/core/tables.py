@@ -9,8 +9,8 @@ row-level) datasets, derived from the shapes in the prototype
 `database.run_query(...)`; until the tables exist, `/api/*` data endpoints will
 return a BigQuery 404 — that is expected (see docs/CONTEXT.md).
 
-Naming discipline: the *product* is "Take Off" (E!BA Recruitment) in the UI, but
-the data layer keeps a neutral `eba_` prefix. Do not rename tables to match UI copy.
+Naming discipline: the *product* is "E!BA Dashboard" (E!BA Recruitment) in the UI, and
+the data layer keeps the same neutral `eba_` prefix. Do not rename tables to match UI copy.
 """
 
 from app.core.database import PROJECT_ID, DATASET, TABLE, _scalar
