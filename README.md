@@ -1,6 +1,6 @@
-# Take Off Recruitment Dashboard
+# E!BA Dashboard
 
-Executive dashboard for Educate!'s **E!BA "Take Off"** recruitment funnel
+Executive dashboard for Educate!'s **E!BA** recruitment funnel
 (Bootcamp 5, Busoga region, Uganda). Two containers over BigQuery:
 
 - **Backend** — FastAPI (Python 3.14), BigQuery via service account, JWT auth

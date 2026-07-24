@@ -1,4 +1,4 @@
-# Metric definitions for the Take Off recruitment funnel.
+# Metric definitions for the E!BA recruitment funnel.
 # Numerators/denominators are funnel-stage counts; rates are computed in
 # backend/app/routers/overview.py (overview_kpis). Derived from the prototype's
 # ES_MET registry (reference/prototype-index.html). Confirm thresholds with the

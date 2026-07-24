@@ -1,11 +1,11 @@
-# CLAUDE.md — Take Off Recruitment Dashboard
+# CLAUDE.md — E!BA Dashboard
 
 Thin conventions file. Detail lives in `docs/` — read order: `ONBOARDING.md` →
 `CONTEXT.md` → `ARCHITECTURE.md` → `DECISION.md` → `FLOW.md` → `README.md`.
 
 **What this is:** a two-container read-only dashboard over BigQuery for Educate!'s
-E!BA "Take Off" recruitment funnel (Bootcamp 5, Busoga region). FastAPI backend +
-React/Vite SPA. Product name in UI/docs is **Take Off**; the data layer keeps a
+E!BA recruitment funnel (Bootcamp 5, Busoga region). FastAPI backend +
+React/Vite SPA. Product name in UI/docs is **E!BA Dashboard**; the data layer keeps a
 neutral `eba_` prefix (tables, image names, the `X-EBA-Client` header). Don't rename
 data-layer identifiers to match UI copy.
 
