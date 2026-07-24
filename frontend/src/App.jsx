@@ -1033,6 +1033,23 @@ function AwarenessOverviewPage({ filters }) {
   const genderLoading = total.loading || female.loading || male.loading;
   const genderError = total.error || female.error || male.error;
 
+  const femaleEligible = sumBy(fRows, "eligible");
+  const femaleEligiblePct = stageStats.find((s) => s.stage === "Eligible")?.pct_female ?? null;
+
+  function openFemaleEligibleDrill() {
+    const rootRows = fRows.map(withEligibilityRate).sort((a, b) => (b.eligible || 0) - (a.eligible || 0));
+    drill.open({
+      title: "Female eligible — by district",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [
+        { key: "eligible", label: "Female eligible", align: "right", render: fmtNum },
+        { key: "eligibility_rate", label: "Eligibility rate", align: "right", render: fmtPct },
+      ],
+      rootRows,
+    });
+  }
+
   return (
     <div>
       <Grid cols={4}>
@@ -1041,7 +1058,24 @@ function AwarenessOverviewPage({ filters }) {
         <KpiTile label="Eligible" value={fmtNum(eligible)} onClick={() => openMetricDrill("eligible", "Eligible")} />
         <KpiTile label="Registration target" value={fmtNum(target)} onClick={() => openMetricDrill("target", "Registration target")} />
         <KpiTile label="Eligibility rate" value={fmtPct(eligibilityRate)} sub="Eligible / Interested" onClick={() => openMetricDrill("eligibility_rate", "Eligibility rate", fmtPct)} />
+        <KpiTile
+          label="Female eligibles"
+          value={fmtNum(femaleEligible)}
+          sub={femaleEligiblePct != null ? `${fmtPct(femaleEligiblePct)} of eligible · target 60%` : "% of eligible · target 60%"}
+          onClick={() => openFemaleEligibleDrill()}
+        />
       </Grid>
+
+      {femaleEligiblePct != null && (
+        <div style={{ marginBottom: 20 }}>
+          <Insight tone={femaleEligiblePct >= 60 ? "pos" : femaleEligiblePct >= 55 ? "warn" : "risk"}>
+            <b>{fmtPct(femaleEligiblePct)} of eligible youth are female</b> ({fmtNum(femaleEligible)} of {fmtNum(eligible)}) —{" "}
+            {femaleEligiblePct >= 60
+              ? "at or above the 60% target."
+              : `${Math.round((60 - femaleEligiblePct) * 10) / 10}pp below the 60% target.`}
+          </Insight>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <Card title="Awareness funnel — Reached → Interested → Eligible" subtitle="Female vs male at each stage" chip="REAL">
@@ -1083,20 +1117,22 @@ function AwarenessOverviewPage({ filters }) {
         </State>
       </Card>
 
-      <Card title="Category detail — by parish" subtitle="Reached, interested, target, eligible and % female per parish" chip="REAL">
+      <Card title="Category detail — by parish" subtitle="Reached, interested, target, eligible and % female per parish. Shows 10 rows at a time — scroll for the rest." chip="REAL">
         <State loading={parish.loading} error={parish.error} empty={!parish.loading && (parish.data?.parishes || []).length === 0}>
-          <DataTable
-            columns={[
-              { key: "district", label: "District" },
-              { key: "parish", label: "Parish" },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
-              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
-              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
-              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
-            ]}
-            rows={parish.data?.parishes || []}
-          />
+          <div style={{ maxHeight: 380, overflowY: "auto", border: `1px solid ${C.line}`, borderRadius: 6 }}>
+            <DataTable
+              columns={[
+                { key: "district", label: "District" },
+                { key: "parish", label: "Parish" },
+                { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+                { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
+                { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+                { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+                { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
+              ]}
+              rows={parish.data?.parishes || []}
+            />
+          </div>
         </State>
       </Card>
     </div>
