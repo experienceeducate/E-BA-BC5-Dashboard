@@ -76,11 +76,31 @@ export const DEMO = {
 
   "/api/recruitment/awareness": {
     by_district: [
-      { district: "BUGIRI", registered: 3200, interested: 2300, eligible: 1800 },
-      { district: "BUGWERI", registered: 2100, interested: 1500, eligible: 1200 },
-      { district: "IGANGA", registered: 2800, interested: 2000, eligible: 1550 },
-      { district: "KAMULI", registered: 1800, interested: 1250, eligible: 980 },
-      { district: "MAYUGE", registered: 2100, interested: 1550, eligible: 1170 },
+      { district: "BUGIRI", registered: 3200, interested: 2300, eligible: 1800, target: 3500 },
+      { district: "BUGWERI", registered: 2100, interested: 1500, eligible: 1200, target: 2400 },
+      { district: "IGANGA", registered: 2800, interested: 2000, eligible: 1550, target: 3000 },
+      { district: "KAMULI", registered: 1800, interested: 1250, eligible: 980, target: 2000 },
+      { district: "MAYUGE", registered: 2100, interested: 1550, eligible: 1170, target: 2300 },
+    ],
+  },
+
+  "/api/recruitment/awareness-parish": {
+    parishes: [
+      { district: "BUGIRI", parish: "BUBUGO", reached: 640, interested: 470, eligible: 360, target: 700, pct_female: 61 },
+      { district: "BUGIRI", parish: "NAMBALE", reached: 580, interested: 410, eligible: 320, target: 620, pct_female: 59 },
+      { district: "BUGIRI", parish: "BUWUNGA", reached: 510, interested: 360, eligible: 280, target: 560, pct_female: 60 },
+      { district: "BUGWERI", parish: "MAJENGO WARD", reached: 470, interested: 330, eligible: 250, target: 500, pct_female: 58 },
+      { district: "BUGWERI", parish: "KIGULU", reached: 420, interested: 300, eligible: 230, target: 450, pct_female: 57 },
+      { district: "BUGWERI", parish: "BUYINJA", reached: 390, interested: 270, eligible: 210, target: 420, pct_female: 60 },
+      { district: "IGANGA", parish: "BUKOYO", reached: 560, interested: 400, eligible: 310, target: 600, pct_female: 62 },
+      { district: "IGANGA", parish: "NAMUNGALWE", reached: 520, interested: 370, eligible: 290, target: 560, pct_female: 61 },
+      { district: "IGANGA", parish: "NAKIGO", reached: 480, interested: 340, eligible: 260, target: 520, pct_female: 60 },
+      { district: "KAMULI", parish: "NAWANGO", reached: 400, interested: 280, eligible: 210, target: 440, pct_female: 63 },
+      { district: "KAMULI", parish: "NAMWENDWA", reached: 360, interested: 250, eligible: 190, target: 400, pct_female: 61 },
+      { district: "KAMULI", parish: "BUGULUMBYA", reached: 330, interested: 230, eligible: 170, target: 360, pct_female: 59 },
+      { district: "MAYUGE", parish: "LUGOLOLE", reached: 450, interested: 320, eligible: 240, target: 490, pct_female: 55 },
+      { district: "MAYUGE", parish: "KIGANDALO", reached: 410, interested: 290, eligible: 220, target: 450, pct_female: 56 },
+      { district: "MAYUGE", parish: "MALONGO", reached: 380, interested: 270, eligible: 200, target: 410, pct_female: 58 },
     ],
   },
 
