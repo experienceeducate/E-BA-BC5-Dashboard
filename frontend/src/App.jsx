@@ -2326,17 +2326,20 @@ function LoginScreen({ onLogin }) {
       <div style={{ background: C.white, borderRadius: 12, padding: 36, width: 360 }}>
         <div style={{ fontWeight: 800, fontSize: 20, color: C.ink }}>EDUCATE<span style={{ color: C.gold }}>!</span></div>
         <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>E!BA Dashboard</div>
+        <a href={`${API_BASE}/api/auth/google/login`} style={{ display: "block", textAlign: "center", padding: 10, background: C.gold, color: C.ink, borderRadius: 6, fontWeight: 700, textDecoration: "none" }}>
+          Sign in with Google (staff)
+        </a>
+        <div style={{ fontSize: 11.5, color: C.muted, textAlign: "center", margin: "14px 0" }}>
+          Having trouble with Google sign-in? Use the guest password below.
+        </div>
         <form onSubmit={submit}>
           <input type="password" placeholder="Guest password" value={password} onChange={(e) => setPassword(e.target.value)}
             style={{ width: "100%", padding: 10, border: `1px solid ${C.line}`, borderRadius: 6, marginBottom: 10 }} />
           {err && <div style={{ color: C.coral, fontSize: 12, marginBottom: 10 }}>{err}</div>}
-          <button type="submit" disabled={busy} style={{ width: "100%", padding: 10, background: C.gold, color: C.ink, border: "none", borderRadius: 6, fontWeight: 700, cursor: "pointer" }}>
+          <button type="submit" disabled={busy} style={{ width: "100%", padding: 10, background: "transparent", color: C.ink, border: `1px solid ${C.line}`, borderRadius: 6, fontWeight: 700, cursor: "pointer" }}>
             {busy ? "Signing in…" : "Continue as guest"}
           </button>
         </form>
-        <a href={`${API_BASE}/api/auth/google/login`} style={{ display: "block", textAlign: "center", marginTop: 12, fontSize: 13, color: C.teal, textDecoration: "none", fontWeight: 600 }}>
-          Sign in with Google (staff)
-        </a>
       </div>
     </div>
   );
