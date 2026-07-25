@@ -989,6 +989,20 @@ function withEligibilityRate(r) {
   return { ...r, eligibility_rate: r.interested ? Math.round((1000 * r.eligible) / r.interested) / 10 : null };
 }
 
+// Progress-on-target banding shared by the Eligible scorecard, its insight,
+// and the parish table's "Progress on target" column: 100%+ means the target
+// is met, 70-99% is on track, below 70% is flagged as at risk.
+const PROGRESS_TONE_COLOR = { pos: C.green, warn: C.gold, risk: C.coral };
+function progressTone(pct) {
+  if (pct == null) return null;
+  if (pct >= 100) return "pos";
+  if (pct >= 70) return "warn";
+  return "risk";
+}
+function progressOnTarget(eligible, target) {
+  return target ? Math.round((1000 * (eligible || 0)) / target) / 10 : null;
+}
+
 function AwarenessOverviewPage({ filters }) {
   const drill = useDrill();
   const total = useApi(`/api/recruitment/awareness${buildParams(filters)}`);
@@ -1035,6 +1049,8 @@ function AwarenessOverviewPage({ filters }) {
 
   const femaleEligible = sumBy(fRows, "eligible");
   const femaleEligiblePct = stageStats.find((s) => s.stage === "Eligible")?.pct_female ?? null;
+  const interestRate = reached ? Math.round((1000 * interested) / reached) / 10 : null;
+  const eligibleProgressPct = progressOnTarget(eligible, target);
 
   function openFemaleEligibleDrill() {
     const rootRows = fRows.map(withEligibilityRate).sort((a, b) => (b.eligible || 0) - (a.eligible || 0));
@@ -1054,8 +1070,22 @@ function AwarenessOverviewPage({ filters }) {
     <div>
       <Grid cols={4}>
         <KpiTile label="Reached" value={fmtNum(reached)} onClick={() => openMetricDrill("registered", "Reached")} />
-        <KpiTile label="Interested" value={fmtNum(interested)} onClick={() => openMetricDrill("interested", "Interested")} />
-        <KpiTile label="Eligible" value={fmtNum(eligible)} onClick={() => openMetricDrill("eligible", "Eligible")} />
+        <KpiTile
+          label="Interested"
+          value={fmtNum(interested)}
+          sub={interestRate != null ? `${fmtPct(interestRate)} of reached` : undefined}
+          onClick={() => openMetricDrill("interested", "Interested")}
+        />
+        <KpiTile
+          label="Eligible"
+          value={fmtNum(eligible)}
+          sub={
+            eligibleProgressPct != null
+              ? <span style={{ color: PROGRESS_TONE_COLOR[progressTone(eligibleProgressPct)], fontWeight: 700 }}>{fmtPct(eligibleProgressPct)} of {fmtNum(target)} target</span>
+              : "no target set"
+          }
+          onClick={() => openMetricDrill("eligible", "Eligible")}
+        />
         <KpiTile label="Registration target" value={fmtNum(target)} onClick={() => openMetricDrill("target", "Registration target")} />
         <KpiTile label="Eligibility rate" value={fmtPct(eligibilityRate)} sub="Eligible / Interested" onClick={() => openMetricDrill("eligibility_rate", "Eligibility rate", fmtPct)} />
         <KpiTile
@@ -1066,16 +1096,31 @@ function AwarenessOverviewPage({ filters }) {
         />
       </Grid>
 
-      {femaleEligiblePct != null && (
-        <div style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+        {interestRate != null && (
+          <Insight tone="neutral">
+            <b>{fmtPct(interestRate)} of reached youth expressed interest</b> ({fmtNum(interested)} of {fmtNum(reached)} reached).
+          </Insight>
+        )}
+        {eligibleProgressPct != null && (
+          <Insight tone={progressTone(eligibleProgressPct)}>
+            <b>Eligible progress: {fmtPct(eligibleProgressPct)} of the {fmtNum(target)} registration target</b> ({fmtNum(eligible)} eligible so far) —{" "}
+            {eligibleProgressPct >= 100
+              ? "target met."
+              : eligibleProgressPct >= 70
+                ? "on track toward target."
+                : "behind pace — at risk of missing target."}
+          </Insight>
+        )}
+        {femaleEligiblePct != null && (
           <Insight tone={femaleEligiblePct >= 60 ? "pos" : femaleEligiblePct >= 55 ? "warn" : "risk"}>
             <b>{fmtPct(femaleEligiblePct)} of eligible youth are female</b> ({fmtNum(femaleEligible)} of {fmtNum(eligible)}) —{" "}
             {femaleEligiblePct >= 60
               ? "at or above the 60% target."
               : `${Math.round((60 - femaleEligiblePct) * 10) / 10}pp below the 60% target.`}
           </Insight>
-        </div>
-      )}
+        )}
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <Card title="Awareness funnel — Reached → Interested → Eligible" subtitle="Female vs male at each stage" chip="REAL">
@@ -1117,7 +1162,7 @@ function AwarenessOverviewPage({ filters }) {
         </State>
       </Card>
 
-      <Card title="Category detail — by parish" subtitle="Reached, interested, target, eligible and % female per parish. Shows 10 rows at a time — scroll for the rest." chip="REAL">
+      <Card title="Category detail — by parish" subtitle="Reached, interested, target, eligible, % female and progress on target (eligible ÷ target) per parish. Shows 10 rows at a time — scroll for the rest." chip="REAL">
         <State loading={parish.loading} error={parish.error} empty={!parish.loading && (parish.data?.parishes || []).length === 0}>
           <div style={{ maxHeight: 380, overflowY: "auto", border: `1px solid ${C.line}`, borderRadius: 6 }}>
             <DataTable
@@ -1129,6 +1174,14 @@ function AwarenessOverviewPage({ filters }) {
                 { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
                 { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
                 { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
+                {
+                  key: "progress_on_target", label: "Progress on target", align: "right",
+                  render: (_v, r) => {
+                    const pct = progressOnTarget(r.eligible, r.target);
+                    const tone = progressTone(pct);
+                    return pct != null ? <span style={{ color: PROGRESS_TONE_COLOR[tone], fontWeight: 700 }}>{fmtPct(pct)}</span> : "—";
+                  },
+                },
               ]}
               rows={parish.data?.parishes || []}
             />
