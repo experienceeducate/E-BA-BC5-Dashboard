@@ -17,7 +17,7 @@ def test_filters_shape(as_staff, mock_run_query):
     assert r.status_code == 200
     assert r.json()["districts"] == ["BUGIRI", "BUGWERI"]
     assert r.json()["genders"] == ["FEMALE", "MALE"]
-    assert r.json()["cohorts"] == ["BOOTCAMP_4"]
+    assert r.json()["cohorts"] == ["BOOTCAMP_4", "BOOTCAMP_5"]
 
 
 def test_overview_funnel_orders_and_computes_pct(as_staff, mock_run_query):

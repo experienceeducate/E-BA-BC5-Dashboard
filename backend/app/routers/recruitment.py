@@ -31,37 +31,65 @@ from app.core.tables import (
     SITE_FUNNEL_MEASURE_TARGET,
     SITE_FUNNEL_MEASURE_ACTUAL,
     AWARENESS_KYC,
-    ACTIVE_COHORT,
+    ACTIVE_COHORTS,
     AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT,
+    AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT,
     CONTROL_CALLS_BC4,
     ACQUISITION_CALL_LOG,
     active_cohort_clause,
+    resolve_active_cohorts,
 )
 
 router = APIRouter()
 
 
-def _auto_confirmed_count(district, gender, role):
-    """Eligible + treatment-assigned youth from this cohort's short-cycle pilot
-    subcounties (see AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT in tables.py) — they
-    bypass daily_acquisition_summary's call-center process entirely and are
-    auto-confirmed, so this is added on top of that table's confirmed count,
-    never looked up inside it."""
-    subcounties = AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT.get(ACTIVE_COHORT)
-    if not subcounties:
-        return 0
-    where, params = build_where(
-        districts=district, gender=gender,
-        extra=[active_cohort_clause("acf")], prefix="acf",
-        district_col="youth_district", gender_col="youth_gender",
-    )
-    sql = f"""
-    SELECT COUNT(*) AS n FROM {AWARENESS_KYC}
-    WHERE {where} AND elligible = TRUE AND is_treatment = TRUE
-      AND UPPER(youth_subcounty) IN UNNEST(@acf_subcounties)
-    """
-    params = params + [_array("acf_subcounties", "STRING", subcounties)]
-    return (database.run_query(sql, params, role=role) or [{}])[0].get("n") or 0
+def _auto_confirmed_count(district, gender, role, cohort=None):
+    """Youth auto-confirmed by policy as part of a cohort's short-cycle
+    ("2.5-week") pilot — bypassing daily_acquisition_summary's call-center
+    reach/confirm process entirely, so added on top of that table's confirmed
+    count, never looked up inside it. Summed across resolve_active_cohorts(cohort)
+    (the requested cohort filter, or every cycle in ACTIVE_COHORTS when none is
+    given); each cycle's pilot is scoped by whichever mechanism tables.py has
+    on file for it — BOOTCAMP_4 by subcounty (AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT),
+    BOOTCAMP_5 by registration date (AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT,
+    temporary — see tables.py)."""
+    total = 0
+    for cycle in resolve_active_cohorts(cohort):
+        subcounties = AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT.get(cycle)
+        since_date = AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT.get(cycle)
+        if subcounties:
+            where, params = build_where(
+                districts=district, gender=gender,
+                extra=[(f"bootcamp_cycle = @acf_cycle", [_scalar("acf_cycle", "STRING", cycle)])],
+                prefix="acf", district_col="youth_district", gender_col="youth_gender",
+            )
+            sql = f"""
+            SELECT COUNT(*) AS n FROM {AWARENESS_KYC}
+            WHERE {where} AND elligible = TRUE AND is_treatment = TRUE
+              AND UPPER(youth_subcounty) IN UNNEST(@acf_subcounties)
+            """
+            params = params + [_array("acf_subcounties", "STRING", subcounties)]
+            total += (database.run_query(sql, params, role=role) or [{}])[0].get("n") or 0
+        elif since_date:
+            g = (gender or "").strip().lower()
+            reg_col = (
+                "total_registered_female" if g == "female"
+                else "total_registered_male" if g == "male"
+                else "total_registered_youth"
+            )
+            where, params = build_where(
+                districts=district,
+                extra=[(f"bootcamp_cycle = @acfd_cycle", [_scalar("acfd_cycle", "STRING", cycle)])],
+                prefix="acfd", district_col="youth_district",
+            )
+            sql = f"""
+            SELECT SUM({reg_col}) AS n FROM {AWARENESS_SUMMARY}
+            WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+              AND report_date >= @acfd_since
+            """
+            params = params + [_scalar("acfd_since", "DATE", since_date)]
+            total += (database.run_query(sql, params, role=role) or [{}])[0].get("n") or 0
+    return total
 
 
 def _filter_extra(cohort, prefix):
@@ -77,7 +105,7 @@ def awareness(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     gender:   Optional[str] = Query(None),
-    cohort:   List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort:   List[str] = Query(default=[]),
 ):
     """Registered -> Interested -> Eligible, with female share by district.
 
@@ -95,7 +123,7 @@ def awareness(
 
     where, params = build_where(
         districts=district,
-        extra=[active_cohort_clause("aw")], prefix="aw",
+        extra=[active_cohort_clause("aw", requested=cohort)], prefix="aw",
         district_col="youth_district",
     )
     actual_sql = f"""
@@ -127,12 +155,13 @@ def awareness(
 def awareness_parish(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
 ):
     """Reached/interested/eligible/target/% female at parish grain, for the
     Awareness tab's "Category detail — by parish" table."""
     where, params = build_where(
         districts=district,
-        extra=[active_cohort_clause("awp")], prefix="awp",
+        extra=[active_cohort_clause("awp", requested=cohort)], prefix="awp",
         district_col="youth_district",
     )
     actual_sql = f"""
@@ -168,6 +197,7 @@ def awareness_parish(
 def awareness_mobilisers(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
 ):
     """Per-mobiliser reach and eligible/eligible-female conversion, for the
     Awareness tab's Mobilisers sub-page. Names masked for the guest role.
@@ -178,7 +208,7 @@ def awareness_mobilisers(
     """
     where, params = build_where(
         districts=district,
-        extra=[active_cohort_clause("awm")], prefix="awm",
+        extra=[active_cohort_clause("awm", requested=cohort)], prefix="awm",
         district_col="youth_district",
     )
     sql = f"""
@@ -205,6 +235,7 @@ def awareness_kyc(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     gender:   Optional[str] = Query(None),
+    cohort:   List[str] = Query(default=[]),
 ):
     """Persona/demographic breakdown of the eligible pool, for the Awareness
     tab's KYC / Youth Profile sub-page. Backed by the live AWARENESS_KYC
@@ -212,7 +243,7 @@ def awareness_kyc(
     """
     base_where, base_params = build_where(
         districts=district, gender=gender,
-        extra=[active_cohort_clause("kyc")], prefix="kyc",
+        extra=[active_cohort_clause("kyc", requested=cohort)], prefix="kyc",
         district_col="youth_district", gender_col="youth_gender",
     )
     elig_where = f"{base_where} AND elligible = TRUE"
@@ -299,12 +330,13 @@ def awareness_kyc(
 def awareness_forecast(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
 ):
     """Daily registration trend vs target, with a simple pace-to-target
     projection, for the Awareness tab's Forecast sub-page."""
     where, params = build_where(
         districts=district,
-        extra=[active_cohort_clause("awf")], prefix="awf",
+        extra=[active_cohort_clause("awf", requested=cohort)], prefix="awf",
         district_col="youth_district",
     )
     daily_sql = f"""
@@ -349,7 +381,7 @@ def mobilisation(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     gender:   Optional[str] = Query(None),
-    cohort:   List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort:   List[str] = Query(default=[]),
 ):
     """Assigned -> Reached -> Confirmed with reach & mobilisation rates.
 
@@ -374,7 +406,7 @@ def mobilisation(
     recruitment team — Assigned is "treatment-eligible-at-recruitment").
     """
     assigned_where, assigned_params = build_where(
-        districts=district, extra=[active_cohort_clause("moa")], prefix="moa",
+        districts=district, extra=[active_cohort_clause("moa", requested=cohort)], prefix="moa",
         district_col="agent_district",
     )
     preload_assigned = (database.run_query(
@@ -383,7 +415,7 @@ def mobilisation(
         assigned_params, role=user.role) or [{}])[0].get("assigned") or 0
 
     actual_where, actual_params = build_where(
-        districts=district, gender=gender, extra=[active_cohort_clause("mor")], prefix="mor",
+        districts=district, gender=gender, extra=[active_cohort_clause("mor", requested=cohort)], prefix="mor",
         district_col="agent_district", gender_col="youth_gender",
     )
     actual = (database.run_query(
@@ -396,7 +428,7 @@ def mobilisation(
     # Auto-confirmed pilot-subcounty youth never entered the preload list
     # either — they're both "assigned" and "confirmed" simultaneously, with
     # zero reach calls (they bypass the call center entirely).
-    auto_confirmed = _auto_confirmed_count(district, gender, user.role)
+    auto_confirmed = _auto_confirmed_count(district, gender, user.role, cohort)
 
     def _segment(assigned, reached, confirmed, reach_denominator=None):
         # "Reached" only exists as a concept for the 4-week cycle — the
@@ -424,17 +456,17 @@ def mobilisation(
     # param — filtering to gender=FEMALE and then asking "what % is female"
     # would trivially always read 100%.
     gsplit_where, gsplit_params = build_where(
-        districts=district, extra=[active_cohort_clause("mog")], prefix="mog",
+        districts=district, extra=[active_cohort_clause("mog", requested=cohort)], prefix="mog",
         district_col="agent_district",
     )
     four_week_confirmed_female = (database.run_query(
         f"SELECT SUM(total_acquired_youth) AS n FROM {DAILY_ACQUISITION_SUMMARY} "
         f"WHERE {gsplit_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND UPPER(youth_gender) = 'FEMALE'",
         gsplit_params, role=user.role) or [{}])[0].get("n") or 0
-    confirmed_female = four_week_confirmed_female + _auto_confirmed_count(district, "FEMALE", user.role)
+    confirmed_female = four_week_confirmed_female + _auto_confirmed_count(district, "FEMALE", user.role, cohort)
 
     target_where, target_params = build_where(
-        districts=district, extra=[active_cohort_clause("mot")], prefix="mot",
+        districts=district, extra=[active_cohort_clause("mot", requested=cohort)], prefix="mot",
         district_col="agent_district",
     )
     target = (database.run_query(
@@ -458,13 +490,14 @@ def mobilisation(
 def mobilisation_heatmap(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
 ):
     """Day × venue matrix of unique youth reached and confirmed, for the
     Mobilisation tab's heatmap. Backed by DAILY_ACQUISITION_SUMMARY's real
     'daily_aggregates' rows (call_date and venue_name are both populated
     there — see tables.py)."""
     where, params = build_where(
-        districts=district, extra=[active_cohort_clause("mh")], prefix="mh",
+        districts=district, extra=[active_cohort_clause("mh", requested=cohort)], prefix="mh",
         district_col="agent_district",
     )
     sql = f"""
@@ -483,11 +516,12 @@ def mobilisation_heatmap(
 def mobilisation_forecast(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
 ):
     """Daily reached/confirmed trend vs the mobilisation target, with a simple
     pace-to-target projection — same shape as /api/recruitment/awareness-forecast."""
     where, params = build_where(
-        districts=district, extra=[active_cohort_clause("mf")], prefix="mf",
+        districts=district, extra=[active_cohort_clause("mf", requested=cohort)], prefix="mf",
         district_col="agent_district",
     )
     daily_sql = f"""
@@ -500,7 +534,7 @@ def mobilisation_forecast(
     daily = database.run_query(daily_sql, params, role=user.role)
 
     target_where, target_params = build_where(
-        districts=district, extra=[active_cohort_clause("mft")], prefix="mft",
+        districts=district, extra=[active_cohort_clause("mft", requested=cohort)], prefix="mft",
         district_col="agent_district",
     )
     target = (database.run_query(
@@ -508,7 +542,7 @@ def mobilisation_forecast(
         f"WHERE {target_where} AND measure = '{DAILY_ACQ_MEASURE_TARGET}'",
         target_params, role=user.role) or [{}])[0].get("t") or 0
 
-    confirmed_to_date = sum(d.get("confirmed") or 0 for d in daily) + _auto_confirmed_count(district, None, user.role)
+    confirmed_to_date = sum(d.get("confirmed") or 0 for d in daily) + _auto_confirmed_count(district, None, user.role, cohort)
     n_days = len(daily)
     avg_daily_rate = (confirmed_to_date / n_days) if n_days else None
     remaining = max(target - confirmed_to_date, 0)
@@ -578,22 +612,23 @@ def control_calls(user: User = Depends(current_user)):
 
 
 @router.get("/api/recruitment/call-centre-insights")
-def call_centre_insights(user: User = Depends(current_user)):
+def call_centre_insights(user: User = Depends(current_user), cohort: List[str] = Query(default=[])):
     """Barriers youth raise on mobilisation/acquisition calls, for the
     Mobilisation tab's Call Centre Insights sub-page. Backed by the live
     ACQUISITION_CALL_LOG's `barriers` field — a comma-separated free-text
     column (not JSON), split into individual barriers since a call can raise
-    more than one. Not tagged by district/gender in the source, so no filters.
+    more than one. Not tagged by district/gender in the source, so no filters
+    for those — cohort is a real column here though, so that filter applies.
     "Questions youth ask" (in the reference design) has no structured source
     in the live data — omitted rather than inventing sample question text.
     """
     sql = f"""
     SELECT TRIM(barrier) AS barrier, COUNT(*) AS count
     FROM {ACQUISITION_CALL_LOG}, UNNEST(SPLIT(barriers, ',')) AS barrier
-    WHERE bootcamp_cycle = @cycle AND barriers IS NOT NULL AND barriers != '' AND TRIM(barrier) != ''
+    WHERE bootcamp_cycle IN UNNEST(@cycle) AND barriers IS NOT NULL AND barriers != '' AND TRIM(barrier) != ''
     GROUP BY barrier ORDER BY count DESC
     """
-    rows = database.run_query(sql, [_scalar("cycle", "STRING", ACTIVE_COHORT)], role=user.role)
+    rows = database.run_query(sql, [_array("cycle", "STRING", resolve_active_cohorts(cohort))], role=user.role)
     total = sum(r["count"] for r in rows)
     for r in rows:
         r["pct"] = round(100 * r["count"] / total, 1) if total else None
@@ -605,7 +640,7 @@ def acquisition(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     gender:   Optional[str] = Query(None),
-    cohort:   List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort:   List[str] = Query(default=[]),
 ):
     """Verified -> Acquired by district (arrival-day/Karibu-day verification).
 
@@ -617,7 +652,7 @@ def acquisition(
     """
     where, params = build_where(
         districts=district, gender=gender,
-        extra=[active_cohort_clause("ac")], prefix="ac",
+        extra=[active_cohort_clause("ac", requested=cohort)], prefix="ac",
     )
     sql = f"""
     SELECT
@@ -636,7 +671,7 @@ def acquisition(
 def acquisition_arrival(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
-    cohort:   List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort:   List[str] = Query(default=[]),
 ):
     """Verified -> acquired at venue grain, for the Acquisition tab's Arrival &
     Verification sub-page — same live SITE_FUNNEL_METRICS mart as /acquisition
@@ -650,7 +685,7 @@ def acquisition_arrival(
     here is female share of ACQUIRED (which is gender-split), not verified.
     """
     where, params = build_where(
-        districts=district, extra=[active_cohort_clause("aa")], prefix="aa",
+        districts=district, extra=[active_cohort_clause("aa", requested=cohort)], prefix="aa",
     )
     sql = f"""
     SELECT UPPER(district) AS district, venue_name AS venue,
@@ -727,6 +762,7 @@ def personas(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     gender:   Optional[str] = Query(None),
+    cohort:   List[str] = Query(default=[]),
     limit:    int = Query(200, ge=1, le=1000),
 ):
     """Youth profile / KYC rows. Names masked for guests; raw id never serialised.
@@ -735,7 +771,7 @@ def personas(
     """
     where, params = build_where(
         districts=district, gender=gender,
-        extra=[active_cohort_clause("pe")], prefix="pe",
+        extra=[active_cohort_clause("pe", requested=cohort)], prefix="pe",
         district_col="youth_district", gender_col="youth_gender",
     )
     sql = f"""
