@@ -1343,10 +1343,39 @@ function AwarenessMobilisersPage({ filters }) {
   );
 }
 
+// Persona strip for the KYC / Youth Profile page — matches the reference
+// prototype's "Eligible youth profile" card layout (a row of clickable %
+// cards read as "X% ... of eligible youth") exactly, but every card is
+// computed from the live AWARENESS_KYC table instead of the prototype's
+// illustrative sample fields; two of the reference's six persona traits
+// (marital status, family-at-event) have no live BigQuery column and are
+// swapped for % Female and Duplicate records, which do.
+const KYC_PERSONA_CARDS = [
+  { key: "pct_p5_p7", label: "Completed P5–P7", sub: "of eligible youth" },
+  { key: "pct_age_18_25", label: "Aged 18–25", sub: "of eligible youth" },
+  { key: "pct_owns_phone", label: "Own a phone", sub: "reachable by SMS" },
+  { key: "pct_owns_business", label: "Own a business", sub: "already running one" },
+  { key: "pct_female", label: "Female", sub: "of eligible youth · 60% target" },
+  { key: "duplicate_rate", label: "Duplicate records", sub: "flagged in the system" },
+];
+
 function AwarenessKycPage({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/recruitment/awareness-kyc${buildParams(filters)}`);
   const demo = data?.demographics || {};
   const bizByGenderDistrict = data?.business?.by_gender_district || [];
+  const filterMeta = useApi("/api/filters");
+  const allDistricts = filterMeta.data?.districts || [];
+
+  function openPersonaDrill(metricKey, label, sub) {
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: "value", label: sub || label, align: "right", render: fmtPct }],
+      rootRows: () => fetchPerDistrict("/api/recruitment/awareness-kyc", filters, allDistricts, (json) => json?.demographics?.[metricKey] ?? null),
+    });
+  }
 
   return (
     <div>
@@ -1356,15 +1385,22 @@ function AwarenessKycPage({ filters }) {
         interested AND age 18–30 AND education P5–S3 AND income ≤ UGX 30,000.
       </p>
 
-      <Card title="Eligible youth profile" subtitle="Persona snapshot of the eligible pool" chip="REAL">
+      <Card title="Eligible youth profile" subtitle="Persona snapshot of the eligible pool — click a card to drill by district" chip="REAL">
         <State loading={loading} error={error} empty={!loading && !demo.eligible_count}>
-          <Grid cols={5}>
-            <KpiTile label="Eligible youth" value={fmtNum(demo.eligible_count)} />
-            <KpiTile label="% Female" value={fmtPct(demo.pct_female)} />
-            <KpiTile label="Average age" value={demo.avg_age ?? "—"} />
-            <KpiTile label="Already own a business" value={fmtNum(demo.owns_business_count)} />
-            <KpiTile label="Duplicate records" value={fmtNum(demo.duplicate_count)} sub={fmtPct(demo.duplicate_rate)} />
+          <Grid cols={6}>
+            {KYC_PERSONA_CARDS.map((c) => (
+              <KpiTile
+                key={c.key}
+                label={c.label}
+                value={fmtPct(demo[c.key])}
+                sub={c.sub}
+                onClick={() => openPersonaDrill(c.key, c.label, c.sub)}
+              />
+            ))}
           </Grid>
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>
+            {fmtNum(demo.eligible_count)} eligible youth in this cohort · average age {demo.avg_age ?? "—"}.
+          </p>
         </State>
       </Card>
 

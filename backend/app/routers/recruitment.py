@@ -266,6 +266,9 @@ def awareness_kyc(
       AVG(youth_age) AS avg_age,
       COUNTIF(owns_business) AS owns_business_count,
       COUNTIF(duplicate_status = 'duplicate') AS duplicate_count,
+      SAFE_DIVIDE(COUNTIF(youth_level_of_education IN ('P5', 'P6', 'P7')), NULLIF(COUNT(*), 0)) * 100 AS pct_p5_p7,
+      SAFE_DIVIDE(COUNTIF(youth_age BETWEEN 18 AND 25), NULLIF(COUNT(*), 0)) * 100 AS pct_age_18_25,
+      SAFE_DIVIDE(COUNTIF(youth_phone IS NOT NULL AND TRIM(youth_phone) != ''), NULLIF(COUNT(*), 0)) * 100 AS pct_owns_phone,
       COUNT(*) AS total_count
     FROM {AWARENESS_KYC}
     WHERE {elig_where}
@@ -327,8 +330,12 @@ def awareness_kyc(
             "pct_female": round(demo["pct_female"], 1) if demo.get("pct_female") is not None else None,
             "avg_age": round(demo["avg_age"], 1) if demo.get("avg_age") is not None else None,
             "owns_business_count": demo.get("owns_business_count") or 0,
+            "pct_owns_business": round(100 * (demo.get("owns_business_count") or 0) / demo["total_count"], 1) if demo.get("total_count") else None,
             "duplicate_count": demo.get("duplicate_count") or 0,
             "duplicate_rate": round(100 * (demo.get("duplicate_count") or 0) / demo["total_count"], 1) if demo.get("total_count") else None,
+            "pct_p5_p7": round(demo["pct_p5_p7"], 1) if demo.get("pct_p5_p7") is not None else None,
+            "pct_age_18_25": round(demo["pct_age_18_25"], 1) if demo.get("pct_age_18_25") is not None else None,
+            "pct_owns_phone": round(demo["pct_owns_phone"], 1) if demo.get("pct_owns_phone") is not None else None,
         },
         "activity": activity,
         "reasons": reasons,
