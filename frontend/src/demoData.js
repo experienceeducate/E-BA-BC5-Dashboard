@@ -76,11 +76,11 @@ export const DEMO = {
 
   "/api/recruitment/awareness": {
     by_district: [
-      { district: "BUGIRI", registered: 3200, interested: 2300, eligible: 1800, target: 3500 },
-      { district: "BUGWERI", registered: 2100, interested: 1500, eligible: 1200, target: 2400 },
-      { district: "IGANGA", registered: 2800, interested: 2000, eligible: 1550, target: 3000 },
-      { district: "KAMULI", registered: 1800, interested: 1250, eligible: 980, target: 2000 },
-      { district: "MAYUGE", registered: 2100, interested: 1550, eligible: 1170, target: 2300 },
+      { district: "BUGIRI", registered: 3200, interested: 2300, eligible: 1800, target: 3500, pct_female: 60 },
+      { district: "BUGWERI", registered: 2100, interested: 1500, eligible: 1200, target: 2400, pct_female: 58 },
+      { district: "IGANGA", registered: 2800, interested: 2000, eligible: 1550, target: 3000, pct_female: 61 },
+      { district: "KAMULI", registered: 1800, interested: 1250, eligible: 980, target: 2000, pct_female: 61 },
+      { district: "MAYUGE", registered: 2100, interested: 1550, eligible: 1170, target: 2300, pct_female: 56 },
     ],
   },
 
