@@ -991,6 +991,9 @@ function withEligibilityRate(r) {
 
 function AwarenessOverviewPage({ filters }) {
   const drill = useDrill();
+  const [search, setSearch] = useState("");
+  const [parishCat, setParishCat] = useState("All");
+  const [parishPage, setParishPage] = useState(0);
   const total = useApi(`/api/recruitment/awareness${buildParams(filters)}`);
   const female = useApi(`/api/recruitment/awareness${buildParamsOverride(filters, { gender: "Female" })}`);
   const male = useApi(`/api/recruitment/awareness${buildParamsOverride(filters, { gender: "Male" })}`);
@@ -1002,6 +1005,18 @@ function AwarenessOverviewPage({ filters }) {
   const eligible = sumBy(rows, "eligible");
   const target = sumBy(rows, "target");
   const eligibilityRate = interested ? Math.round((1000 * eligible) / interested) / 10 : null;
+
+  // Percentages + RAG status for the top score-card row — same read as the
+  // reference prototype's awareKpi strip, computed live from this cohort.
+  const intRate = reached ? Math.round((1000 * interested) / reached) / 10 : null;
+  const eligRateOfReached = reached ? Math.round((1000 * eligible) / reached) / 10 : null;
+  const progressPct = target ? Math.round((1000 * eligible) / target) / 10 : null;
+  const progressCategory = categorizeRate(progressPct);
+  const eligTarget = RATE_TARGETS.eligibility_rate;
+  const eligStatus = eligibilityRate == null ? null
+    : eligibilityRate >= eligTarget.good ? { label: `At/above the ${eligTarget.good}% target`, color: C.green }
+    : eligibilityRate >= eligTarget.warn ? { label: `Approaching the ${eligTarget.good}% target`, color: C.gold }
+    : { label: `Below the ${eligTarget.warn}% warning threshold`, color: C.coral };
 
   function openMetricDrill(metricKey, label, formatter = fmtNum) {
     const rootRows = rows.map(withEligibilityRate).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
@@ -1033,14 +1048,80 @@ function AwarenessOverviewPage({ filters }) {
   const genderLoading = total.loading || female.loading || male.loading;
   const genderError = total.error || female.error || male.error;
 
+  // Data-driven read on where the 60% female target is actually being lost —
+  // mirrors the reference prototype's "the lever is reach, not eligibility"
+  // note, computed live from this cohort's real Reached vs Eligible split.
+  const reachedFemalePct = stageStats[0]?.pct_female;
+  const eligibleFemalePct = stageStats[2]?.pct_female;
+  let femaleGapInsight = null;
+  if (reachedFemalePct != null && eligibleFemalePct != null) {
+    const holds = eligibleFemalePct >= reachedFemalePct - 1;
+    femaleGapInsight = {
+      tone: holds ? (eligibleFemalePct >= 60 ? "pos" : "warn") : "risk",
+      text: holds
+        ? `Female share ${eligibleFemalePct >= reachedFemalePct ? "holds or improves" : "roughly holds"} through eligibility screening — ${fmtPct(reachedFemalePct)} at Reached vs ${fmtPct(eligibleFemalePct)} at Eligible. ${eligibleFemalePct >= 60 ? "At or above the 60% target." : "The gap to the 60% target opens at reach, not screening — eligibility itself isn't the constraint."}`
+        : `Female share drops through eligibility screening — ${fmtPct(reachedFemalePct)} at Reached falls to ${fmtPct(eligibleFemalePct)} at Eligible. Unlike reach, this gap is being created by who qualifies, not just who's contacted.`,
+    };
+  }
+
+  // Same rate-vs-target bands as the Mobilisation/Acquisition venue
+  // categorisation (see RATE_CATEGORY_* / EntityCategorisation), applied here
+  // at parish grain: eligible ÷ registration target. Carries every field the
+  // detail table needs too, so the category tiles and the table are driven
+  // by one row set — click a tile, filter the same table, no separate panel.
+  const parishRowsWithCat = (parish.data?.parishes || []).map((r) => {
+    const rate = r.target ? Math.round((1000 * r.eligible) / r.target) / 10 : null;
+    return { ...r, rate, category: categorizeRate(rate) };
+  });
+  const parishCatCounts = { All: parishRowsWithCat.length };
+  RATE_CATEGORY_ORDER.forEach((c) => { parishCatCounts[c] = parishRowsWithCat.filter((r) => r.category === c).length; });
+
+  const q = search.trim().toLowerCase();
+  const filteredParishRows = parishRowsWithCat.filter((r) => {
+    if (parishCat !== "All" && r.category !== parishCat) return false;
+    if (!q) return true;
+    return (r.district || "").toLowerCase().includes(q) || (r.parish || "").toLowerCase().includes(q);
+  });
+  const parishPageSize = 10;
+  const parishMaxPage = Math.max(0, Math.ceil(filteredParishRows.length / parishPageSize) - 1);
+  const parishPageClamped = Math.min(parishPage, parishMaxPage);
+  const pagedParishRows = filteredParishRows.slice(parishPageClamped * parishPageSize, parishPageClamped * parishPageSize + parishPageSize);
+
   return (
     <div>
+      <input
+        type="text"
+        value={search}
+        onChange={(e) => { setSearch(e.target.value); setParishPage(0); }}
+        placeholder="Search parish or district…"
+        style={{ width: "100%", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5, marginBottom: 4 }}
+      />
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
+        Searches the "Category detail — by parish" table further down this page.
+      </div>
+
       <Grid cols={4}>
-        <KpiTile label="Reached" value={fmtNum(reached)} onClick={() => openMetricDrill("registered", "Reached")} />
-        <KpiTile label="Interested" value={fmtNum(interested)} onClick={() => openMetricDrill("interested", "Interested")} />
-        <KpiTile label="Eligible" value={fmtNum(eligible)} onClick={() => openMetricDrill("eligible", "Eligible")} />
-        <KpiTile label="Registration target" value={fmtNum(target)} onClick={() => openMetricDrill("target", "Registration target")} />
-        <KpiTile label="Eligibility rate" value={fmtPct(eligibilityRate)} sub="Eligible / Interested" onClick={() => openMetricDrill("eligibility_rate", "Eligibility rate", fmtPct)} />
+        <KpiTile label="Reached" value={fmtNum(reached)} sub="Engaged at an awareness activity" onClick={() => openMetricDrill("registered", "Reached")} />
+        <KpiTile
+          label="Interested" value={fmtNum(interested)}
+          sub={intRate != null ? `${intRate}% of reached expressed training interest` : undefined}
+          onClick={() => openMetricDrill("interested", "Interested")}
+        />
+        <KpiTile
+          label="Eligible" value={fmtNum(eligible)}
+          sub={eligRateOfReached != null ? `${eligRateOfReached}% of reached qualify — age 18–30, P5–S3, ≤UGX 30,000 income` : undefined}
+          onClick={() => openMetricDrill("eligible", "Eligible")}
+        />
+        <KpiTile
+          label="Registration target" value={fmtNum(target)}
+          sub={progressPct != null ? <span style={{ color: RATE_CATEGORY_COLOR[progressCategory], fontWeight: 700 }}>{fmtPct(progressPct)} of target reached — {progressCategory}</span> : undefined}
+          onClick={() => openMetricDrill("target", "Registration target")}
+        />
+        <KpiTile
+          label="Eligibility rate" value={fmtPct(eligibilityRate)}
+          sub={eligStatus ? <span style={{ color: eligStatus.color, fontWeight: 700 }}>{eligStatus.label}</span> : "Eligible / Interested"}
+          onClick={() => openMetricDrill("eligibility_rate", "Eligibility rate", fmtPct)}
+        />
       </Grid>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
@@ -1063,6 +1144,11 @@ function AwarenessOverviewPage({ filters }) {
             <div style={{ paddingTop: 8 }}>
               {stageStats.map((s) => <Gauge key={s.stage} label={s.stage} pct={s.pct_female} target={60} />)}
             </div>
+            {femaleGapInsight && (
+              <div style={{ marginTop: 4 }}>
+                <Insight tone={femaleGapInsight.tone}>{femaleGapInsight.text}</Insight>
+              </div>
+            )}
           </State>
         </Card>
       </div>
@@ -1083,20 +1169,36 @@ function AwarenessOverviewPage({ filters }) {
         </State>
       </Card>
 
-      <Card title="Category detail — by parish" subtitle="Reached, interested, target, eligible and % female per parish" chip="REAL">
-        <State loading={parish.loading} error={parish.error} empty={!parish.loading && (parish.data?.parishes || []).length === 0}>
-          <DataTable
-            columns={[
-              { key: "district", label: "District" },
-              { key: "parish", label: "Parish" },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
-              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
-              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
-              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
-            ]}
-            rows={parish.data?.parishes || []}
-          />
+      <Card title="Category detail — by parish" subtitle="Reached, interested, target, eligible and % female per parish. Click a score card to filter by category — color shows status throughout." chip="REAL">
+        <State loading={parish.loading} error={parish.error} empty={!parish.loading && parishRowsWithCat.length === 0}>
+          <CategoryFilterTiles counts={parishCatCounts} active={parishCat} onChange={(c) => { setParishCat(c); setParishPage(0); }} entityLabelPlural="parishes" />
+          {filteredParishRows.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: C.muted, fontSize: 12.5 }}>No parishes match this filter.</div>
+          ) : (
+            <>
+              <DataTable
+                columns={[
+                  { key: "district", label: "District" },
+                  { key: "parish", label: "Parish" },
+                  { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+                  { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
+                  { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+                  { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+                  { key: "pct_female", label: "% Female", align: "right", render: (v) => <span style={{ color: v != null && v >= 60 ? C.green : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
+                  { key: "rate", label: "Progress", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+                  { key: "category", label: "Status", render: (v) => <span style={{ background: `${RATE_CATEGORY_COLOR[v]}22`, color: RATE_CATEGORY_COLOR[v], fontWeight: 700, fontSize: 11, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>{v}</span> },
+                ]}
+                rows={pagedParishRows}
+              />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
+                <span>{parishPageClamped * parishPageSize + 1}–{Math.min(filteredParishRows.length, parishPageClamped * parishPageSize + parishPageSize)} of {filteredParishRows.length}</span>
+                <span style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => setParishPage(Math.max(0, parishPageClamped - 1))} disabled={parishPageClamped === 0} style={{ ...PAGER_BTN, opacity: parishPageClamped === 0 ? 0.5 : 1 }}>‹ Prev</button>
+                  <button onClick={() => setParishPage(Math.min(parishMaxPage, parishPageClamped + 1))} disabled={parishPageClamped === parishMaxPage} style={{ ...PAGER_BTN, opacity: parishPageClamped === parishMaxPage ? 0.5 : 1 }}>Next ›</button>
+                </span>
+              </div>
+            </>
+          )}
         </State>
       </Card>
     </div>
@@ -1343,7 +1445,7 @@ function AcquisitionArrivalPage({ filters }) {
   const rows = data?.by_venue || [];
   const venueRows = rows.map((r) => ({
     venue: r.venue, district: r.district, verified: r.verified, acquired: r.acquired,
-    rate: r.acquisition_rate, category: categorizeVenue(r.acquisition_rate),
+    rate: r.acquisition_rate, category: categorizeRate(r.acquisition_rate),
   }));
   const totalVerified = rows.reduce((a, r) => a + (r.verified || 0), 0);
   const totalAcquired = rows.reduce((a, r) => a + (r.acquired || 0), 0);
@@ -1365,11 +1467,12 @@ function AcquisitionArrivalPage({ filters }) {
           <KpiTile label="Acquired female" value={fmtNum(totalAcquiredFemale)} sub={`${fmtPct(pctFemaleAcquired)} of acquired · target 60% (verified has no gender split in the live feed)`} tag="REAL" />
         </Grid>
         <ExecBand num="◆" title="Performance categorisation — venues vs target (filters)" />
-        <VenueCategorisation
-          venueRows={venueRows}
+        <EntityCategorisation
+          rows={venueRows}
           metricA={{ key: "verified", label: "Verified" }}
           metricB={{ key: "acquired", label: "Acquired" }}
           rateFraction="acquired ÷ verified"
+          entityKey="venue" entityLabel="venue" entityLabelPlural="venues"
         />
       </State>
     </div>
@@ -1437,7 +1540,7 @@ function MobRecruitmentFunnelPage({ filters }) {
   });
   const venueRows = Object.entries(venueTotals).map(([venue, v]) => {
     const rate = v.reached ? Math.round((1000 * v.confirmed) / v.reached) / 10 : null;
-    const category = categorizeVenue(rate);
+    const category = categorizeRate(rate);
     return { venue, ...v, rate, category };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
@@ -1504,35 +1607,38 @@ function MobRecruitmentFunnelPage({ filters }) {
 
       <ExecBand num="◆" title="Performance categorisation — venues vs target (filters)" />
       <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && venueRows.length === 0}>
-        <VenueCategorisation
-          venueRows={venueRows}
+        <EntityCategorisation
+          rows={venueRows}
           metricA={{ key: "reached", label: "Reached" }}
           metricB={{ key: "confirmed", label: "Confirmed" }}
           rateFraction="confirmed ÷ reached"
+          entityKey="venue" entityLabel="venue" entityLabelPlural="venues"
         />
       </State>
     </div>
   );
 }
 
-// Categories mirror the reference design's venue risk bands, but the rate is
-// confirmed ÷ reached (call-center conversion) rather than confirmed ÷
-// assigned — no live table carries a per-venue assigned/target figure (see
-// tables.py's DAILY_ACQUISITION_SUMMARY note), so reached is the closest real
-// per-venue denominator available.
-const VENUE_CATEGORY_ORDER = ["Target Achieved", "On Track", "Low Risk", "High Risk", "Not Started"];
-const VENUE_CATEGORY_COLOR = { "Target Achieved": C.green, "On Track": C.teal, "Low Risk": C.gold, "High Risk": C.coral, "Not Started": C.muted };
-function categorizeVenue(rate) {
+// Categories mirror the reference design's risk bands. Originally venue-only
+// (confirmed ÷ reached call-center conversion — see tables.py's
+// DAILY_ACQUISITION_SUMMARY note on why reached, not assigned, is the
+// denominator); now reused by any entity (venue, parish, ...) that has a
+// rate against a target, so every categorisation panel in the app shares one
+// color scheme instead of each tab inventing its own.
+const RATE_CATEGORY_ORDER = ["Target Achieved", "On Track", "Low Risk", "High Risk", "Not Started"];
+const RATE_CATEGORY_COLOR = { "Target Achieved": C.green, "On Track": C.teal, "Low Risk": C.gold, "High Risk": C.coral, "Not Started": C.muted };
+function categorizeRate(rate) {
   if (rate == null) return "Not Started";
   if (rate >= 95) return "Target Achieved";
   if (rate >= 85) return "On Track";
   if (rate >= 75) return "Low Risk";
   return "High Risk";
 }
+function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 
 const PAGER_BTN = { fontSize: 11, fontWeight: 700, padding: "5px 10px", border: `1px solid ${C.line}`, borderRadius: 4, background: C.white, color: C.inkSoft, cursor: "pointer" };
 
-function VenuePagedTable({ title, subtitle, chip, chipTone, rows, metricA, metricB }) {
+function EntityPagedTable({ title, subtitle, chip, chipTone, rows, metricA, metricB, entityKey, entityLabel }) {
   const [page, setPage] = useState(0);
   const pageSize = 5;
   const maxPage = Math.max(0, Math.ceil(rows.length / pageSize) - 1);
@@ -1542,11 +1648,11 @@ function VenuePagedTable({ title, subtitle, chip, chipTone, rows, metricA, metri
     <Card title={title} subtitle={subtitle} chip={chip} chipTone={chipTone}>
       <DataTable
         columns={[
-          { key: "venue", label: "Venue" },
+          { key: entityKey, label: cap(entityLabel) },
           { key: metricA.key, label: metricA.label, align: "right", render: (v) => fmtNum(v) },
           { key: metricB.key, label: metricB.label, align: "right", render: (v) => fmtNum(v) },
           { key: "rate", label: "Rate", align: "right", render: (v) => fmtPct(v) },
-          { key: "category", label: "Status", render: (v) => <span style={{ color: VENUE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+          { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
         ]}
         rows={slice}
       />
@@ -1563,11 +1669,43 @@ function VenuePagedTable({ title, subtitle, chip, chipTone, rows, metricA, metri
   );
 }
 
-function VenueCategorisation({ venueRows, metricA, metricB, rateFraction }) {
+// Shared click-to-filter chip row for any category breakdown (parish
+// categorisation, venue categorisation, ...) — one look everywhere in the app.
+// Matches the reference design's small pill "fchip" filters (colored dot +
+// bold count, dark-filled when active) rather than full score-card tiles.
+function CategoryFilterTiles({ counts, active, onChange, entityLabelPlural }) {
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14, alignItems: "center" }}>
+      {["All", ...RATE_CATEGORY_ORDER].map((c) => {
+        const isActive = active === c;
+        const dotColor = RATE_CATEGORY_COLOR[c];
+        return (
+          <span
+            key={c}
+            onClick={() => onChange(isActive && c !== "All" ? "All" : c)}
+            style={{
+              border: `1px solid ${isActive ? C.ink : C.line}`,
+              background: isActive ? C.ink : C.white,
+              color: isActive ? C.white : C.inkSoft,
+              borderRadius: 20, padding: "6px 13px", fontSize: 12, fontWeight: 600,
+              cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 7,
+            }}
+          >
+            {c !== "All" && <span style={{ width: 10, height: 10, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />}
+            {c === "All" ? `All ${entityLabelPlural}` : c}
+            <span style={{ fontWeight: 800, color: isActive ? C.gold : undefined }}>{counts[c] ?? 0}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function EntityCategorisation({ rows: entityRows, metricA, metricB, rateFraction, entityKey = "venue", entityLabel = "venue", entityLabelPlural = "venues" }) {
   const [cat, setCat] = useState("All");
-  const counts = { All: venueRows.length };
-  VENUE_CATEGORY_ORDER.forEach((c) => { counts[c] = venueRows.filter((v) => v.category === c).length; });
-  const filtered = cat === "All" ? venueRows : venueRows.filter((v) => v.category === cat);
+  const counts = { All: entityRows.length };
+  RATE_CATEGORY_ORDER.forEach((c) => { counts[c] = entityRows.filter((v) => v.category === c).length; });
+  const filtered = cat === "All" ? entityRows : entityRows.filter((v) => v.category === cat);
   const sortedDesc = [...filtered].sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
   const sortedAsc = [...sortedDesc].reverse();
   const sumA = filtered.reduce((a, v) => a + (v[metricA.key] || 0), 0);
@@ -1581,43 +1719,26 @@ function VenueCategorisation({ venueRows, metricA, metricB, rateFraction }) {
   return (
     <div>
       <Insight tone="neutral">
-        <b>How to use these filters.</b> Click a category to filter the score cards and venue tables below to just those venues. Click <b>All</b> to reset.
+        <b>How to use these filters.</b> Click a category to filter the score cards and {entityLabelPlural} tables below to just those {entityLabelPlural}. Click <b>All</b> to reset.
       </Insight>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "12px 0 16px" }}>
-        {["All", ...VENUE_CATEGORY_ORDER].map((c) => {
-          const active = cat === c;
-          const color = c === "All" ? C.ink : VENUE_CATEGORY_COLOR[c];
-          return (
-            <div key={c} onClick={() => setCat(c)} style={{
-              cursor: "pointer", flex: 1, minWidth: 110, textAlign: "center", padding: "10px 8px",
-              borderRadius: 8, border: `2px solid ${active ? color : C.line}`,
-              background: active ? "rgba(15,34,56,.04)" : C.white,
-              boxShadow: active ? "0 1px 5px rgba(0,0,0,.10)" : "none",
-            }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color }}>{c}</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color }}>{counts[c] ?? 0}</div>
-              <div style={{ fontSize: 10, color: C.muted }}>{c === "All" ? "all venues" : "venues"}</div>
-            </div>
-          );
-        })}
-      </div>
+      <CategoryFilterTiles counts={counts} active={cat} onChange={setCat} entityLabelPlural={entityLabelPlural} />
       <Grid cols={4}>
-        <KpiTile label="Venues in view" value={String(filtered.length)} sub={cat} tag="REAL" />
-        <KpiTile label={`${metricA.label} (sum)`} value={fmtNum(sumA)} sub="sum of these venues" tag="REAL" />
-        <KpiTile label={`${metricB.label} (sum)`} value={fmtNum(sumB)} sub="sum of these venues" tag="REAL" />
+        <KpiTile label={`${cap(entityLabelPlural)} in view`} value={String(filtered.length)} sub={cat} tag="REAL" />
+        <KpiTile label={`${metricA.label} (sum)`} value={fmtNum(sumA)} sub={`sum of these ${entityLabelPlural}`} tag="REAL" />
+        <KpiTile label={`${metricB.label} (sum)`} value={fmtNum(sumB)} sub={`sum of these ${entityLabelPlural}`} tag="REAL" />
         <KpiTile label="Rate" value={fmtPct(filteredRate)} sub={rateFraction} tag="DERIVED" tone="sim" />
       </Grid>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <VenuePagedTable title="Top venues" subtitle={`Highest rate (${rateFraction})`} chip="STRONGEST" chipTone="real" rows={sortedDesc} metricA={metricA} metricB={metricB} />
-        <VenuePagedTable title="Bottom venues" subtitle="Lowest — priority for a closing follow-up round" chip="FOLLOW UP" chipTone="sim" rows={sortedAsc} metricA={metricA} metricB={metricB} />
+        <EntityPagedTable title={`Top ${entityLabelPlural}`} subtitle={`Highest rate (${rateFraction})`} chip="STRONGEST" chipTone="real" rows={sortedDesc} metricA={metricA} metricB={metricB} entityKey={entityKey} entityLabel={entityLabel} />
+        <EntityPagedTable title={`Bottom ${entityLabelPlural}`} subtitle="Lowest — priority for a closing follow-up round" chip="FOLLOW UP" chipTone="sim" rows={sortedAsc} metricA={metricA} metricB={metricB} entityKey={entityKey} entityLabel={entityLabel} />
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
         <Insight tone={counts["Target Achieved"] + counts["On Track"] >= filtered.length / 2 ? "pos" : "neutral"}>
-          <b>{counts["Target Achieved"]}</b> venue(s) have hit Target Achieved and <b>{counts["On Track"]}</b> are On Track, out of {venueRows.length} reporting venues.
+          <b>{counts["Target Achieved"]}</b> {entityLabelPlural} have hit Target Achieved and <b>{counts["On Track"]}</b> are On Track, out of {entityRows.length} reporting {entityLabelPlural}.
         </Insight>
         {closestToTarget && (
           <Insight tone="warn">
-            <b>{closestToTarget.venue}</b> is the closest venue below target ({fmtPct(closestToTarget.rate)} {rateFraction}) — one follow-up round would likely tip it into On Track.
+            <b>{closestToTarget[entityKey]}</b> is the closest {entityLabel} below target ({fmtPct(closestToTarget.rate)} {rateFraction}) — one follow-up round would likely tip it into On Track.
           </Insight>
         )}
       </div>
