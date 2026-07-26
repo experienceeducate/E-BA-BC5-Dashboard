@@ -606,7 +606,10 @@ function OkrTracker() {
 
 // column.onHeaderClick, when given, makes that header a drill trigger —
 // matches the reference design's "column headers ... clickable" convention.
-function DataTable({ columns, rows }) {
+// onRowClick, when given, makes every row a drill trigger (matches
+// DrillTable's row-click convention) — used e.g. by the mobiliser table to
+// open a per-mobiliser district->parish drill.
+function DataTable({ columns, rows, onRowClick }) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -619,7 +622,7 @@ function DataTable({ columns, rows }) {
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i}>{columns.map((c) => (
+            <tr key={i} onClick={onRowClick ? () => onRowClick(r) : undefined} style={onRowClick ? { cursor: "pointer" } : undefined}>{columns.map((c) => (
               <td key={c.key} style={{ textAlign: c.align || "left", padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text }}>
                 {c.render ? c.render(r[c.key], r) : (r[c.key] ?? "—")}
               </td>
@@ -1321,25 +1324,258 @@ function AwarenessOverviewPage({ filters }) {
   );
 }
 
+// Female-share status band shown on the mobiliser table's Status column —
+// a 3-tier read (On target / Approaching / Below target) matching the
+// reference prototype's femaleStatus(), distinct from the 5-tier
+// RATE_CATEGORY_* bands used elsewhere (which measure progress vs a
+// registration target, not gender share).
+function femaleShareStatus(pct) {
+  if (pct == null) return null;
+  if (pct >= 60) return { label: "On target", color: C.green };
+  if (pct >= 50) return { label: "Approaching", color: C.gold };
+  return { label: "Below target", color: C.coral };
+}
+
 function AwarenessMobilisersPage({ filters }) {
+  const drill = useDrill();
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const [insightFilter, setInsightFilter] = useState(null); // null | "top" | "below" | "spread"
   const { data, loading, error } = useApi(`/api/recruitment/awareness-mobilisers${buildParams(filters)}`);
-  const rows = data?.mobilisers || [];
+  const parish = useApi(`/api/recruitment/awareness-parish${buildParams(filters)}`);
+  const detail = useApi(`/api/recruitment/awareness-mobiliser-detail${buildParams(filters)}`);
+  const allRows = data?.mobilisers || [];
+
+  const q = search.trim().toLowerCase();
+  const rows = (q ? allRows.filter((r) => (r.mobiliser_name || "").toLowerCase().includes(q)) : allRows)
+    .map((r) => ({ ...r, eligibility_rate: r.reached ? Math.round((1000 * r.eligible) / r.reached) / 10 : null }));
+
+  const distinctMobilisers = new Set(rows.map((r) => r.mobiliser_name)).size;
+  const totalReached = sumBy(rows, "reached");
+  const totalEligible = sumBy(rows, "eligible");
+  const totalEligibleFemale = sumBy(rows, "eligible_female");
+  const eligibilityRate = totalReached ? Math.round((1000 * totalEligible) / totalReached) / 10 : null;
+  const pctEligibleFemale = totalEligible ? Math.round((1000 * totalEligibleFemale) / totalEligible) / 10 : null;
+  const overallStatus = femaleShareStatus(pctEligibleFemale);
+
+  // Data-driven reads on the current (search-filtered) mobiliser set — no
+  // fabricated target exists per mobiliser (see below), so insights focus on
+  // volume leadership and the real female-share spread instead.
+  const withFemaleData = rows.filter((r) => r.pct_eligible_female != null);
+  const topMobiliser = rows.length ? [...rows].sort((a, b) => (b.eligible || 0) - (a.eligible || 0))[0] : null;
+  const belowTarget = withFemaleData.filter((r) => r.pct_eligible_female < 60);
+  const best = withFemaleData.length ? withFemaleData.reduce((a, b) => (b.pct_eligible_female > a.pct_eligible_female ? b : a)) : null;
+  const worst = withFemaleData.length ? withFemaleData.reduce((a, b) => (b.pct_eligible_female < a.pct_eligible_female ? b : a)) : null;
+  const spread = best && worst ? Math.round((best.pct_eligible_female - worst.pct_eligible_female) * 10) / 10 : null;
+
+  // Each insight is also a filter — click one to narrow the table below to
+  // exactly the mobiliser(s) it's about; click the active one again to reset.
+  const sameMobiliser = (a, b) => a.mobiliser_name === b.mobiliser_name && a.district === b.district;
+  let displayRows = rows;
+  let filterLabel = null;
+  if (insightFilter === "top" && topMobiliser) {
+    displayRows = rows.filter((r) => sameMobiliser(r, topMobiliser));
+    filterLabel = `Top mobiliser: ${topMobiliser.mobiliser_name}`;
+  } else if (insightFilter === "below") {
+    displayRows = belowTarget;
+    filterLabel = "Below the 60% female-eligible target";
+  } else if (insightFilter === "spread" && best && worst) {
+    displayRows = rows.filter((r) => sameMobiliser(r, best) || sameMobiliser(r, worst));
+    filterLabel = `Female-share spread: ${worst.mobiliser_name} vs ${best.mobiliser_name}`;
+  }
+
+  const pageSize = 10;
+  const maxPage = Math.max(0, Math.ceil(displayRows.length / pageSize) - 1);
+  const clampedPage = Math.min(page, maxPage);
+  const pagedRows = displayRows.slice(clampedPage * pageSize, clampedPage * pageSize + pageSize);
+
+  // Top KPI tiles -> district-then-parish drill for that metric, sourced
+  // from the same awareness-parish data the Funnel Overview page uses (real
+  // eligible_female counts at parish grain, not a re-derived percentage).
+  function openMetricDrill(metricKey, label, formatter = fmtNum) {
+    const parishRows = parish.data?.parishes || [];
+    const byDistrict = {};
+    parishRows.forEach((r) => {
+      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, reached: 0, eligible: 0, eligible_female: 0 };
+      const d = byDistrict[r.district];
+      d.reached += r.reached || 0;
+      d.eligible += r.eligible || 0;
+      d.eligible_female += r.eligible_female || 0;
+    });
+    const rootRows = Object.values(byDistrict)
+      .map((d) => ({ ...d, pct_eligible_female: d.eligible ? Math.round((1000 * d.eligible_female) / d.eligible) / 10 : null }))
+      .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: metricKey, label, align: "right", render: formatter }],
+      rootRows,
+      childKey: "parish", childLabel: "Parish",
+      getChildRows: (root) => parishRows
+        .filter((p) => p.district === root.district)
+        .map((p) => ({ ...p, pct_eligible_female: p.pct_female }))
+        .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+    });
+  }
+
+  // Mobiliser row click -> district-then-parish drill for that one mobiliser,
+  // matched by mobilizer_id (stable, not PII) so it works regardless of
+  // whether the name is masked.
+  function openMobiliserDrill(mobiliserRow) {
+    const detailRows = (detail.data?.detail || []).filter((r) => r.mobilizer_id === mobiliserRow.mobilizer_id);
+    const byDistrict = {};
+    detailRows.forEach((r) => {
+      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, reached: 0, eligible: 0, eligible_female: 0 };
+      const d = byDistrict[r.district];
+      d.reached += r.reached || 0;
+      d.eligible += r.eligible || 0;
+      d.eligible_female += r.eligible_female || 0;
+    });
+    const rootRows = Object.values(byDistrict)
+      .map((d) => ({ ...d, pct_eligible_female: d.eligible ? Math.round((1000 * d.eligible_female) / d.eligible) / 10 : null }))
+      .sort((a, b) => (b.eligible || 0) - (a.eligible || 0));
+    drill.open({
+      title: `${mobiliserRow.mobiliser_name} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [
+        { key: "reached", label: "Reached", align: "right", render: fmtNum },
+        { key: "eligible", label: "Eligible", align: "right", render: fmtNum },
+        { key: "pct_eligible_female", label: "% Eligible Female", align: "right", render: fmtPct },
+      ],
+      rootRows,
+      childKey: "parish", childLabel: "Parish",
+      getChildRows: (root) => detailRows
+        .filter((r) => r.district === root.district)
+        .sort((a, b) => (b.eligible || 0) - (a.eligible || 0)),
+    });
+  }
+
+  function toggleInsightFilter(key) {
+    setInsightFilter((cur) => (cur === key ? null : key));
+    setPage(0);
+  }
+
   return (
-    <Card title="Performance by mobiliser" subtitle="Who is reaching youth, and whether their reach converts to eligible — and to eligible female" chip="PII" chipTone="pii">
-      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
-        <DataTable
-          columns={[
-            { key: "mobiliser_name", label: "Mobiliser" },
-            { key: "district", label: "District" },
-            { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-            { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
-            { key: "eligible_female", label: "Eligible (F)", align: "right", render: (v) => fmtNum(v) },
-            { key: "pct_eligible_female", label: "% Eligible Female", align: "right", render: (v) => fmtPct(v) },
-          ]}
-          rows={rows}
+    <div>
+      <input
+        type="text"
+        value={search}
+        onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+        placeholder="Search mobiliser…"
+        style={{ width: "100%", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5, marginBottom: 4 }}
+      />
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
+        Searches the "Performance by mobiliser" table below.
+      </div>
+
+      <Grid cols={4}>
+        <KpiTile label="Mobilisers" value={String(distinctMobilisers)} sub="in view" />
+        <KpiTile label="Reached" value={fmtNum(totalReached)} onClick={() => openMetricDrill("reached", "Reached")} />
+        <KpiTile
+          label="Eligible" value={fmtNum(totalEligible)}
+          sub={eligibilityRate != null ? `${eligibilityRate}% eligibility rate` : undefined}
+          onClick={() => openMetricDrill("eligible", "Eligible")}
         />
-      </State>
-    </Card>
+        <KpiTile
+          label="Eligible female" value={fmtPct(pctEligibleFemale)}
+          sub={overallStatus ? <span style={{ color: overallStatus.color, fontWeight: 700 }}>{overallStatus.label} (60% target)</span> : undefined}
+          onClick={() => openMetricDrill("pct_eligible_female", "Eligible female %", fmtPct)}
+        />
+      </Grid>
+
+      {rows.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 8 }}>
+          {topMobiliser && (
+            <div
+              onClick={() => toggleInsightFilter("top")}
+              style={{ cursor: "pointer", borderRadius: 6, outline: insightFilter === "top" ? `2px solid ${C.green}` : "none", outlineOffset: 1 }}
+            >
+              <Insight tone="pos">
+                <b>{topMobiliser.mobiliser_name}</b> ({topMobiliser.district}) has reached the most eligible youth — <b>{fmtNum(topMobiliser.eligible)}</b> eligible ({fmtPct(topMobiliser.eligibility_rate)} eligibility rate). <i>Click to filter.</i>
+              </Insight>
+            </div>
+          )}
+          {withFemaleData.length > 0 && (
+            <div
+              onClick={() => toggleInsightFilter("below")}
+              style={{ cursor: "pointer", borderRadius: 6, outline: insightFilter === "below" ? `2px solid ${belowTarget.length ? C.gold : C.green}` : "none", outlineOffset: 1 }}
+            >
+              <Insight tone={belowTarget.length ? "warn" : "pos"}>
+                <b>{belowTarget.length}</b> of {withFemaleData.length} mobilisers are below the 60% female-eligible target — see the Status column. <i>Click to filter.</i>
+              </Insight>
+            </div>
+          )}
+          {best && worst && best !== worst && (
+            <div
+              onClick={() => toggleInsightFilter("spread")}
+              style={{ cursor: "pointer", borderRadius: 6, outline: insightFilter === "spread" ? `2px solid ${C.teal}` : "none", outlineOffset: 1 }}
+            >
+              <Insight tone="neutral">
+                Female-eligible share ranges from <b>{fmtPct(worst.pct_eligible_female)}</b> ({worst.mobiliser_name}) to <b>{fmtPct(best.pct_eligible_female)}</b> ({best.mobiliser_name}) — a {spread}pp spread across mobilisers. <i>Click to filter.</i>
+              </Insight>
+            </div>
+          )}
+        </div>
+      )}
+
+      {filterLabel && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20, fontSize: 12 }}>
+          <span style={{ color: C.muted }}>Filtered by:</span>
+          <span style={{ background: C.ink, color: C.white, fontWeight: 700, padding: "3px 10px", borderRadius: 10, fontSize: 11 }}>{filterLabel}</span>
+          <span onClick={() => toggleInsightFilter(insightFilter)} style={{ color: C.teal, fontWeight: 700, cursor: "pointer" }}>✕ Clear</span>
+        </div>
+      )}
+
+      <Card title="Performance by mobiliser" subtitle="Who is reaching youth, and whether their reach converts to eligible — and to eligible female. Click a row to drill that mobiliser by district, then parish." chip="PII" chipTone="pii">
+        <State loading={loading} error={error} empty={!loading && displayRows.length === 0}>
+          <DataTable
+            columns={[
+              { key: "mobiliser_name", label: "Mobiliser" },
+              { key: "district", label: "District" },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+              { key: "eligibility_rate", label: "Elig. rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "eligible_female", label: "Eligible (F)", align: "right", render: (v) => fmtNum(v) },
+              {
+                key: "pct_eligible_female", label: "% Eligible Female", align: "right",
+                render: (v) => {
+                  const st = femaleShareStatus(v);
+                  const color = st ? st.color : C.muted;
+                  return (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
+                      <div style={{ width: 60, background: C.line, borderRadius: 4, height: 7, overflow: "hidden" }}>
+                        <div style={{ width: `${v == null ? 0 : Math.max(0, Math.min(100, v))}%`, height: "100%", background: color }} />
+                      </div>
+                      <span style={{ color, fontWeight: 700, minWidth: 38, textAlign: "right" }}>{fmtPct(v)}</span>
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "status", label: "Status",
+                render: (_v, r) => {
+                  const st = femaleShareStatus(r.pct_eligible_female);
+                  return st ? <span style={{ background: `${st.color}22`, color: st.color, fontWeight: 700, fontSize: 11, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>{st.label}</span> : "—";
+                },
+              },
+            ]}
+            rows={pagedRows}
+            onRowClick={openMobiliserDrill}
+          />
+          {displayRows.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
+              <span>{clampedPage * pageSize + 1}–{Math.min(displayRows.length, clampedPage * pageSize + pageSize)} of {displayRows.length}</span>
+              <span style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setPage(Math.max(0, clampedPage - 1))} disabled={clampedPage === 0} style={{ ...PAGER_BTN, opacity: clampedPage === 0 ? 0.5 : 1 }}>‹ Prev</button>
+                <button onClick={() => setPage(Math.min(maxPage, clampedPage + 1))} disabled={clampedPage === maxPage} style={{ ...PAGER_BTN, opacity: clampedPage === maxPage ? 0.5 : 1 }}>Next ›</button>
+              </span>
+            </div>
+          )}
+        </State>
+      </Card>
+    </div>
   );
 }
 
