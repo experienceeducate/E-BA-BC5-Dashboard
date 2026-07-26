@@ -212,6 +212,8 @@ def awareness_mobilisers(
 ):
     """Per-mobiliser reach and eligible/eligible-female conversion, for the
     Awareness tab's Mobilisers sub-page. Names masked for the guest role.
+    Carries mobilizer_id (not PII, 1:1 with the name — confirmed against live
+    data) so the frontend has a stable key to drill on regardless of masking.
 
     Distinct from /api/recruitment/mobilisers (the Recruitment>Mobilisers tab,
     still a placeholder) — this one is scoped to the awareness stage, where
@@ -224,6 +226,7 @@ def awareness_mobilisers(
     )
     sql = f"""
     SELECT
+      mobilizer_id,
       mobilizer_name AS mobiliser_name,
       UPPER(youth_district) AS district,
       SUM(total_registered_youth) AS reached,
@@ -232,13 +235,50 @@ def awareness_mobilisers(
       ROUND(SAFE_DIVIDE(SUM(total_eligible_female), NULLIF(SUM(total_eligible_youth), 0)) * 100, 1) AS pct_eligible_female
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND mobilizer_name IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
-    GROUP BY mobiliser_name, district
+    GROUP BY mobilizer_id, mobiliser_name, district
     ORDER BY eligible DESC
     """
     rows = database.run_query(sql, params, role=user.role)
     for r in rows:
         r["mobiliser_name"] = mask_name(user.role, r.get("mobiliser_name"))
     return {"mobilisers": rows}
+
+
+@router.get("/api/recruitment/awareness-mobiliser-detail")
+def awareness_mobiliser_detail(
+    user: User = Depends(current_user),
+    district: List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
+):
+    """Per-mobiliser reach/eligible/eligible-female at PARISH grain (mobiliser
+    x district x parish) — backs the Mobilisers tab's district-then-parish
+    drill for a specific mobiliser (matched by mobilizer_id, not the masked
+    name). Small enough (~20 mobilisers x a handful of parishes each) to fetch
+    unfiltered and slice client-side, same as awareness-parish."""
+    where, params = build_where(
+        districts=district,
+        extra=[active_cohort_clause("awmd", requested=cohort)], prefix="awmd",
+        district_col="youth_district",
+    )
+    sql = f"""
+    SELECT
+      mobilizer_id,
+      mobilizer_name AS mobiliser_name,
+      UPPER(youth_district) AS district,
+      youth_parish AS parish,
+      SUM(total_registered_youth) AS reached,
+      SUM(total_eligible_youth) AS eligible,
+      SUM(total_eligible_female) AS eligible_female,
+      ROUND(SAFE_DIVIDE(SUM(total_eligible_female), NULLIF(SUM(total_eligible_youth), 0)) * 100, 1) AS pct_eligible_female
+    FROM {AWARENESS_SUMMARY}
+    WHERE {where} AND mobilizer_name IS NOT NULL AND youth_parish IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+    GROUP BY mobilizer_id, mobiliser_name, district, parish
+    ORDER BY eligible DESC
+    """
+    rows = database.run_query(sql, params, role=user.role)
+    for r in rows:
+        r["mobiliser_name"] = mask_name(user.role, r.get("mobiliser_name"))
+    return {"detail": rows}
 
 
 @router.get("/api/recruitment/awareness-kyc")
