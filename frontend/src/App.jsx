@@ -194,14 +194,18 @@ function Card({ title, subtitle, children, chip, chipTone = "real" }) {
 // border + tiny corner tag as the real/sample data-provenance signal.
 // onClick, when given, makes the tile a drill trigger — matches the reference
 // design's "hover and you'll see a click-to-drill cue" convention.
-function KpiTile({ label, value, sub, tone = "real", tag, onClick }) {
+function KpiTile({ label, value, sub, tone = "real", tag, onClick, hint }) {
   const t = CHIP_TONE[tone] || CHIP_TONE.real;
   return (
     <div onClick={onClick} style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: "11px 13px 10px", borderTop: `3px solid ${t.color}`, position: "relative", cursor: onClick ? "pointer" : undefined }}>
       {tag && <span style={{ position: "absolute", top: 8, right: 9, fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: t.color }}>{tag}</span>}
       <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, fontWeight: 600, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 600, color: C.ink, lineHeight: 1.1 }}>{value ?? "—"}{onClick && <span style={{ fontSize: 12, color: C.muted, marginLeft: 6 }}>›</span>}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, color: C.ink, lineHeight: 1.1 }}>{value ?? "—"}{onClick && !hint && <span style={{ fontSize: 12, color: C.muted, marginLeft: 6 }}>›</span>}</div>
       {sub && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 3, lineHeight: 1.35 }}>{sub}</div>}
+      {/* Matches the reference prototype's .drill-hint — an explicit
+          "View youth ⌄" line, distinct from the generic "›" chevron every
+          other clickable tile uses. */}
+      {hint && <div style={{ fontSize: 11, color: C.teal, fontWeight: 700, marginTop: 8 }}>{hint} ⌄</div>}
     </div>
   );
 }
@@ -1387,13 +1391,14 @@ function AwarenessKycPage({ filters }) {
 
       <Card title="Eligible youth profile" subtitle="Persona snapshot of the eligible pool — click a card to drill by district" chip="REAL">
         <State loading={loading} error={error} empty={!loading && !demo.eligible_count}>
-          <Grid cols={6}>
+          <Grid cols={4}>
             {KYC_PERSONA_CARDS.map((c) => (
               <KpiTile
                 key={c.key}
                 label={c.label}
                 value={fmtPct(demo[c.key])}
                 sub={c.sub}
+                hint="View youth"
                 onClick={() => openPersonaDrill(c.key, c.label, c.sub)}
               />
             ))}

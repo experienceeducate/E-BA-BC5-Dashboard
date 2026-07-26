@@ -84,6 +84,56 @@ export const DEMO = {
     ],
   },
 
+  "/api/recruitment/awareness-kyc": {
+    demographics: {
+      eligible_count: 6700,
+      pct_female: 60.4,
+      avg_age: 22.3,
+      owns_business_count: 2010,
+      pct_owns_business: 30,
+      duplicate_count: 268,
+      duplicate_rate: 4,
+      pct_p5_p7: 71.5,
+      pct_age_18_25: 64.2,
+      pct_owns_phone: 82.6,
+    },
+    activity: [
+      { activity: "Casual labour", count: 2400 },
+      { activity: "Staying home", count: 1800 },
+      { activity: "Farming", count: 1300 },
+      { activity: "Petty trade", count: 900 },
+      { activity: "In school", count: 300 },
+    ],
+    reasons: [
+      { reason: "Want a stable income", count: 2900 },
+      { reason: "Want to start a business", count: 2200 },
+      { reason: "Want a new skill", count: 1400 },
+      { reason: "Encouraged by family", count: 700 },
+      { reason: "Encouraged by mobiliser", count: 500 },
+    ],
+    business: {
+      by_gender_district: [
+        { district: "BUGIRI", gender: "Female", owners: 420, total: 1400, pct_owns_business: 30 },
+        { district: "BUGIRI", gender: "Male", owners: 310, total: 950, pct_owns_business: 32.6 },
+        { district: "BUGWERI", gender: "Female", owners: 260, total: 900, pct_owns_business: 28.9 },
+        { district: "BUGWERI", gender: "Male", owners: 190, total: 620, pct_owns_business: 30.6 },
+      ],
+      reasons_by_ownership: [
+        { owns_business: true, reason: "Want to start a business", count: 900 },
+        { owns_business: true, reason: "Want a stable income", count: 700 },
+        { owns_business: false, reason: "Want a stable income", count: 2200 },
+        { owns_business: false, reason: "Want a new skill", count: 1200 },
+      ],
+    },
+    channels: [
+      { channel: "Mobiliser referral", eligible: 2600, ineligible: 900 },
+      { channel: "Radio", eligible: 1400, ineligible: 700 },
+      { channel: "Word of mouth", eligible: 1600, ineligible: 800 },
+      { channel: "Church/mosque", eligible: 700, ineligible: 400 },
+      { channel: "SMS", eligible: 400, ineligible: 250 },
+    ],
+  },
+
   "/api/recruitment/mobilisation": {
     assigned: 6400,
     reached: 6100,
