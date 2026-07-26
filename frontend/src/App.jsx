@@ -1494,9 +1494,16 @@ function AwarenessKycPage({ filters }) {
           <DataTable
             columns={[
               { key: "channel", label: "Channel" },
-              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
-              { key: "ineligible", label: "Ineligible", align: "right", render: (v) => fmtNum(v) },
-              { key: "eligibility_rate", label: "Eligibility rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "eligible", label: "Eligible", align: "right", render: (v) => <span style={{ color: C.green, fontWeight: 600 }}>{fmtNum(v)}</span> },
+              { key: "ineligible", label: "Ineligible", align: "right", render: (v) => <span style={{ color: C.coral, fontWeight: 600 }}>{fmtNum(v)}</span> },
+              {
+                key: "eligibility_rate", label: "Eligibility rate", align: "right",
+                render: (v) => {
+                  const { good, warn } = RATE_TARGETS.eligibility_rate;
+                  const color = v == null ? C.muted : v >= good ? C.green : v >= warn ? C.gold : C.coral;
+                  return <span style={{ color, fontWeight: 700 }}>{fmtPct(v)}</span>;
+                },
+              },
               { key: "pct_of_eligible", label: "% of all eligible", align: "right", render: (v) => fmtPct(v) },
               { key: "pct_of_ineligible", label: "% of all ineligible", align: "right", render: (v) => fmtPct(v) },
             ]}
