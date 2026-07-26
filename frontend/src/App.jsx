@@ -1363,6 +1363,36 @@ const KYC_PERSONA_CARDS = [
   { key: "duplicate_rate", label: "Duplicate records", sub: "flagged in the system" },
 ];
 
+// Bar label for a horizontal bar (BarChart layout="vertical") showing the raw
+// count with a caller-supplied percentage in brackets, e.g. "1,234 (56%)" —
+// positioned just past the bar's end.
+function hBarPctLabel(rows, getPct) {
+  return (props) => {
+    const { x, y, width, height, value, index } = props;
+    const pct = getPct(rows[index]);
+    const text = pct != null ? `${fmtNum(value)} (${fmtPct(pct)})` : fmtNum(value);
+    return (
+      <text x={x + width + 6} y={y + height / 2} dy={4} textAnchor="start" fontSize={10.5} fontWeight={600} fill={C.ink}>
+        {text}
+      </text>
+    );
+  };
+}
+
+// Same, for a standard (vertical-bar) BarChart — centered above the bar.
+function vBarPctLabel(rows, getPct) {
+  return (props) => {
+    const { x, y, width, value, index } = props;
+    const pct = getPct(rows[index]);
+    const text = pct != null ? `${fmtNum(value)} (${fmtPct(pct)})` : fmtNum(value);
+    return (
+      <text x={x + width / 2} y={y - 6} textAnchor="middle" fontSize={10.5} fontWeight={600} fill={C.ink}>
+        {text}
+      </text>
+    );
+  };
+}
+
 function AwarenessKycPage({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/recruitment/awareness-kyc${buildParams(filters)}`);
@@ -1370,6 +1400,10 @@ function AwarenessKycPage({ filters }) {
   const bizByGenderDistrict = data?.business?.by_gender_district || [];
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
+
+  const channels = data?.channels || [];
+  const totalChannelEligible = sumBy(channels, "eligible");
+  const totalChannelIneligible = sumBy(channels, "ineligible");
 
   function openPersonaDrill(metricKey, label, sub) {
     drill.open({
@@ -1413,12 +1447,13 @@ function AwarenessKycPage({ filters }) {
         <Card title="What youth are currently doing" chip="REAL">
           <State loading={loading} error={error} empty={!loading && (data?.activity || []).length === 0}>
             <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={data?.activity || []} layout="vertical" margin={{ left: 40 }}>
+              <BarChart data={data?.activity || []} layout="vertical" margin={{ left: 40, right: 50 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
                 <XAxis type="number" tick={{ fontSize: 11 }} />
                 <YAxis type="category" dataKey="activity" tick={{ fontSize: 10 }} width={110} />
                 <Tooltip />
-                <Bar dataKey="count" fill={C.teal} radius={[0, 4, 4, 0]} />
+                <Bar dataKey="count" fill={C.teal} radius={[0, 4, 4, 0]}
+                  label={hBarPctLabel(data?.activity || [], (row) => demo.eligible_count ? Math.round(1000 * row.count / demo.eligible_count) / 10 : null)} />
               </BarChart>
             </ResponsiveContainer>
           </State>
@@ -1426,12 +1461,13 @@ function AwarenessKycPage({ filters }) {
         <Card title="Why youth are enrolling" subtitle="Value-proposition alignment" chip="REAL">
           <State loading={loading} error={error} empty={!loading && (data?.reasons || []).length === 0}>
             <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={data?.reasons || []} layout="vertical" margin={{ left: 40 }}>
+              <BarChart data={data?.reasons || []} layout="vertical" margin={{ left: 40, right: 50 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
                 <XAxis type="number" tick={{ fontSize: 11 }} />
                 <YAxis type="category" dataKey="reason" tick={{ fontSize: 9.5 }} width={150} />
                 <Tooltip />
-                <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]} />
+                <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]}
+                  label={hBarPctLabel(data?.reasons || [], (row) => demo.eligible_count ? Math.round(1000 * row.count / demo.eligible_count) / 10 : null)} />
               </BarChart>
             </ResponsiveContainer>
           </State>
@@ -1467,16 +1503,18 @@ function AwarenessKycPage({ filters }) {
         </Card>
       </div>
 
-      <Card title="Recruitment channels — how they heard about us" subtitle="Eligible vs ineligible split by channel" chip="REAL">
-        <State loading={loading} error={error} empty={!loading && (data?.channels || []).length === 0}>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={data?.channels || []} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+      <Card title="Recruitment channels — how they heard about us" subtitle="Eligible vs ineligible split by channel — bracketed % is each channel's share of all eligible (or all ineligible) youth" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && channels.length === 0}>
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={channels} margin={{ top: 24, right: 16, bottom: 8, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
               <XAxis dataKey="channel" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={70} />
               <YAxis tick={{ fontSize: 11 }} />
               <Tooltip /><Legend />
-              <Bar dataKey="eligible" name="Eligible" fill={C.green} radius={[4, 4, 0, 0]} />
-              <Bar dataKey="ineligible" name="Ineligible" fill={C.coral} radius={[4, 4, 0, 0]} />
+              <Bar dataKey="eligible" name="Eligible" fill={C.green} radius={[4, 4, 0, 0]}
+                label={vBarPctLabel(channels, (row) => totalChannelEligible ? Math.round(1000 * row.eligible / totalChannelEligible) / 10 : null)} />
+              <Bar dataKey="ineligible" name="Ineligible" fill={C.coral} radius={[4, 4, 0, 0]}
+                label={vBarPctLabel(channels, (row) => totalChannelIneligible ? Math.round(1000 * row.ineligible / totalChannelIneligible) / 10 : null)} />
             </BarChart>
           </ResponsiveContainer>
         </State>
