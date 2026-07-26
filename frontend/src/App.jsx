@@ -1379,20 +1379,6 @@ function hBarPctLabel(rows, getPct) {
   };
 }
 
-// Same, for a standard (vertical-bar) BarChart — centered above the bar.
-function vBarPctLabel(rows, getPct) {
-  return (props) => {
-    const { x, y, width, value, index } = props;
-    const pct = getPct(rows[index]);
-    const text = pct != null ? `${fmtNum(value)} (${fmtPct(pct)})` : fmtNum(value);
-    return (
-      <text x={x + width / 2} y={y - 6} textAnchor="middle" fontSize={10.5} fontWeight={600} fill={C.ink}>
-        {text}
-      </text>
-    );
-  };
-}
-
 function AwarenessKycPage({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/recruitment/awareness-kyc${buildParams(filters)}`);
@@ -1503,20 +1489,27 @@ function AwarenessKycPage({ filters }) {
         </Card>
       </div>
 
-      <Card title="Recruitment channels — how they heard about us" subtitle="Eligible vs ineligible split by channel — bracketed % is each channel's share of all eligible (or all ineligible) youth" chip="REAL">
+      <Card title="Recruitment channels — how they heard about us" subtitle="Eligible vs ineligible split by channel" chip="REAL">
         <State loading={loading} error={error} empty={!loading && channels.length === 0}>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={channels} margin={{ top: 24, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-              <XAxis dataKey="channel" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={70} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip /><Legend />
-              <Bar dataKey="eligible" name="Eligible" fill={C.green} radius={[4, 4, 0, 0]}
-                label={vBarPctLabel(channels, (row) => totalChannelEligible ? Math.round(1000 * row.eligible / totalChannelEligible) / 10 : null)} />
-              <Bar dataKey="ineligible" name="Ineligible" fill={C.coral} radius={[4, 4, 0, 0]}
-                label={vBarPctLabel(channels, (row) => totalChannelIneligible ? Math.round(1000 * row.ineligible / totalChannelIneligible) / 10 : null)} />
-            </BarChart>
-          </ResponsiveContainer>
+          <DataTable
+            columns={[
+              { key: "channel", label: "Channel" },
+              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+              { key: "ineligible", label: "Ineligible", align: "right", render: (v) => fmtNum(v) },
+              { key: "eligibility_rate", label: "Eligibility rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "pct_of_eligible", label: "% of all eligible", align: "right", render: (v) => fmtPct(v) },
+              { key: "pct_of_ineligible", label: "% of all ineligible", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={channels.map((c) => {
+              const total = (c.eligible || 0) + (c.ineligible || 0);
+              return {
+                ...c,
+                eligibility_rate: total ? Math.round(1000 * c.eligible / total) / 10 : null,
+                pct_of_eligible: totalChannelEligible ? Math.round(1000 * c.eligible / totalChannelEligible) / 10 : null,
+                pct_of_ineligible: totalChannelIneligible ? Math.round(1000 * c.ineligible / totalChannelIneligible) / 10 : null,
+              };
+            })}
+          />
         </State>
       </Card>
     </div>
