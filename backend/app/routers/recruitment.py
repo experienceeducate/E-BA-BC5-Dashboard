@@ -158,7 +158,12 @@ def awareness_parish(
     cohort:   List[str] = Query(default=[]),
 ):
     """Reached/interested/eligible/target/% female at parish grain, for the
-    Awareness tab's "Category detail — by parish" table."""
+    Awareness tab's "Category detail — by parish" table. Also carries each of
+    those three counts split by gender — real per-parish female/male columns
+    exist on this table (same total_*_female/male columns _stage_counts uses
+    at district grain in overview.py) — so the Funnel Overview page's gender
+    chart/gauges can be genuinely parish-precise when a search narrows to one
+    parish, not just fall back to its containing district."""
     where, params = build_where(
         districts=district,
         extra=[active_cohort_clause("awp", requested=cohort)], prefix="awp",
@@ -169,8 +174,14 @@ def awareness_parish(
       UPPER(youth_district) AS district,
       youth_parish AS parish,
       SUM(total_registered_youth) AS reached,
+      SUM(total_registered_female) AS reached_female,
+      SUM(total_registered_male) AS reached_male,
       SUM(total_interested_youth) AS interested,
+      SUM(total_interested_female) AS interested_female,
+      SUM(total_interested_male) AS interested_male,
       SUM(total_eligible_youth) AS eligible,
+      SUM(total_eligible_female) AS eligible_female,
+      SUM(total_eligible_male) AS eligible_male,
       ROUND(SAFE_DIVIDE(SUM(total_eligible_female), NULLIF(SUM(total_eligible_youth), 0)) * 100, 1) AS pct_female
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND youth_parish IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'

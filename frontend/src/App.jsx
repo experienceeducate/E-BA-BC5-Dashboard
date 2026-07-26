@@ -994,16 +994,50 @@ function AwarenessOverviewPage({ filters }) {
   const [search, setSearch] = useState("");
   const [parishCat, setParishCat] = useState("All");
   const [parishPage, setParishPage] = useState(0);
-  const total = useApi(`/api/recruitment/awareness${buildParams(filters)}`);
-  const female = useApi(`/api/recruitment/awareness${buildParamsOverride(filters, { gender: "Female" })}`);
-  const male = useApi(`/api/recruitment/awareness${buildParamsOverride(filters, { gender: "Male" })}`);
   const parish = useApi(`/api/recruitment/awareness-parish${buildParams(filters)}`);
 
-  const rows = total.data?.by_district || [];
-  const reached = sumBy(rows, "registered");
-  const interested = sumBy(rows, "interested");
-  const eligible = sumBy(rows, "eligible");
-  const target = sumBy(rows, "target");
+  const parishRowsRaw = parish.data?.parishes || [];
+
+  // Universal search: every metric on this page — score cards, funnel chart,
+  // gauges, District comparison, and the parish table — is computed straight
+  // from matched PARISH rows, so a specific-parish search (e.g. "bubugo")
+  // narrows every one of them to that exact parish's own numbers, not its
+  // whole containing district. A district-wide search (e.g. "bugweri") sums
+  // to the same totals as searching nothing scoped to that district, since
+  // it matches every parish inside it. The parish endpoint carries real
+  // per-gender columns too (reached/interested/eligible x female/male, same
+  // total_*_female/male source _stage_counts uses at district grain in
+  // overview.py) — this is the one data source the whole page needs.
+  const q = search.trim().toLowerCase();
+  const matchedParishRowsForSearch = q
+    ? parishRowsRaw.filter((r) => (r.district || "").toLowerCase().includes(q) || (r.parish || "").toLowerCase().includes(q))
+    : parishRowsRaw;
+
+  // District comparison table + its drills: matched parishes rolled up by
+  // district — narrows in row COUNT (fewer districts) for a district-wide
+  // search, and in VALUE (smaller totals) for a specific-parish search,
+  // since only the matched parishes are summed into each district's row.
+  function groupParishRowsByDistrict(parishRows) {
+    const byDistrict = {};
+    parishRows.forEach((r) => {
+      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, registered: 0, interested: 0, eligible: 0, eligible_female: 0, target: 0 };
+      const d = byDistrict[r.district];
+      d.registered += r.reached || 0;
+      d.interested += r.interested || 0;
+      d.eligible += r.eligible || 0;
+      d.eligible_female += r.eligible_female || 0;
+      d.target += r.target || 0;
+    });
+    return Object.values(byDistrict)
+      .map((d) => ({ ...d, pct_female: d.eligible ? Math.round((1000 * d.eligible_female) / d.eligible) / 10 : null }))
+      .sort((a, b) => a.district.localeCompare(b.district));
+  }
+  const filteredRows = groupParishRowsByDistrict(matchedParishRowsForSearch);
+
+  const reached = sumBy(matchedParishRowsForSearch, "reached");
+  const interested = sumBy(matchedParishRowsForSearch, "interested");
+  const eligible = sumBy(matchedParishRowsForSearch, "eligible");
+  const target = sumBy(matchedParishRowsForSearch, "target");
   const eligibilityRate = interested ? Math.round((1000 * eligible) / interested) / 10 : null;
 
   // Percentages + RAG status for the top score-card row — same read as the
@@ -1019,7 +1053,7 @@ function AwarenessOverviewPage({ filters }) {
     : { label: `Below the ${eligTarget.warn}% warning threshold`, color: C.coral };
 
   function openMetricDrill(metricKey, label, formatter = fmtNum) {
-    const rootRows = rows.map(withEligibilityRate).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
+    const rootRows = filteredRows.map(withEligibilityRate).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
     drill.open({
       title: `${label} — by district`,
       tone: "real", tagLabel: "REAL",
@@ -1027,21 +1061,37 @@ function AwarenessOverviewPage({ filters }) {
       columns: [{ key: metricKey, label, align: "right", render: formatter }],
       rootRows,
       childKey: "parish", childLabel: "Parish",
-      getChildRows: (root) => (parish.data?.parishes || [])
+      getChildRows: (root) => parishRowsRaw
         .filter((p) => p.district === root.district)
         .map((p) => withEligibilityRate({ ...p, registered: p.reached }))
         .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
     });
   }
 
-  const fRows = female.data?.by_district || [];
-  const mRows = male.data?.by_district || [];
+  // Maps a stage's district-grain field name (used elsewhere on this page,
+  // e.g. by openMetricDrill) to the parish endpoint's per-gender column
+  // prefix — "registered" everywhere else, "reached" on parish rows.
+  const GENDER_FIELD_PREFIX = { registered: "reached", interested: "interested", eligible: "eligible" };
+
+  function sumGenderByDistrict(parishRows, metricKey) {
+    const prefix = GENDER_FIELD_PREFIX[metricKey];
+    const byDistrict = {};
+    parishRows.forEach((r) => {
+      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, female: 0, male: 0 };
+      byDistrict[r.district].female += r[`${prefix}_female`] || 0;
+      byDistrict[r.district].male += r[`${prefix}_male`] || 0;
+    });
+    return Object.values(byDistrict);
+  }
+
   const stageStats = [
     { key: "registered", label: "Reached" },
     { key: "interested", label: "Interested" },
     { key: "eligible", label: "Eligible" },
   ].map(({ key, label }) => {
-    const f = sumBy(fRows, key), m = sumBy(mRows, key);
+    const prefix = GENDER_FIELD_PREFIX[key];
+    const f = sumBy(matchedParishRowsForSearch, `${prefix}_female`);
+    const m = sumBy(matchedParishRowsForSearch, `${prefix}_male`);
     const t = f + m;
     return {
       key, stage: label, female: f, male: m,
@@ -1049,17 +1099,16 @@ function AwarenessOverviewPage({ filters }) {
       pct_male: t ? Math.round((1000 * m) / t) / 10 : null,
     };
   });
-  const genderLoading = total.loading || female.loading || male.loading;
-  const genderError = total.error || female.error || male.error;
+  const genderLoading = parish.loading;
+  const genderError = parish.error;
 
-  // Bar click -> drill this exact stage+gender's count by district (the
-  // per-district female/male breakdowns are already fetched above — no
-  // extra request needed). No parish-level child: the parish endpoint only
-  // carries an aggregate % female, not separate per-gender counts.
+  // Bar click -> drill this exact stage+gender's count by district, grouped
+  // from the same search-matched parish rows the chart itself uses — so the
+  // drill stays consistent with whatever the chart is currently showing.
   function openFunnelBarDrill(metricKey, gender, stageLabel) {
-    const genderRows = gender === "Female" ? fRows : mRows;
-    const rootRows = genderRows
-      .map((r) => ({ district: r.district, [metricKey]: r[metricKey] || 0 }))
+    const byDistrict = sumGenderByDistrict(matchedParishRowsForSearch, metricKey);
+    const rootRows = byDistrict
+      .map((r) => ({ district: r.district, [metricKey]: gender === "Female" ? r.female : r.male }))
       .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
     drill.open({
       title: `${stageLabel} (${gender}) — by district`,
@@ -1071,14 +1120,14 @@ function AwarenessOverviewPage({ filters }) {
   }
 
   // Gauge click -> % female (and the female/male counts behind it) for this
-  // exact stage, by district. Same reasoning as above: no parish-grain child.
+  // exact stage, by district — same search-matched parish rows as the gauge.
   function openGenderStageDrill(metricKey, stageLabel) {
-    const rootRows = rows.map((r) => {
-      const f = (fRows.find((fr) => fr.district === r.district) || {})[metricKey] || 0;
-      const m = (mRows.find((mr) => mr.district === r.district) || {})[metricKey] || 0;
-      const t = f + m;
-      return { district: r.district, female: f, male: m, pct_female: t ? Math.round((1000 * f) / t) / 10 : null };
-    }).sort((a, b) => (b.pct_female ?? -1) - (a.pct_female ?? -1));
+    const rootRows = sumGenderByDistrict(matchedParishRowsForSearch, metricKey)
+      .map((r) => {
+        const t = r.female + r.male;
+        return { district: r.district, female: r.female, male: r.male, pct_female: t ? Math.round((1000 * r.female) / t) / 10 : null };
+      })
+      .sort((a, b) => (b.pct_female ?? -1) - (a.pct_female ?? -1));
     drill.open({
       title: `${stageLabel} — % female by district`,
       tone: "real", tagLabel: "DERIVED",
@@ -1127,14 +1176,13 @@ function AwarenessOverviewPage({ filters }) {
   // at parish grain: eligible ÷ registration target. Carries every field the
   // detail table needs too, so the category tiles and the table are driven
   // by one row set — click a tile, filter the same table, no separate panel.
-  const parishRowsWithCat = (parish.data?.parishes || []).map((r) => {
+  const parishRowsWithCat = parishRowsRaw.map((r) => {
     const rate = r.target ? Math.round((1000 * r.eligible) / r.target) / 10 : null;
     return { ...r, rate, category: categorizeRate(rate) };
   });
   const parishCatCounts = { All: parishRowsWithCat.length };
   RATE_CATEGORY_ORDER.forEach((c) => { parishCatCounts[c] = parishRowsWithCat.filter((r) => r.category === c).length; });
 
-  const q = search.trim().toLowerCase();
   const filteredParishRows = parishRowsWithCat.filter((r) => {
     if (parishCat !== "All" && r.category !== parishCat) return false;
     if (!q) return true;
@@ -1155,7 +1203,7 @@ function AwarenessOverviewPage({ filters }) {
         style={{ width: "100%", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5, marginBottom: 4 }}
       />
       <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
-        Searches the "Category detail — by parish" table further down this page.
+        Filters every metric on this page to the exact parish or district you search for — score cards, the funnel chart, gauges, District comparison, and the parish table below.
       </div>
 
       <Grid cols={4}>
@@ -1221,8 +1269,8 @@ function AwarenessOverviewPage({ filters }) {
         </Card>
       </div>
 
-      <Card title="District comparison" subtitle="Reached, interested, eligible, target and female share by district. Click a column header to drill that metric by parish." chip="REAL">
-        <State loading={total.loading} error={total.error} empty={!total.loading && rows.length === 0}>
+      <Card title="District comparison" subtitle="Reached, interested, eligible, target and female share by district — narrows to the exact parish you search for, rolled up by district." chip="REAL">
+        <State loading={parish.loading} error={parish.error} empty={!parish.loading && filteredRows.length === 0}>
           <DataTable
             columns={[
               { key: "district", label: "District" },
@@ -1232,7 +1280,7 @@ function AwarenessOverviewPage({ filters }) {
               { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("target", "Registration target") },
               { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v), onHeaderClick: () => openMetricDrill("pct_female", "% Female", fmtPct) },
             ]}
-            rows={rows}
+            rows={filteredRows}
           />
         </State>
       </Card>
