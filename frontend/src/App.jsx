@@ -242,13 +242,13 @@ function PageNav({ pages, active, onChange }) {
 // Simple horizontal-bar gauge — % filled, with a target tick mark. Used for
 // "female share vs 60% target" style panels; deliberately not a recharts
 // radial gauge, to keep this first pass to plain inline-style primitives.
-function Gauge({ label, pct, target }) {
+function Gauge({ label, pct, target, onClick }) {
   const filled = pct == null ? 0 : Math.max(0, Math.min(100, pct));
   const belowTarget = target != null && pct != null && pct < target;
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div onClick={onClick} style={{ marginBottom: 16, cursor: onClick ? "pointer" : undefined }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-        <span style={{ color: C.text, fontWeight: 600 }}>{label}</span>
+        <span style={{ color: C.text, fontWeight: 600 }}>{label}{onClick && <span style={{ color: C.muted, marginLeft: 5 }}>›</span>}</span>
         <span style={{ color: belowTarget ? C.coral : C.green, fontWeight: 700 }}>{fmtPct(pct)}</span>
       </div>
       <div style={{ background: C.line, borderRadius: 6, height: 10, position: "relative" }}>
@@ -1043,10 +1043,68 @@ function AwarenessOverviewPage({ filters }) {
   ].map(({ key, label }) => {
     const f = sumBy(fRows, key), m = sumBy(mRows, key);
     const t = f + m;
-    return { stage: label, female: f, male: m, pct_female: t ? Math.round((1000 * f) / t) / 10 : null };
+    return {
+      key, stage: label, female: f, male: m,
+      pct_female: t ? Math.round((1000 * f) / t) / 10 : null,
+      pct_male: t ? Math.round((1000 * m) / t) / 10 : null,
+    };
   });
   const genderLoading = total.loading || female.loading || male.loading;
   const genderError = total.error || female.error || male.error;
+
+  // Bar click -> drill this exact stage+gender's count by district (the
+  // per-district female/male breakdowns are already fetched above — no
+  // extra request needed). No parish-level child: the parish endpoint only
+  // carries an aggregate % female, not separate per-gender counts.
+  function openFunnelBarDrill(metricKey, gender, stageLabel) {
+    const genderRows = gender === "Female" ? fRows : mRows;
+    const rootRows = genderRows
+      .map((r) => ({ district: r.district, [metricKey]: r[metricKey] || 0 }))
+      .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
+    drill.open({
+      title: `${stageLabel} (${gender}) — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: metricKey, label: stageLabel, align: "right", render: fmtNum }],
+      rootRows,
+    });
+  }
+
+  // Gauge click -> % female (and the female/male counts behind it) for this
+  // exact stage, by district. Same reasoning as above: no parish-grain child.
+  function openGenderStageDrill(metricKey, stageLabel) {
+    const rootRows = rows.map((r) => {
+      const f = (fRows.find((fr) => fr.district === r.district) || {})[metricKey] || 0;
+      const m = (mRows.find((mr) => mr.district === r.district) || {})[metricKey] || 0;
+      const t = f + m;
+      return { district: r.district, female: f, male: m, pct_female: t ? Math.round((1000 * f) / t) / 10 : null };
+    }).sort((a, b) => (b.pct_female ?? -1) - (a.pct_female ?? -1));
+    drill.open({
+      title: `${stageLabel} — % female by district`,
+      tone: "real", tagLabel: "DERIVED",
+      rootKey: "district", rootLabel: "District",
+      columns: [
+        { key: "female", label: "Female", align: "right", render: fmtNum },
+        { key: "male", label: "Male", align: "right", render: fmtNum },
+        { key: "pct_female", label: "% Female", align: "right", render: fmtPct },
+      ],
+      rootRows,
+    });
+  }
+
+  function renderFunnelBarLabel(genderKey) {
+    return (props) => {
+      const { x, y, width, value, index } = props;
+      const row = stageStats[index];
+      const pct = genderKey === "female" ? row?.pct_female : row?.pct_male;
+      const text = pct != null ? `${fmtNum(value)} (${fmtPct(pct)})` : fmtNum(value);
+      return (
+        <text x={x + width / 2} y={y - 6} textAnchor="middle" fontSize={10.5} fontWeight={600} fill={C.ink}>
+          {text}
+        </text>
+      );
+    };
+  }
 
   // Data-driven read on where the 60% female target is actually being lost —
   // mirrors the reference prototype's "the lever is reach, not eligibility"
@@ -1125,24 +1183,34 @@ function AwarenessOverviewPage({ filters }) {
       </Grid>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="Awareness funnel — Reached → Interested → Eligible" subtitle="Female vs male at each stage" chip="REAL">
+        <Card title="Awareness funnel — Reached → Interested → Eligible" subtitle="Female vs male at each stage (value and % of that stage) — click a bar to drill by district" chip="REAL">
           <State loading={genderLoading} error={genderError} empty={!genderLoading && stageStats.every((s) => !s.female && !s.male)}>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={stageStats} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={stageStats} margin={{ top: 20, right: 16, bottom: 8, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
                 <XAxis dataKey="stage" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip /><Legend />
-                <Bar dataKey="female" name="Female" fill={C.coral} radius={[4, 4, 0, 0]} />
-                <Bar dataKey="male" name="Male" fill={C.teal} radius={[4, 4, 0, 0]} />
+                <Bar
+                  dataKey="female" name="Female" fill={C.coral} radius={[4, 4, 0, 0]} cursor="pointer"
+                  label={renderFunnelBarLabel("female")}
+                  onClick={(_, index) => openFunnelBarDrill(stageStats[index].key, "Female", stageStats[index].stage)}
+                />
+                <Bar
+                  dataKey="male" name="Male" fill={C.teal} radius={[4, 4, 0, 0]} cursor="pointer"
+                  label={renderFunnelBarLabel("male")}
+                  onClick={(_, index) => openFunnelBarDrill(stageStats[index].key, "Male", stageStats[index].stage)}
+                />
               </BarChart>
             </ResponsiveContainer>
           </State>
         </Card>
-        <Card title="Female representation vs 60% target" subtitle="Share of each funnel stage that is female" chip="DERIVED">
+        <Card title="Female representation vs 60% target" subtitle="Share of each funnel stage that is female — click a gauge to drill by district" chip="DERIVED">
           <State loading={genderLoading} error={genderError} empty={!genderLoading && stageStats.every((s) => s.pct_female == null)}>
             <div style={{ paddingTop: 8 }}>
-              {stageStats.map((s) => <Gauge key={s.stage} label={s.stage} pct={s.pct_female} target={60} />)}
+              {stageStats.map((s) => (
+                <Gauge key={s.stage} label={s.stage} pct={s.pct_female} target={60} onClick={() => openGenderStageDrill(s.key, s.stage)} />
+              ))}
             </div>
             {femaleGapInsight && (
               <div style={{ marginTop: 4 }}>
@@ -1153,16 +1221,16 @@ function AwarenessOverviewPage({ filters }) {
         </Card>
       </div>
 
-      <Card title="District comparison" subtitle="Reached, interested, eligible, target and female share by district" chip="REAL">
+      <Card title="District comparison" subtitle="Reached, interested, eligible, target and female share by district. Click a column header to drill that metric by parish." chip="REAL">
         <State loading={total.loading} error={total.error} empty={!total.loading && rows.length === 0}>
           <DataTable
             columns={[
               { key: "district", label: "District" },
-              { key: "registered", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
-              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
-              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
-              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
+              { key: "registered", label: "Reached", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("registered", "Reached") },
+              { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("interested", "Interested") },
+              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("eligible", "Eligible") },
+              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("target", "Registration target") },
+              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v), onHeaderClick: () => openMetricDrill("pct_female", "% Female", fmtPct) },
             ]}
             rows={rows}
           />
@@ -1184,7 +1252,7 @@ function AwarenessOverviewPage({ filters }) {
                   { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
                   { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
                   { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
-                  { key: "pct_female", label: "% Female", align: "right", render: (v) => <span style={{ color: v != null && v >= 60 ? C.green : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
+                  { key: "pct_female", label: "% Female", align: "right", render: (v) => <span style={{ color: v == null ? C.muted : v >= 60 ? C.green : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
                   { key: "rate", label: "Progress", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
                   { key: "category", label: "Status", render: (v) => <span style={{ background: `${RATE_CATEGORY_COLOR[v]}22`, color: RATE_CATEGORY_COLOR[v], fontWeight: 700, fontSize: 11, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>{v}</span> },
                 ]}
