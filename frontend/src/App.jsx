@@ -194,14 +194,18 @@ function Card({ title, subtitle, children, chip, chipTone = "real" }) {
 // border + tiny corner tag as the real/sample data-provenance signal.
 // onClick, when given, makes the tile a drill trigger — matches the reference
 // design's "hover and you'll see a click-to-drill cue" convention.
-function KpiTile({ label, value, sub, tone = "real", tag, onClick }) {
+function KpiTile({ label, value, sub, tone = "real", tag, onClick, hint }) {
   const t = CHIP_TONE[tone] || CHIP_TONE.real;
   return (
     <div onClick={onClick} style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: "11px 13px 10px", borderTop: `3px solid ${t.color}`, position: "relative", cursor: onClick ? "pointer" : undefined }}>
       {tag && <span style={{ position: "absolute", top: 8, right: 9, fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: t.color }}>{tag}</span>}
       <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, fontWeight: 600, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 600, color: C.ink, lineHeight: 1.1 }}>{value ?? "—"}{onClick && <span style={{ fontSize: 12, color: C.muted, marginLeft: 6 }}>›</span>}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, color: C.ink, lineHeight: 1.1 }}>{value ?? "—"}{onClick && !hint && <span style={{ fontSize: 12, color: C.muted, marginLeft: 6 }}>›</span>}</div>
       {sub && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 3, lineHeight: 1.35 }}>{sub}</div>}
+      {/* Matches the reference prototype's .drill-hint — an explicit
+          "View youth ⌄" line, distinct from the generic "›" chevron every
+          other clickable tile uses. */}
+      {hint && <div style={{ fontSize: 11, color: C.teal, fontWeight: 700, marginTop: 8 }}>{hint} ⌄</div>}
     </div>
   );
 }
@@ -1579,10 +1583,59 @@ function AwarenessMobilisersPage({ filters }) {
   );
 }
 
+// Persona strip for the KYC / Youth Profile page — matches the reference
+// prototype's "Eligible youth profile" card layout (a row of clickable %
+// cards read as "X% ... of eligible youth") exactly, but every card is
+// computed from the live AWARENESS_KYC table instead of the prototype's
+// illustrative sample fields; two of the reference's six persona traits
+// (marital status, family-at-event) have no live BigQuery column and are
+// swapped for % Female and Duplicate records, which do.
+const KYC_PERSONA_CARDS = [
+  { key: "pct_p5_p7", label: "Completed P5–P7", sub: "of eligible youth" },
+  { key: "pct_age_18_25", label: "Aged 18–25", sub: "of eligible youth" },
+  { key: "pct_owns_phone", label: "Own a phone", sub: "reachable by SMS" },
+  { key: "pct_owns_business", label: "Own a business", sub: "already running one" },
+  { key: "pct_female", label: "Female", sub: "of eligible youth · 60% target" },
+  { key: "duplicate_rate", label: "Duplicate records", sub: "flagged in the system" },
+];
+
+// Bar label for a horizontal bar (BarChart layout="vertical") showing the raw
+// count with a caller-supplied percentage in brackets, e.g. "1,234 (56%)" —
+// positioned just past the bar's end.
+function hBarPctLabel(rows, getPct) {
+  return (props) => {
+    const { x, y, width, height, value, index } = props;
+    const pct = getPct(rows[index]);
+    const text = pct != null ? `${fmtNum(value)} (${fmtPct(pct)})` : fmtNum(value);
+    return (
+      <text x={x + width + 6} y={y + height / 2} dy={4} textAnchor="start" fontSize={10.5} fontWeight={600} fill={C.ink}>
+        {text}
+      </text>
+    );
+  };
+}
+
 function AwarenessKycPage({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/recruitment/awareness-kyc${buildParams(filters)}`);
   const demo = data?.demographics || {};
   const bizByGenderDistrict = data?.business?.by_gender_district || [];
+  const filterMeta = useApi("/api/filters");
+  const allDistricts = filterMeta.data?.districts || [];
+
+  const channels = data?.channels || [];
+  const totalChannelEligible = sumBy(channels, "eligible");
+  const totalChannelIneligible = sumBy(channels, "ineligible");
+
+  function openPersonaDrill(metricKey, label, sub) {
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: "value", label: sub || label, align: "right", render: fmtPct }],
+      rootRows: () => fetchPerDistrict("/api/recruitment/awareness-kyc", filters, allDistricts, (json) => json?.demographics?.[metricKey] ?? null),
+    });
+  }
 
   return (
     <div>
@@ -1592,15 +1645,23 @@ function AwarenessKycPage({ filters }) {
         interested AND age 18–30 AND education P5–S3 AND income ≤ UGX 30,000.
       </p>
 
-      <Card title="Eligible youth profile" subtitle="Persona snapshot of the eligible pool" chip="REAL">
+      <Card title="Eligible youth profile" subtitle="Persona snapshot of the eligible pool — click a card to drill by district" chip="REAL">
         <State loading={loading} error={error} empty={!loading && !demo.eligible_count}>
-          <Grid cols={5}>
-            <KpiTile label="Eligible youth" value={fmtNum(demo.eligible_count)} />
-            <KpiTile label="% Female" value={fmtPct(demo.pct_female)} />
-            <KpiTile label="Average age" value={demo.avg_age ?? "—"} />
-            <KpiTile label="Already own a business" value={fmtNum(demo.owns_business_count)} />
-            <KpiTile label="Duplicate records" value={fmtNum(demo.duplicate_count)} sub={fmtPct(demo.duplicate_rate)} />
+          <Grid cols={4}>
+            {KYC_PERSONA_CARDS.map((c) => (
+              <KpiTile
+                key={c.key}
+                label={c.label}
+                value={fmtPct(demo[c.key])}
+                sub={c.sub}
+                hint="View youth"
+                onClick={() => openPersonaDrill(c.key, c.label, c.sub)}
+              />
+            ))}
           </Grid>
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>
+            {fmtNum(demo.eligible_count)} eligible youth in this cohort · average age {demo.avg_age ?? "—"}.
+          </p>
         </State>
       </Card>
 
@@ -1608,12 +1669,13 @@ function AwarenessKycPage({ filters }) {
         <Card title="What youth are currently doing" chip="REAL">
           <State loading={loading} error={error} empty={!loading && (data?.activity || []).length === 0}>
             <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={data?.activity || []} layout="vertical" margin={{ left: 40 }}>
+              <BarChart data={data?.activity || []} layout="vertical" margin={{ left: 40, right: 50 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
                 <XAxis type="number" tick={{ fontSize: 11 }} />
                 <YAxis type="category" dataKey="activity" tick={{ fontSize: 10 }} width={110} />
                 <Tooltip />
-                <Bar dataKey="count" fill={C.teal} radius={[0, 4, 4, 0]} />
+                <Bar dataKey="count" fill={C.teal} radius={[0, 4, 4, 0]}
+                  label={hBarPctLabel(data?.activity || [], (row) => demo.eligible_count ? Math.round(1000 * row.count / demo.eligible_count) / 10 : null)} />
               </BarChart>
             </ResponsiveContainer>
           </State>
@@ -1621,12 +1683,13 @@ function AwarenessKycPage({ filters }) {
         <Card title="Why youth are enrolling" subtitle="Value-proposition alignment" chip="REAL">
           <State loading={loading} error={error} empty={!loading && (data?.reasons || []).length === 0}>
             <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={data?.reasons || []} layout="vertical" margin={{ left: 40 }}>
+              <BarChart data={data?.reasons || []} layout="vertical" margin={{ left: 40, right: 50 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
                 <XAxis type="number" tick={{ fontSize: 11 }} />
                 <YAxis type="category" dataKey="reason" tick={{ fontSize: 9.5 }} width={150} />
                 <Tooltip />
-                <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]} />
+                <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]}
+                  label={hBarPctLabel(data?.reasons || [], (row) => demo.eligible_count ? Math.round(1000 * row.count / demo.eligible_count) / 10 : null)} />
               </BarChart>
             </ResponsiveContainer>
           </State>
@@ -1663,17 +1726,33 @@ function AwarenessKycPage({ filters }) {
       </div>
 
       <Card title="Recruitment channels — how they heard about us" subtitle="Eligible vs ineligible split by channel" chip="REAL">
-        <State loading={loading} error={error} empty={!loading && (data?.channels || []).length === 0}>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={data?.channels || []} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-              <XAxis dataKey="channel" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={70} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip /><Legend />
-              <Bar dataKey="eligible" name="Eligible" fill={C.green} radius={[4, 4, 0, 0]} />
-              <Bar dataKey="ineligible" name="Ineligible" fill={C.coral} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+        <State loading={loading} error={error} empty={!loading && channels.length === 0}>
+          <DataTable
+            columns={[
+              { key: "channel", label: "Channel" },
+              { key: "eligible", label: "Eligible", align: "right", render: (v) => <span style={{ color: C.green, fontWeight: 600 }}>{fmtNum(v)}</span> },
+              { key: "ineligible", label: "Ineligible", align: "right", render: (v) => <span style={{ color: C.coral, fontWeight: 600 }}>{fmtNum(v)}</span> },
+              {
+                key: "eligibility_rate", label: "Eligibility rate", align: "right",
+                render: (v) => {
+                  const { good, warn } = RATE_TARGETS.eligibility_rate;
+                  const color = v == null ? C.muted : v >= good ? C.green : v >= warn ? C.gold : C.coral;
+                  return <span style={{ color, fontWeight: 700 }}>{fmtPct(v)}</span>;
+                },
+              },
+              { key: "pct_of_eligible", label: "% of all eligible", align: "right", render: (v) => fmtPct(v) },
+              { key: "pct_of_ineligible", label: "% of all ineligible", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={channels.map((c) => {
+              const total = (c.eligible || 0) + (c.ineligible || 0);
+              return {
+                ...c,
+                eligibility_rate: total ? Math.round(1000 * c.eligible / total) / 10 : null,
+                pct_of_eligible: totalChannelEligible ? Math.round(1000 * c.eligible / totalChannelEligible) / 10 : null,
+                pct_of_ineligible: totalChannelIneligible ? Math.round(1000 * c.ineligible / totalChannelIneligible) / 10 : null,
+              };
+            })}
+          />
         </State>
       </Card>
     </div>
