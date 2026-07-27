@@ -84,6 +84,55 @@ export const DEMO = {
     ],
   },
 
+  "/api/recruitment/awareness-parish": {
+    parishes: [
+      { district: "BUGIRI", parish: "BUGIRI TOWN COUNCIL", reached: 1800, reached_female: 1062, reached_male: 738, interested: 1290, interested_female: 774, interested_male: 516, eligible: 1005, eligible_female: 607, eligible_male: 398, pct_female: 60.4, target: 2200 },
+      { district: "BUGIRI", parish: "BUWUNGA", reached: 1400, reached_female: 826, reached_male: 574, interested: 1003, interested_female: 602, interested_male: 401, eligible: 782, eligible_female: 472, eligible_male: 310, pct_female: 60.4, target: 2000 },
+      { district: "BUGWERI", parish: "BUGWERI TOWN COUNCIL", reached: 1200, reached_female: 708, reached_male: 492, interested: 860, interested_female: 516, interested_male: 344, eligible: 670, eligible_female: 405, eligible_male: 265, pct_female: 60.4, target: 1500 },
+      { district: "BUGWERI", parish: "IVUKULA", reached: 900, reached_female: 531, reached_male: 369, interested: 645, interested_female: 387, interested_male: 258, eligible: 502, eligible_female: 303, eligible_male: 199, pct_female: 60.4, target: 1300 },
+      { district: "IGANGA", parish: "IGANGA TOWN COUNCIL", reached: 1600, reached_female: 944, reached_male: 656, interested: 1147, interested_female: 688, interested_male: 459, eligible: 894, eligible_female: 540, eligible_male: 354, pct_female: 60.4, target: 2000 },
+      { district: "IGANGA", parish: "NAMALEMBA", reached: 1200, reached_female: 708, reached_male: 492, interested: 860, interested_female: 516, interested_male: 344, eligible: 670, eligible_female: 405, eligible_male: 265, pct_female: 60.4, target: 1700 },
+      { district: "KAMULI", parish: "KAMULI TOWN COUNCIL", reached: 1000, reached_female: 590, reached_male: 410, interested: 717, interested_female: 430, interested_male: 287, eligible: 559, eligible_female: 338, eligible_male: 221, pct_female: 60.5, target: 1400 },
+      { district: "KAMULI", parish: "BUGULUMBYA", reached: 800, reached_female: 472, reached_male: 328, interested: 573, interested_female: 344, interested_male: 229, eligible: 446, eligible_female: 269, eligible_male: 177, pct_female: 60.3, target: 1100 },
+      { district: "MAYUGE", parish: "MAYUGE TOWN COUNCIL", reached: 1300, reached_female: 767, reached_male: 533, interested: 932, interested_female: 559, interested_male: 373, eligible: 726, eligible_female: 438, eligible_male: 288, pct_female: 60.3, target: 1700 },
+      { district: "MAYUGE", parish: "MALONGO", reached: 800, reached_female: 472, reached_male: 328, interested: 573, interested_female: 344, interested_male: 229, eligible: 446, eligible_female: 269, eligible_male: 177, pct_female: 60.3, target: 1100 },
+    ],
+  },
+
+  "/api/recruitment/awareness-forecast": {
+    daily: [
+      { event_date: "2026-07-01", registered: 750, interested: 538, eligible: 419 },
+      { event_date: "2026-07-02", registered: 800, interested: 573, eligible: 447 },
+      { event_date: "2026-07-03", registered: 850, interested: 609, eligible: 475 },
+      { event_date: "2026-07-04", registered: 900, interested: 645, eligible: 503 },
+      { event_date: "2026-07-05", registered: 950, interested: 681, eligible: 530 },
+      { event_date: "2026-07-06", registered: 900, interested: 645, eligible: 503 },
+      { event_date: "2026-07-07", registered: 850, interested: 609, eligible: 475 },
+      { event_date: "2026-07-08", registered: 800, interested: 573, eligible: 447 },
+      { event_date: "2026-07-09", registered: 900, interested: 645, eligible: 503 },
+      { event_date: "2026-07-10", registered: 950, interested: 681, eligible: 530 },
+      { event_date: "2026-07-11", registered: 900, interested: 645, eligible: 503 },
+      { event_date: "2026-07-12", registered: 850, interested: 609, eligible: 475 },
+      { event_date: "2026-07-13", registered: 800, interested: 573, eligible: 447 },
+      { event_date: "2026-07-14", registered: 800, interested: 574, eligible: 443 },
+    ],
+    registered_to_date: 12000,
+    interested_to_date: 8600,
+    eligible_to_date: 6700,
+    eligibility_rate: 77.9,
+    target: 16000,
+    n_days: 14,
+    avg_daily_rate: 857.1,
+    days_to_target: 5,
+    by_district: [
+      { district: "BUGIRI", registered: 3200, target: 4200, gap: 1000, pct_of_target: 76.2, avg_daily_rate: 228.6, days_to_target: 4 },
+      { district: "BUGWERI", registered: 2100, target: 2800, gap: 700, pct_of_target: 75.0, avg_daily_rate: 150.0, days_to_target: 5 },
+      { district: "IGANGA", registered: 2800, target: 3700, gap: 900, pct_of_target: 75.7, avg_daily_rate: 200.0, days_to_target: 5 },
+      { district: "KAMULI", registered: 1800, target: 2500, gap: 700, pct_of_target: 72.0, avg_daily_rate: 128.6, days_to_target: 5 },
+      { district: "MAYUGE", registered: 2100, target: 2800, gap: 700, pct_of_target: 75.0, avg_daily_rate: 150.0, days_to_target: 5 },
+    ],
+  },
+
   "/api/recruitment/awareness-kyc": {
     demographics: {
       eligible_count: 6700,

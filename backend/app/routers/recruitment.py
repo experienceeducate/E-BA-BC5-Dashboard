@@ -348,7 +348,10 @@ def awareness_forecast(
         district_col="youth_district",
     )
     daily_sql = f"""
-    SELECT report_date AS event_date, SUM(total_registered_youth) AS registered
+    SELECT report_date AS event_date,
+           SUM(total_registered_youth) AS registered,
+           SUM(total_interested_youth) AS interested,
+           SUM(total_eligible_youth) AS eligible
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND report_date IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
     GROUP BY event_date ORDER BY event_date
@@ -356,7 +359,9 @@ def awareness_forecast(
     daily = database.run_query(daily_sql, params, role=user.role)
 
     registered_sql = f"""
-    SELECT SUM(total_registered_youth) AS registered
+    SELECT SUM(total_registered_youth) AS registered,
+           SUM(total_interested_youth) AS interested,
+           SUM(total_eligible_youth) AS eligible
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
     """
@@ -365,7 +370,10 @@ def awareness_forecast(
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND data_measure = '{AWARENESS_MEASURE_TARGET}'
     """
-    registered = (database.run_query(registered_sql, params, role=user.role) or [{}])[0].get("registered") or 0
+    totals = (database.run_query(registered_sql, params, role=user.role) or [{}])[0]
+    registered = totals.get("registered") or 0
+    interested = totals.get("interested") or 0
+    eligible = totals.get("eligible") or 0
     target = (database.run_query(target_sql, params, role=user.role) or [{}])[0].get("target") or 0
 
     n_days = len(daily)
@@ -374,6 +382,7 @@ def awareness_forecast(
     days_to_target = (
         round(remaining / avg_daily_rate) if avg_daily_rate else None
     )
+    eligibility_rate = round(100 * eligible / interested, 1) if interested else None
 
     # District breakdown for the "days to target, by district" panel — pace
     # per district uses the SAME n_days (dates with any data in this filtered
@@ -414,6 +423,9 @@ def awareness_forecast(
     return {
         "daily": daily,
         "registered_to_date": registered,
+        "interested_to_date": interested,
+        "eligible_to_date": eligible,
+        "eligibility_rate": eligibility_rate,
         "target": target,
         "n_days": n_days,
         "avg_daily_rate": round(avg_daily_rate, 1) if avg_daily_rate is not None else None,

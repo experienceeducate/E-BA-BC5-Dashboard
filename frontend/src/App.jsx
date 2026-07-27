@@ -1613,6 +1613,15 @@ function buildForecastInsights(data, byDistrict) {
     });
   }
 
+  if (data?.eligibility_rate != null) {
+    const { good, warn } = RATE_TARGETS.eligibility_rate;
+    const tone = data.eligibility_rate >= good ? "pos" : data.eligibility_rate >= warn ? "warn" : "risk";
+    insights.push({
+      tone,
+      text: <><b>{fmtPct(data.eligibility_rate)}</b> of interested youth are eligible ({fmtNum(data.eligible_to_date)} of {fmtNum(data.interested_to_date)}) — {tone === "pos" ? `at or above the ${good}% target.` : `below the ${good}% target (warning line ${warn}%).`}</>,
+    });
+  }
+
   const withTarget = byDistrict.filter((d) => d.target);
   if (withTarget.length > 1) {
     const sorted = [...withTarget].sort((a, b) => (b.pct_of_target ?? -1) - (a.pct_of_target ?? -1));
@@ -1636,10 +1645,11 @@ function AwarenessForecastPage({ filters }) {
   const daily = data?.daily || [];
   const byDistrict = data?.by_district || [];
 
-  let cum = 0;
+  let cum = 0, eligCum = 0;
   const cumDaily = daily.map((d) => {
     cum += d.registered || 0;
-    return { event_date: d.event_date, registered_cum: cum, target: data?.target ?? null };
+    eligCum += d.eligible || 0;
+    return { event_date: d.event_date, registered_cum: cum, eligible_cum: eligCum, target: data?.target ?? null };
   });
 
   const progressPct = data?.target ? Math.round(1000 * (data.registered_to_date || 0) / data.target) / 10 : null;
@@ -1695,6 +1705,8 @@ function AwarenessForecastPage({ filters }) {
         <KpiTile label="Registration target" value={fmtNum(data?.target)} tag="REAL" />
         <KpiTile label="Progress on target" value={fmtPct(progressPct)} sub="registered ÷ target" tag="DERIVED" tone="sim" />
         <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub={`at current pace · ${fmtNum(data?.avg_daily_rate)}/day`} tag="DERIVED" tone="sim" />
+        <KpiTile label="Eligible to date" value={fmtNum(data?.eligible_to_date)} sub={`of ${fmtNum(data?.interested_to_date)} interested`} tag="REAL" />
+        <KpiTile label="Eligibility rate" value={fmtPct(data?.eligibility_rate)} sub={`eligible ÷ interested · ${RATE_TARGETS.eligibility_rate.good}% target`} tag="DERIVED" tone="sim" />
       </Grid>
 
       <ExecBand num="!" title="Insights" />
@@ -1714,6 +1726,20 @@ function AwarenessForecastPage({ filters }) {
               <Tooltip /><Legend />
               <Line type="monotone" name="Registered (cumulative)" dataKey="registered_cum" stroke={C.teal} strokeWidth={2} dot={false} />
               <Line type="monotone" name="Target" dataKey="target" stroke={C.coral} strokeDasharray="6 4" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+
+      <Card title="Daily progress — eligible youth" subtitle="Running total of eligible youth from daily registrations" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+          <ResponsiveContainer width="100%" height={280}>
+            <LineChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Line type="monotone" name="Eligible (cumulative)" dataKey="eligible_cum" stroke={C.gold} strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </State>
