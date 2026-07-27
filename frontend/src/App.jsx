@@ -1379,6 +1379,81 @@ function hBarPctLabel(rows, getPct) {
   };
 }
 
+// Data-driven insights for the KYC / Youth Profile page — where the eligible
+// pool over/under-shoots the female target, how reachable it is, whether the
+// data needs cleaning, what draws youth in, and which channel/gender splits
+// need a closer look. Every figure comes straight off this cohort's
+// AWARENESS_KYC response, nothing hardcoded.
+function buildKycInsights(demo, channels, bizByGenderDistrict, reasons) {
+  const insights = [];
+
+  if (demo.pct_female != null) {
+    const v = demo.pct_female;
+    if (v >= 60) insights.push({ tone: "pos", text: <><b>Female share is {fmtPct(v)}</b> of the eligible pool — at or above the 60% target.</> });
+    else if (v >= 50) insights.push({ tone: "warn", text: <><b>Female share is {fmtPct(v)}</b> of the eligible pool — below the 60% target.</> });
+    else insights.push({ tone: "risk", text: <><b>Female share is only {fmtPct(v)}</b> of the eligible pool — well short of the 60% target.</> });
+  }
+
+  if (demo.pct_owns_phone != null) {
+    const v = demo.pct_owns_phone;
+    if (v >= 85) insights.push({ tone: "pos", text: <><b>{fmtPct(v)}</b> of eligible youth own a phone — most of the pool is reachable by SMS/call for mobilisation.</> });
+    else insights.push({ tone: "warn", text: <><b>Only {fmtPct(v)}</b> of eligible youth own a phone — the rest need in-person or venue-based mobilisation, not SMS.</> });
+  }
+
+  if (demo.duplicate_rate != null && demo.duplicate_rate > 0) {
+    const tone = demo.duplicate_rate >= 5 ? "risk" : demo.duplicate_rate >= 2 ? "warn" : "neutral";
+    insights.push({
+      tone,
+      text: <><b>{fmtPct(demo.duplicate_rate)}</b> of eligible records ({fmtNum(demo.duplicate_count)} youth) are flagged duplicates{tone === "risk" ? " — worth a data-cleaning pass before mobilisation lists are finalised." : "."}</>,
+    });
+  }
+
+  if (reasons && reasons.length > 0 && demo.eligible_count) {
+    const top = reasons[0];
+    const pct = Math.round(1000 * top.count / demo.eligible_count) / 10;
+    insights.push({ tone: "neutral", text: <><b>{top.reason}</b> is the top reason eligible youth give for enrolling ({fmtPct(pct)} of the eligible pool) — lead with this in outreach messaging.</> });
+  }
+
+  const byGender = {};
+  (bizByGenderDistrict || []).forEach((r) => {
+    const g = (r.gender || "").toUpperCase();
+    if (!byGender[g]) byGender[g] = { owners: 0, total: 0 };
+    byGender[g].owners += r.owners || 0;
+    byGender[g].total += r.total || 0;
+  });
+  const female = byGender.FEMALE;
+  const male = byGender.MALE;
+  if (female?.total && male?.total) {
+    const fPct = Math.round(1000 * female.owners / female.total) / 10;
+    const mPct = Math.round(1000 * male.owners / male.total) / 10;
+    if (Math.abs(mPct - fPct) >= 5) {
+      insights.push({
+        tone: "warn",
+        text: <>Business ownership skews {mPct > fPct ? "male" : "female"} among eligible youth: <b>{fmtPct(mPct)}</b> of men own a business vs <b>{fmtPct(fPct)}</b> of women.</>,
+      });
+    } else {
+      insights.push({ tone: "neutral", text: <>Business ownership is roughly even by gender among eligible youth — <b>{fmtPct(mPct)}</b> of men vs <b>{fmtPct(fPct)}</b> of women.</> });
+    }
+  }
+
+  const withRate = (channels || [])
+    .map((c) => ({ ...c, total: (c.eligible || 0) + (c.ineligible || 0) }))
+    .filter((c) => c.total >= 10)
+    .map((c) => ({ ...c, rate: Math.round(1000 * c.eligible / c.total) / 10 }));
+  if (withRate.length > 1) {
+    const best = [...withRate].sort((a, b) => b.rate - a.rate)[0];
+    const worst = [...withRate].sort((a, b) => a.rate - b.rate)[0];
+    if (best.channel !== worst.channel) {
+      insights.push({
+        tone: "neutral",
+        text: <><b>{best.channel}</b> converts eligible youth at the highest rate ({fmtPct(best.rate)}), while <b>{worst.channel}</b> is lowest ({fmtPct(worst.rate)}) — worth weighting outreach spend toward the stronger channel.</>,
+      });
+    }
+  }
+
+  return insights;
+}
+
 function AwarenessKycPage({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/recruitment/awareness-kyc${buildParams(filters)}`);
@@ -1390,6 +1465,7 @@ function AwarenessKycPage({ filters }) {
   const channels = data?.channels || [];
   const totalChannelEligible = sumBy(channels, "eligible");
   const totalChannelIneligible = sumBy(channels, "ineligible");
+  const kycInsights = buildKycInsights(demo, channels, bizByGenderDistrict, data?.reasons);
 
   function openPersonaDrill(metricKey, label, sub) {
     drill.open({
@@ -1428,6 +1504,13 @@ function AwarenessKycPage({ filters }) {
           </p>
         </State>
       </Card>
+
+      <ExecBand num="!" title="Insights" />
+      <State loading={loading} error={error} empty={!loading && !demo.eligible_count}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {kycInsights.map((ins, i) => <Insight key={i} tone={ins.tone}>{ins.text}</Insight>)}
+        </div>
+      </State>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <Card title="What youth are currently doing" chip="REAL">
