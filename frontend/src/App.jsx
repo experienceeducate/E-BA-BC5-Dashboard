@@ -268,14 +268,17 @@ function Gauge({ label, pct, target, onClick }) {
 // Day × category heatmap — cell background intensity scales with value. Caps
 // to the top N categories by total value to keep the table readable; the
 // caller should surface how many were dropped rather than hiding it silently.
-function Heatmap({ data, xKey, yKey, valueKey, topN = 15 }) {
+// secondaryKey, when given, shows a second real number per cell (e.g. unique
+// calls reached alongside confirmed) as "reached/confirmed" — color intensity
+// still comes from valueKey alone, so the heatmap's color story doesn't change.
+function Heatmap({ data, xKey, yKey, valueKey, valueLabel, secondaryKey, secondaryLabel, topN = 15 }) {
   const totalsByY = {};
   data.forEach((d) => { totalsByY[d[yKey]] = (totalsByY[d[yKey]] || 0) + (d[valueKey] || 0); });
   const yValues = Object.keys(totalsByY).sort((a, b) => totalsByY[b] - totalsByY[a]).slice(0, topN);
   const droppedCount = Object.keys(totalsByY).length - yValues.length;
   const xValues = [...new Set(data.map((d) => d[xKey]))].sort();
   const cellMap = {};
-  data.forEach((d) => { cellMap[`${d[yKey]}|${d[xKey]}`] = d[valueKey]; });
+  data.forEach((d) => { cellMap[`${d[yKey]}|${d[xKey]}`] = d; });
   const max = Math.max(1, ...data.map((d) => d[valueKey] || 0));
   return (
     <div>
@@ -292,14 +295,19 @@ function Heatmap({ data, xKey, yKey, valueKey, topN = 15 }) {
               <tr key={y}>
                 <td style={{ padding: 6, fontSize: 10.5, color: C.ink, fontWeight: 600, whiteSpace: "nowrap" }}>{y}</td>
                 {xValues.map((x) => {
-                  const v = cellMap[`${y}|${x}`] || 0;
+                  const cell = cellMap[`${y}|${x}`];
+                  const v = cell?.[valueKey] || 0;
+                  const v2 = secondaryKey ? (cell?.[secondaryKey] || 0) : null;
                   const intensity = max ? v / max : 0;
+                  const tooltip = secondaryKey
+                    ? `${y} · ${x}: ${secondaryLabel || secondaryKey} ${v2}, ${valueLabel || valueKey} ${v}`
+                    : `${y} · ${x}: ${v}`;
                   return (
-                    <td key={x} title={`${y} · ${x}: ${v}`} style={{
-                      padding: "6px 8px", textAlign: "center", minWidth: 30,
-                      background: v ? `rgba(46,110,115,${0.15 + 0.85 * intensity})` : C.cream,
+                    <td key={x} title={tooltip} style={{
+                      padding: "6px 8px", textAlign: "center", minWidth: secondaryKey ? 54 : 30,
+                      background: v || v2 ? `rgba(46,110,115,${0.15 + 0.85 * intensity})` : C.cream,
                       color: intensity > 0.5 ? C.white : C.text,
-                    }}>{v || ""}</td>
+                    }}>{v || v2 ? (secondaryKey ? `${fmtNum(v2)}/${fmtNum(v)}` : v) : ""}</td>
                   );
                 })}
               </tr>
@@ -307,6 +315,11 @@ function Heatmap({ data, xKey, yKey, valueKey, topN = 15 }) {
           </tbody>
         </table>
       </div>
+      {secondaryKey && (
+        <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+          Each cell: {secondaryLabel || secondaryKey} / {valueLabel || valueKey}.
+        </p>
+      )}
       {droppedCount > 0 && (
         <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
           Showing the top {topN} by volume — {droppedCount} more not shown.
@@ -335,6 +348,32 @@ function Insight({ tone = "neutral", children }) {
     <div style={{ display: "flex", gap: 12, background: C.white, border: `1px solid ${C.line}`, borderLeft: `4px solid ${border}`, borderRadius: 6, padding: "13px 16px", fontSize: 13, lineHeight: 1.5 }}>
       <span style={{ fontWeight: 700, color: border, flexShrink: 0 }}>{icon}</span>
       <div>{children}</div>
+    </div>
+  );
+}
+
+// Persistent duplicate-records callout shown on Mobilisation and Acquisition
+// — matches the reference prototype's ".dupe-flag" banner (real phone-number
+// duplicates flagged across the FULL recruitment file, not just the eligible
+// subset the KYC page's duplicate_rate covers). Green/"clean" variant when
+// the live duplicate_rate comes back at 0.
+function DuplicateRecordsBanner({ filters }) {
+  const { data, loading, error } = useApi(`/api/recruitment/duplicate-summary${buildParams(filters)}`);
+  if (loading || error || !data?.total_count) return null;
+  const clean = !data.duplicate_count;
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 11,
+      background: clean ? "#E9F1EC" : "#FBF3E3",
+      border: `1px solid ${clean ? "#CFE3D6" : "#E9D9B0"}`,
+      borderLeft: `4px solid ${clean ? C.green : C.gold}`,
+      borderRadius: 6, padding: "9px 14px", fontSize: 12,
+      color: clean ? "#2F5D3A" : "#7A5A1E", marginBottom: 16,
+    }}>
+      <span style={{ fontWeight: 700, fontSize: 16, color: clean ? C.green : C.coral, flexShrink: 0 }}>{fmtNum(data.duplicate_count)}</span>
+      <div>
+        <b>Duplicate records identified</b> — {fmtNum(data.duplicate_count)} repeated phone numbers ({fmtPct(data.duplicate_rate)}) flagged across the recruitment file ({fmtNum(data.total_count)} total, this cohort). Real-time checks recommended at registration.
+      </div>
     </div>
   );
 }
@@ -2055,6 +2094,7 @@ function AcquisitionTab({ filters }) {
       <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
         Verified → acquired at Karibu Day arrival, by district and by venue.
       </p>
+      <DuplicateRecordsBanner filters={filters} />
       <PageNav
         active={page}
         onChange={setPage}
@@ -2131,6 +2171,7 @@ function MobilisationTab({ filters }) {
         mobilisation rate, the funnel by day and venue, daily pace against target, and the
         randomised control arm.
       </p>
+      <DuplicateRecordsBanner filters={filters} />
       <PageNav
         active={page}
         onChange={setPage}
@@ -2228,7 +2269,7 @@ function MobRecruitmentFunnelPage({ filters }) {
 
       <Card title="Heat map — unique calls & confirmed youth, by day" subtitle="Colour intensity = confirmed youth that day. Read across each row to spot high-effort / low-yield venues." chip="REAL">
         <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && cells.length === 0}>
-          <Heatmap data={cells} xKey="event_date" yKey="venue" valueKey="confirmed" />
+          <Heatmap data={cells} xKey="event_date" yKey="venue" valueKey="confirmed" valueLabel="confirmed" secondaryKey="reached" secondaryLabel="reached" />
         </State>
       </Card>
 

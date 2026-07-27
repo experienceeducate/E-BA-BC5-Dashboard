@@ -374,6 +374,39 @@ def awareness_kyc(
     }
 
 
+@router.get("/api/recruitment/duplicate-summary")
+def duplicate_summary(
+    user: User = Depends(current_user),
+    district: List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
+):
+    """Duplicate phone-number records across the FULL recruitment file — not
+    just the eligible subset awareness-kyc's duplicate_rate covers. Backs the
+    persistent "Duplicate records identified" banner on the Mobilisation and
+    Acquisition tabs (matches the reference prototype's dupe-flag element),
+    from the same live AWARENESS_KYC per-youth record the KYC page uses.
+    """
+    where, params = build_where(
+        districts=district,
+        extra=[active_cohort_clause("dup", requested=cohort)], prefix="dup",
+        district_col="youth_district",
+    )
+    sql = f"""
+    SELECT COUNT(*) AS total_count,
+           COUNTIF(duplicate_status = 'duplicate') AS duplicate_count
+    FROM {AWARENESS_KYC}
+    WHERE {where}
+    """
+    row = (database.run_query(sql, params, role=user.role) or [{}])[0]
+    total = row.get("total_count") or 0
+    dup = row.get("duplicate_count") or 0
+    return {
+        "total_count": total,
+        "duplicate_count": dup,
+        "duplicate_rate": round(100 * dup / total, 1) if total else None,
+    }
+
+
 @router.get("/api/recruitment/awareness-forecast")
 def awareness_forecast(
     user: User = Depends(current_user),
