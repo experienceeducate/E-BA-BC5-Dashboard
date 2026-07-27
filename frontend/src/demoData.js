@@ -74,6 +74,21 @@ export const DEMO = {
     ],
   },
 
+  "/api/overview/stage-progress": {
+    stages: [
+      { stage: "Registered", count: 12000, target: 16000, pct_of_target: 75.0, target_is_implied: false },
+      { stage: "Interested", count: 8600, target: 16000, pct_of_target: 53.8, target_is_implied: false },
+      { stage: "Eligible", count: 6700, target: 16000, pct_of_target: 41.9, target_is_implied: false },
+      { stage: "Assigned", count: 6400, target: 6500, pct_of_target: 98.5, target_is_implied: false },
+      { stage: "Reached", count: 6100, target: 6500, pct_of_target: 93.8, target_is_implied: false },
+      { stage: "Confirmed", count: 5250, target: 6500, pct_of_target: 80.8, target_is_implied: false },
+      { stage: "Verified", count: 4900, target: 5100, pct_of_target: 96.1, target_is_implied: false },
+      { stage: "Acquired", count: 4200, target: 5100, pct_of_target: 82.4, target_is_implied: false },
+      { stage: "Activated", count: 3820, target: 3780, pct_of_target: 101.1, target_is_implied: true },
+      { stage: "Retained", count: 3210, target: 3247, pct_of_target: 98.9, target_is_implied: true },
+    ],
+  },
+
   "/api/recruitment/awareness": {
     by_district: [
       { district: "BUGIRI", registered: 3200, interested: 2300, eligible: 1800 },
@@ -81,6 +96,30 @@ export const DEMO = {
       { district: "IGANGA", registered: 2800, interested: 2000, eligible: 1550 },
       { district: "KAMULI", registered: 1800, interested: 1250, eligible: 980 },
       { district: "MAYUGE", registered: 2100, interested: 1550, eligible: 1170 },
+    ],
+  },
+
+  "/api/recruitment/awareness-mobilisers": {
+    mobilisers: [
+      { mobilizer_id: "M001", mobiliser_name: "Sarah N.", district: "BUGIRI", reached: 1200, eligible: 720, eligible_female: 460, pct_eligible_female: 63.9 },
+      { mobilizer_id: "M002", mobiliser_name: "James O.", district: "IGANGA", reached: 1000, eligible: 610, eligible_female: 380, pct_eligible_female: 62.3 },
+      { mobilizer_id: "M003", mobiliser_name: "Grace A.", district: "MAYUGE", reached: 850, eligible: 500, eligible_female: 310, pct_eligible_female: 62.0 },
+      { mobilizer_id: "M004", mobiliser_name: "Peter M.", district: "BUGWERI", reached: 780, eligible: 470, eligible_female: 280, pct_eligible_female: 59.6 },
+      { mobilizer_id: "M005", mobiliser_name: "Mary K.", district: "KAMULI", reached: 700, eligible: 400, eligible_female: 230, pct_eligible_female: 57.5 },
+      { mobilizer_id: "M006", mobiliser_name: "David T.", district: "BUGIRI", reached: 600, eligible: 350, eligible_female: 210, pct_eligible_female: 60.0 },
+    ],
+  },
+
+  "/api/recruitment/awareness-mobiliser-detail": {
+    detail: [
+      { mobilizer_id: "M001", mobiliser_name: "Sarah N.", district: "BUGIRI", parish: "BUGIRI TOWN COUNCIL", reached: 700, eligible: 430, eligible_female: 275, pct_eligible_female: 64.0 },
+      { mobilizer_id: "M001", mobiliser_name: "Sarah N.", district: "BUGIRI", parish: "BUWUNGA", reached: 500, eligible: 290, eligible_female: 185, pct_eligible_female: 63.8 },
+      { mobilizer_id: "M002", mobiliser_name: "James O.", district: "IGANGA", parish: "IGANGA TOWN COUNCIL", reached: 600, eligible: 370, eligible_female: 230, pct_eligible_female: 62.2 },
+      { mobilizer_id: "M002", mobiliser_name: "James O.", district: "IGANGA", parish: "NAMALEMBA", reached: 400, eligible: 240, eligible_female: 150, pct_eligible_female: 62.5 },
+      { mobilizer_id: "M003", mobiliser_name: "Grace A.", district: "MAYUGE", parish: "MAYUGE TOWN COUNCIL", reached: 850, eligible: 500, eligible_female: 310, pct_eligible_female: 62.0 },
+      { mobilizer_id: "M004", mobiliser_name: "Peter M.", district: "BUGWERI", parish: "BUGWERI TOWN COUNCIL", reached: 780, eligible: 470, eligible_female: 280, pct_eligible_female: 59.6 },
+      { mobilizer_id: "M005", mobiliser_name: "Mary K.", district: "KAMULI", parish: "KAMULI TOWN COUNCIL", reached: 700, eligible: 400, eligible_female: 230, pct_eligible_female: 57.5 },
+      { mobilizer_id: "M006", mobiliser_name: "David T.", district: "BUGIRI", parish: "BUGIRI TOWN COUNCIL", reached: 600, eligible: 350, eligible_female: 210, pct_eligible_female: 60.0 },
     ],
   },
 
@@ -191,6 +230,76 @@ export const DEMO = {
     mobilisation_rate: 86,
   },
 
+  "/api/recruitment/mobilisation-heatmap": {
+    cells: [
+      { event_date: "2026-07-01", venue: "St. Peter's PS", reached: 520, confirmed: 450 },
+      { event_date: "2026-07-02", venue: "St. Peter's PS", reached: 480, confirmed: 410 },
+      { event_date: "2026-07-03", venue: "St. Peter's PS", reached: 510, confirmed: 440 },
+      { event_date: "2026-07-04", venue: "St. Peter's PS", reached: 500, confirmed: 430 },
+      { event_date: "2026-07-05", venue: "St. Peter's PS", reached: 490, confirmed: 420 },
+      { event_date: "2026-07-01", venue: "Buwaya SS", reached: 430, confirmed: 370 },
+      { event_date: "2026-07-02", venue: "Buwaya SS", reached: 420, confirmed: 360 },
+      { event_date: "2026-07-03", venue: "Buwaya SS", reached: 410, confirmed: 350 },
+      { event_date: "2026-07-04", venue: "Buwaya SS", reached: 420, confirmed: 360 },
+      { event_date: "2026-07-05", venue: "Buwaya SS", reached: 420, confirmed: 360 },
+      { event_date: "2026-07-01", venue: "Naigobya PS", reached: 300, confirmed: 260 },
+      { event_date: "2026-07-02", venue: "Naigobya PS", reached: 300, confirmed: 260 },
+      { event_date: "2026-07-03", venue: "Naigobya PS", reached: 300, confirmed: 260 },
+      { event_date: "2026-07-04", venue: "Naigobya PS", reached: 300, confirmed: 260 },
+      { event_date: "2026-07-05", venue: "Naigobya PS", reached: 300, confirmed: 260 },
+    ],
+  },
+
+  "/api/recruitment/mobilisation-forecast": {
+    daily: [
+      { event_date: "2026-07-01", reached: 450, confirmed: 387 }, { event_date: "2026-07-02", reached: 440, confirmed: 378 },
+      { event_date: "2026-07-03", reached: 430, confirmed: 370 }, { event_date: "2026-07-04", reached: 450, confirmed: 387 },
+      { event_date: "2026-07-05", reached: 460, confirmed: 396 }, { event_date: "2026-07-06", reached: 440, confirmed: 378 },
+      { event_date: "2026-07-07", reached: 430, confirmed: 370 }, { event_date: "2026-07-08", reached: 420, confirmed: 361 },
+      { event_date: "2026-07-09", reached: 440, confirmed: 378 }, { event_date: "2026-07-10", reached: 450, confirmed: 387 },
+      { event_date: "2026-07-11", reached: 430, confirmed: 370 }, { event_date: "2026-07-12", reached: 420, confirmed: 361 },
+      { event_date: "2026-07-13", reached: 410, confirmed: 353 }, { event_date: "2026-07-14", reached: 430, confirmed: 374 },
+    ],
+    confirmed_to_date: 5250,
+    target: 6500,
+    avg_daily_rate: 375.0,
+    days_to_target: 3,
+  },
+
+  "/api/recruitment/control-calls": {
+    total: 850,
+    control: 430,
+    mobilization: 420,
+    reached: 610,
+    reach_pct: 71.8,
+    female: 510,
+    male: 340,
+    pct_female: 60.0,
+    avg_age: 23.4,
+    by_district: [
+      { district: "BUGIRI", n: 220 },
+      { district: "IGANGA", n: 190 },
+      { district: "MAYUGE", n: 160 },
+      { district: "BUGWERI", n: 150 },
+      { district: "KAMULI", n: 130 },
+    ],
+    by_status: [
+      { status: "REACHED", n: 610 },
+      { status: "NOT_REACHED", n: 180 },
+      { status: "INVALID_NUMBER", n: 60 },
+    ],
+  },
+
+  "/api/recruitment/call-centre-insights": {
+    barriers: [
+      { barrier: "Not interested at this time", count: 320, pct: 38.8 },
+      { barrier: "Number unreachable", count: 210, pct: 25.5 },
+      { barrier: "Already engaged elsewhere", count: 140, pct: 17.0 },
+      { barrier: "Family/parental objection", count: 95, pct: 11.5 },
+      { barrier: "Distance to venue", count: 60, pct: 7.3 },
+    ],
+  },
+
   "/api/recruitment/acquisition": {
     by_district: [
       { district: "BUGIRI", verified: 1400, acquired: 1200 },
@@ -198,6 +307,16 @@ export const DEMO = {
       { district: "IGANGA", verified: 1150, acquired: 990 },
       { district: "KAMULI", verified: 720, acquired: 620 },
       { district: "MAYUGE", verified: 730, acquired: 620 },
+    ],
+  },
+
+  "/api/recruitment/acquisition-arrival": {
+    by_venue: [
+      { district: "BUGIRI", venue: "Bugiri Core PTC", verified: 1400, acquired: 1200, acquired_female: 732, acquisition_rate: 85.7, pct_female_acquired: 61.0 },
+      { district: "BUGWERI", venue: "Bugweri Vocational Institute", verified: 900, acquired: 770, acquired_female: 470, acquisition_rate: 85.6, pct_female_acquired: 61.0 },
+      { district: "IGANGA", venue: "Iganga Technical Institute", verified: 1150, acquired: 990, acquired_female: 604, acquisition_rate: 86.1, pct_female_acquired: 61.0 },
+      { district: "KAMULI", venue: "Kamuli Skills Center", verified: 720, acquired: 620, acquired_female: 378, acquisition_rate: 86.1, pct_female_acquired: 61.0 },
+      { district: "MAYUGE", venue: "Mayuge Youth Hub", verified: 730, acquired: 620, acquired_female: 378, acquisition_rate: 84.9, pct_female_acquired: 61.0 },
     ],
   },
 
