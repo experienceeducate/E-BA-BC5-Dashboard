@@ -610,7 +610,7 @@ function OkrTracker() {
 
 // column.onHeaderClick, when given, makes that header a drill trigger —
 // matches the reference design's "column headers ... clickable" convention.
-function DataTable({ columns, rows }) {
+function DataTable({ columns, rows, onRowClick }) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -623,7 +623,7 @@ function DataTable({ columns, rows }) {
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i}>{columns.map((c) => (
+            <tr key={i} onClick={onRowClick ? () => onRowClick(r) : undefined} style={onRowClick ? { cursor: "pointer" } : undefined}>{columns.map((c) => (
               <td key={c.key} style={{ textAlign: c.align || "left", padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text }}>
                 {c.render ? c.render(r[c.key], r) : (r[c.key] ?? "—")}
               </td>
@@ -1592,28 +1592,140 @@ function AwarenessKycPage({ filters }) {
   );
 }
 
+// Data-driven insights for the Forecast page — progress against the real
+// registration target, pace to close the gap, and which districts are
+// furthest ahead/behind. No fabricated cycle length or likelihood score:
+// there's no live "days left in cycle" field, so every figure here is a
+// direct read off the awareness-forecast/awareness-parish responses.
+function buildForecastInsights(data, byDistrict) {
+  const insights = [];
+  const progressPct = data?.target ? Math.round(1000 * (data.registered_to_date || 0) / data.target) / 10 : null;
+
+  if (progressPct != null) {
+    const tone = progressPct >= 95 ? "pos" : progressPct >= 75 ? "warn" : "risk";
+    insights.push({ tone, text: <>Registered <b>{fmtNum(data.registered_to_date)}</b> of the <b>{fmtNum(data.target)}</b> target — <b>{fmtPct(progressPct)}</b> of the way there.</> });
+  }
+
+  if (data?.days_to_target != null && data?.avg_daily_rate) {
+    insights.push({
+      tone: "neutral",
+      text: <>At the current pace of <b>{fmtNum(data.avg_daily_rate)}</b> youth/day, the remaining gap closes in about <b>{fmtNum(data.days_to_target)}</b> day{data.days_to_target === 1 ? "" : "s"}.</>,
+    });
+  }
+
+  const withTarget = byDistrict.filter((d) => d.target);
+  if (withTarget.length > 1) {
+    const sorted = [...withTarget].sort((a, b) => (b.pct_of_target ?? -1) - (a.pct_of_target ?? -1));
+    const best = sorted[0], worst = sorted[sorted.length - 1];
+    if (best.district !== worst.district) {
+      insights.push({ tone: "neutral", text: <><b>{best.district}</b> is furthest along ({fmtPct(best.pct_of_target)} of target), while <b>{worst.district}</b> trails at {fmtPct(worst.pct_of_target)}.</> });
+    }
+    const behind = withTarget.filter((d) => (d.pct_of_target ?? 0) < 75);
+    if (behind.length > 0) {
+      insights.push({ tone: "warn", text: <><b>{behind.length}</b> district{behind.length === 1 ? "" : "s"} {behind.length === 1 ? "is" : "are"} below 75% of target — see the table below for days-to-target at the current pace.</> });
+    }
+  }
+
+  return insights;
+}
+
 function AwarenessForecastPage({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/recruitment/awareness-forecast${buildParams(filters)}`);
+  const parishData = useApi(`/api/recruitment/awareness-parish${buildParams(filters)}`);
   const daily = data?.daily || [];
+  const byDistrict = data?.by_district || [];
+
+  let cum = 0;
+  const cumDaily = daily.map((d) => {
+    cum += d.registered || 0;
+    return { event_date: d.event_date, registered_cum: cum, target: data?.target ?? null };
+  });
+
+  const progressPct = data?.target ? Math.round(1000 * (data.registered_to_date || 0) / data.target) / 10 : null;
+
+  const districtRows = byDistrict.map((d) => ({ ...d, category: categorizeRate(d.pct_of_target) }));
+
+  const parishRows = (parishData.data?.parishes || []).map((p) => {
+    const registered = p.reached || 0;
+    const target = p.target || 0;
+    const gap = Math.max(target - registered, 0);
+    const rate = data?.n_days ? registered / data.n_days : null;
+    return {
+      district: p.district,
+      parish: p.parish,
+      registered,
+      target,
+      gap,
+      pct_of_target: target ? Math.round(1000 * registered / target) / 10 : null,
+      days_to_target: rate ? Math.round(gap / rate) : null,
+    };
+  });
+
+  const forecastColumns = [
+    { key: "registered", label: "Registered", align: "right", render: (v) => fmtNum(v) },
+    { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+    { key: "gap", label: "Gap", align: "right", render: (v) => fmtNum(v) },
+    { key: "days_to_target", label: "Days to target", align: "right", render: (v) => (v == null ? "—" : v <= 0 ? "Met" : `${fmtNum(v)} d`) },
+    { key: "pct_of_target", label: "% of target", align: "right", render: (v) => fmtPct(v) },
+    { key: "category", label: "Status", align: "left", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+  ];
+
+  function openParishDrill(districtRow) {
+    drill.openAt({
+      title: "Days to target — by parish",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: forecastColumns,
+      rootRows: districtRows,
+      childKey: "parish", childLabel: "Parish",
+      getChildRows: (root) => parishRows.filter((p) => p.district === root.district).map((p) => ({ ...p, category: categorizeRate(p.pct_of_target) })),
+    }, districtRow);
+  }
+
   return (
     <div>
+      <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+        Registration pace against the live registration target — daily trend, progress by district, and
+        days-to-target at the current pace. Click a district row to drill into its parishes.
+      </p>
+
       <Grid cols={4}>
-        <KpiTile label="Registered to date" value={fmtNum(data?.registered_to_date)} />
-        <KpiTile label="Registration target" value={fmtNum(data?.target)} />
-        <KpiTile label="Avg daily rate" value={fmtNum(data?.avg_daily_rate)} />
-        <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub="At current pace" />
+        <KpiTile label="Registered to date" value={fmtNum(data?.registered_to_date)} tag="REAL" />
+        <KpiTile label="Registration target" value={fmtNum(data?.target)} tag="REAL" />
+        <KpiTile label="Progress on target" value={fmtPct(progressPct)} sub="registered ÷ target" tag="DERIVED" tone="sim" />
+        <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub={`at current pace · ${fmtNum(data?.avg_daily_rate)}/day`} tag="DERIVED" tone="sim" />
       </Grid>
-      <Card title="Daily registration trend" subtitle="Registered youth per day" chip="REAL">
+
+      <ExecBand num="!" title="Insights" />
+      <State loading={loading} error={error} empty={!loading && !data?.target && !data?.registered_to_date}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {buildForecastInsights(data || {}, byDistrict).map((ins, i) => <Insight key={i} tone={ins.tone}>{ins.text}</Insight>)}
+        </div>
+      </State>
+
+      <Card title="Daily registration trend" subtitle="Cumulative registered youth vs the registration target" chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <LineChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
               <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
               <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Line type="monotone" dataKey="registered" stroke={C.teal} strokeWidth={2} dot={false} />
+              <Tooltip /><Legend />
+              <Line type="monotone" name="Registered (cumulative)" dataKey="registered_cum" stroke={C.teal} strokeWidth={2} dot={false} />
+              <Line type="monotone" name="Target" dataKey="target" stroke={C.coral} strokeDasharray="6 4" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
+        </State>
+      </Card>
+
+      <Card title="Days to target, by district" subtitle="Registered vs target at current pace — click a district to see its parishes" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && districtRows.length === 0}>
+          <DataTable
+            columns={[{ key: "district", label: "District" }, ...forecastColumns]}
+            rows={districtRows}
+            onRowClick={openParishDrill}
+          />
         </State>
       </Card>
     </div>
