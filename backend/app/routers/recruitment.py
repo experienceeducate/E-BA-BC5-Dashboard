@@ -388,7 +388,10 @@ def awareness_forecast(
         district_col="youth_district",
     )
     daily_sql = f"""
-    SELECT report_date AS event_date, SUM(total_registered_youth) AS registered
+    SELECT report_date AS event_date,
+           SUM(total_registered_youth) AS registered,
+           SUM(total_interested_youth) AS interested,
+           SUM(total_eligible_youth) AS eligible
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND report_date IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
     GROUP BY event_date ORDER BY event_date
@@ -396,7 +399,9 @@ def awareness_forecast(
     daily = database.run_query(daily_sql, params, role=user.role)
 
     registered_sql = f"""
-    SELECT SUM(total_registered_youth) AS registered
+    SELECT SUM(total_registered_youth) AS registered,
+           SUM(total_interested_youth) AS interested,
+           SUM(total_eligible_youth) AS eligible
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
     """
@@ -405,7 +410,10 @@ def awareness_forecast(
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND data_measure = '{AWARENESS_MEASURE_TARGET}'
     """
-    registered = (database.run_query(registered_sql, params, role=user.role) or [{}])[0].get("registered") or 0
+    totals = (database.run_query(registered_sql, params, role=user.role) or [{}])[0]
+    registered = totals.get("registered") or 0
+    interested = totals.get("interested") or 0
+    eligible = totals.get("eligible") or 0
     target = (database.run_query(target_sql, params, role=user.role) or [{}])[0].get("target") or 0
 
     n_days = len(daily)
@@ -414,13 +422,55 @@ def awareness_forecast(
     days_to_target = (
         round(remaining / avg_daily_rate) if avg_daily_rate else None
     )
+    eligibility_rate = round(100 * eligible / interested, 1) if interested else None
+
+    # District breakdown for the "days to target, by district" panel — pace
+    # per district uses the SAME n_days (dates with any data in this filtered
+    # window) as the denominator above, so every district's rate is "average
+    # per day over the same observed reporting window", not each district's
+    # own (possibly sparser) active-day count.
+    district_registered_sql = f"""
+    SELECT UPPER(youth_district) AS district, SUM(total_registered_youth) AS registered
+    FROM {AWARENESS_SUMMARY}
+    WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+    GROUP BY district
+    """
+    district_target_sql = f"""
+    SELECT UPPER(youth_district) AS district, SUM(registration_target) AS target
+    FROM {AWARENESS_SUMMARY}
+    WHERE {where} AND data_measure = '{AWARENESS_MEASURE_TARGET}'
+    GROUP BY district
+    """
+    district_target = {r["district"]: r.get("target") or 0 for r in database.run_query(district_target_sql, params, role=user.role)}
+    district_rows = database.run_query(district_registered_sql, params, role=user.role)
+    by_district = []
+    for r in district_rows:
+        d_registered = r.get("registered") or 0
+        d_target = district_target.get(r["district"], 0)
+        d_rate = (d_registered / n_days) if n_days else None
+        d_gap = max(d_target - d_registered, 0)
+        by_district.append({
+            "district": r["district"],
+            "registered": d_registered,
+            "target": d_target,
+            "gap": d_gap,
+            "pct_of_target": round(100 * d_registered / d_target, 1) if d_target else None,
+            "avg_daily_rate": round(d_rate, 1) if d_rate is not None else None,
+            "days_to_target": round(d_gap / d_rate) if d_rate else None,
+        })
+    by_district.sort(key=lambda r: r["district"])
 
     return {
         "daily": daily,
         "registered_to_date": registered,
+        "interested_to_date": interested,
+        "eligible_to_date": eligible,
+        "eligibility_rate": eligibility_rate,
         "target": target,
+        "n_days": n_days,
         "avg_daily_rate": round(avg_daily_rate, 1) if avg_daily_rate is not None else None,
         "days_to_target": days_to_target,
+        "by_district": by_district,
     }
 
 

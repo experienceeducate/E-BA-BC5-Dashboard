@@ -10,7 +10,7 @@
 
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
-  ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis,
+  ResponsiveContainer, BarChart, Bar, LineChart, Line, ComposedChart, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, Cell,
 } from "recharts";
 import { DEMO, DEMO_FILTERS } from "./demoData";
@@ -612,7 +612,8 @@ function OkrTracker() {
 // matches the reference design's "column headers ... clickable" convention.
 // onRowClick, when given, makes every row a drill trigger (matches
 // DrillTable's row-click convention) — used e.g. by the mobiliser table to
-// open a per-mobiliser district->parish drill.
+// open a per-mobiliser district->parish drill, and by the Forecast page's
+// district table to open its parish drill.
 function DataTable({ columns, rows, onRowClick }) {
   return (
     <div style={{ overflowX: "auto" }}>
@@ -1828,28 +1829,168 @@ function AwarenessKycPage({ filters }) {
   );
 }
 
+// Data-driven insights for the Forecast page — progress against the real
+// registration target, pace to close the gap, and which districts are
+// furthest ahead/behind. No fabricated cycle length or likelihood score:
+// there's no live "days left in cycle" field, so every figure here is a
+// direct read off the awareness-forecast/awareness-parish responses.
+function buildForecastInsights(data, byDistrict) {
+  const insights = [];
+  const progressPct = data?.target ? Math.round(1000 * (data.registered_to_date || 0) / data.target) / 10 : null;
+
+  if (progressPct != null) {
+    const tone = progressPct >= 95 ? "pos" : progressPct >= 75 ? "warn" : "risk";
+    insights.push({ tone, text: <>Registered <b>{fmtNum(data.registered_to_date)}</b> of the <b>{fmtNum(data.target)}</b> target — <b>{fmtPct(progressPct)}</b> of the way there.</> });
+  }
+
+  if (data?.days_to_target != null && data?.avg_daily_rate) {
+    insights.push({
+      tone: "neutral",
+      text: <>At the current pace of <b>{fmtNum(data.avg_daily_rate)}</b> youth/day, the remaining gap closes in about <b>{fmtNum(data.days_to_target)}</b> day{data.days_to_target === 1 ? "" : "s"}.</>,
+    });
+  }
+
+  if (data?.eligibility_rate != null) {
+    const { good, warn } = RATE_TARGETS.eligibility_rate;
+    const tone = data.eligibility_rate >= good ? "pos" : data.eligibility_rate >= warn ? "warn" : "risk";
+    insights.push({
+      tone,
+      text: <><b>{fmtPct(data.eligibility_rate)}</b> of interested youth are eligible ({fmtNum(data.eligible_to_date)} of {fmtNum(data.interested_to_date)}) — {tone === "pos" ? `at or above the ${good}% target.` : `below the ${good}% target (warning line ${warn}%).`}</>,
+    });
+  }
+
+  const withTarget = byDistrict.filter((d) => d.target);
+  if (withTarget.length > 1) {
+    const sorted = [...withTarget].sort((a, b) => (b.pct_of_target ?? -1) - (a.pct_of_target ?? -1));
+    const best = sorted[0], worst = sorted[sorted.length - 1];
+    if (best.district !== worst.district) {
+      insights.push({ tone: "neutral", text: <><b>{best.district}</b> is furthest along ({fmtPct(best.pct_of_target)} of target), while <b>{worst.district}</b> trails at {fmtPct(worst.pct_of_target)}.</> });
+    }
+    const behind = withTarget.filter((d) => (d.pct_of_target ?? 0) < 75);
+    if (behind.length > 0) {
+      insights.push({ tone: "warn", text: <><b>{behind.length}</b> district{behind.length === 1 ? "" : "s"} {behind.length === 1 ? "is" : "are"} below 75% of target — see the table below for days-to-target at the current pace.</> });
+    }
+  }
+
+  return insights;
+}
+
 function AwarenessForecastPage({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/recruitment/awareness-forecast${buildParams(filters)}`);
+  const parishData = useApi(`/api/recruitment/awareness-parish${buildParams(filters)}`);
   const daily = data?.daily || [];
+  const byDistrict = data?.by_district || [];
+
+  let cum = 0, eligCum = 0;
+  const cumDaily = daily.map((d) => {
+    cum += d.registered || 0;
+    eligCum += d.eligible || 0;
+    return { event_date: d.event_date, registered_cum: cum, eligible_cum: eligCum, eligible_daily: d.eligible || 0, target: data?.target ?? null };
+  });
+
+  const progressPct = data?.target ? Math.round(1000 * (data.registered_to_date || 0) / data.target) / 10 : null;
+
+  const districtRows = byDistrict.map((d) => ({ ...d, category: categorizeRate(d.pct_of_target) }));
+
+  const parishRows = (parishData.data?.parishes || []).map((p) => {
+    const registered = p.reached || 0;
+    const target = p.target || 0;
+    const gap = Math.max(target - registered, 0);
+    const rate = data?.n_days ? registered / data.n_days : null;
+    return {
+      district: p.district,
+      parish: p.parish,
+      registered,
+      target,
+      gap,
+      pct_of_target: target ? Math.round(1000 * registered / target) / 10 : null,
+      days_to_target: rate ? Math.round(gap / rate) : null,
+    };
+  });
+
+  const forecastColumns = [
+    { key: "registered", label: "Registered", align: "right", render: (v) => fmtNum(v) },
+    { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+    { key: "gap", label: "Gap", align: "right", render: (v) => fmtNum(v) },
+    { key: "days_to_target", label: "Days to target", align: "right", render: (v) => (v == null ? "—" : v <= 0 ? "Met" : `${fmtNum(v)} d`) },
+    { key: "pct_of_target", label: "% of target", align: "right", render: (v) => fmtPct(v) },
+    { key: "category", label: "Status", align: "left", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+  ];
+
+  function openParishDrill(districtRow) {
+    drill.openAt({
+      title: "Days to target — by parish",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: forecastColumns,
+      rootRows: districtRows,
+      childKey: "parish", childLabel: "Parish",
+      getChildRows: (root) => parishRows.filter((p) => p.district === root.district).map((p) => ({ ...p, category: categorizeRate(p.pct_of_target) })),
+    }, districtRow);
+  }
+
   return (
     <div>
+      <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+        Registration pace against the live registration target — daily trend, progress by district, and
+        days-to-target at the current pace. Click a district row to drill into its parishes.
+      </p>
+
       <Grid cols={4}>
-        <KpiTile label="Registered to date" value={fmtNum(data?.registered_to_date)} />
-        <KpiTile label="Registration target" value={fmtNum(data?.target)} />
-        <KpiTile label="Avg daily rate" value={fmtNum(data?.avg_daily_rate)} />
-        <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub="At current pace" />
+        <KpiTile label="Registered to date" value={fmtNum(data?.registered_to_date)} tag="REAL" />
+        <KpiTile label="Registration target" value={fmtNum(data?.target)} tag="REAL" />
+        <KpiTile label="Progress on target" value={fmtPct(progressPct)} sub="registered ÷ target" tag="DERIVED" tone="sim" />
+        <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub={`at current pace · ${fmtNum(data?.avg_daily_rate)}/day`} tag="DERIVED" tone="sim" />
+        <KpiTile label="Eligible to date" value={fmtNum(data?.eligible_to_date)} sub={`of ${fmtNum(data?.interested_to_date)} interested`} tag="REAL" />
+        <KpiTile label="Eligibility rate" value={fmtPct(data?.eligibility_rate)} sub={`eligible ÷ interested · ${RATE_TARGETS.eligibility_rate.good}% target`} tag="DERIVED" tone="sim" />
       </Grid>
-      <Card title="Daily registration trend" subtitle="Registered youth per day" chip="REAL">
+
+      <ExecBand num="!" title="Insights" />
+      <State loading={loading} error={error} empty={!loading && !data?.target && !data?.registered_to_date}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {buildForecastInsights(data || {}, byDistrict).map((ins, i) => <Insight key={i} tone={ins.tone}>{ins.text}</Insight>)}
+        </div>
+      </State>
+
+      <Card title="Daily registration trend" subtitle="Cumulative registered youth vs the registration target" chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <LineChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
               <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
               <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Line type="monotone" dataKey="registered" stroke={C.teal} strokeWidth={2} dot={false} />
+              <Tooltip /><Legend />
+              <Line type="monotone" name="Registered (cumulative)" dataKey="registered_cum" stroke={C.teal} strokeWidth={2} dot={false} />
+              <Line type="monotone" name="Target" dataKey="target" stroke={C.coral} strokeDasharray="6 4" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
+        </State>
+      </Card>
+
+      <Card title="Daily progress — eligible youth" subtitle="Eligible youth gained per day (bars) vs the running total (line)" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+          <ResponsiveContainer width="100%" height={280}>
+            <ComposedChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+              <YAxis yAxisId="daily" tick={{ fontSize: 11 }} />
+              <YAxis yAxisId="cum" orientation="right" tick={{ fontSize: 11 }} />
+              <Tooltip /><Legend />
+              <Bar yAxisId="daily" name="Eligible gained (daily)" dataKey="eligible_daily" fill={C.gold} radius={[3, 3, 0, 0]} />
+              <Line yAxisId="cum" type="monotone" name="Eligible (cumulative)" dataKey="eligible_cum" stroke={C.teal} strokeWidth={2} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+
+      <Card title="Days to target, by district" subtitle="Registered vs target at current pace — click a district to see its parishes" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && districtRows.length === 0}>
+          <DataTable
+            columns={[{ key: "district", label: "District" }, ...forecastColumns]}
+            rows={districtRows}
+            onRowClick={openParishDrill}
+          />
         </State>
       </Card>
     </div>
