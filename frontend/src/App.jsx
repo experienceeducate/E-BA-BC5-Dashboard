@@ -10,7 +10,7 @@
 
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
-  ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis,
+  ResponsiveContainer, BarChart, Bar, LineChart, Line, ComposedChart, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, Cell,
 } from "recharts";
 import { DEMO, DEMO_FILTERS } from "./demoData";
@@ -1649,7 +1649,7 @@ function AwarenessForecastPage({ filters }) {
   const cumDaily = daily.map((d) => {
     cum += d.registered || 0;
     eligCum += d.eligible || 0;
-    return { event_date: d.event_date, registered_cum: cum, eligible_cum: eligCum, target: data?.target ?? null };
+    return { event_date: d.event_date, registered_cum: cum, eligible_cum: eligCum, eligible_daily: d.eligible || 0, target: data?.target ?? null };
   });
 
   const progressPct = data?.target ? Math.round(1000 * (data.registered_to_date || 0) / data.target) / 10 : null;
@@ -1731,16 +1731,18 @@ function AwarenessForecastPage({ filters }) {
         </State>
       </Card>
 
-      <Card title="Daily progress — eligible youth" subtitle="Running total of eligible youth from daily registrations" chip="REAL">
+      <Card title="Daily progress — eligible youth" subtitle="Eligible youth gained per day (bars) vs the running total (line)" chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
           <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <ComposedChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
               <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Line type="monotone" name="Eligible (cumulative)" dataKey="eligible_cum" stroke={C.gold} strokeWidth={2} dot={false} />
-            </LineChart>
+              <YAxis yAxisId="daily" tick={{ fontSize: 11 }} />
+              <YAxis yAxisId="cum" orientation="right" tick={{ fontSize: 11 }} />
+              <Tooltip /><Legend />
+              <Bar yAxisId="daily" name="Eligible gained (daily)" dataKey="eligible_daily" fill={C.gold} radius={[3, 3, 0, 0]} />
+              <Line yAxisId="cum" type="monotone" name="Eligible (cumulative)" dataKey="eligible_cum" stroke={C.teal} strokeWidth={2} dot={false} />
+            </ComposedChart>
           </ResponsiveContainer>
         </State>
       </Card>
