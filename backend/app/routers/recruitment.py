@@ -302,16 +302,6 @@ def awareness_kyc(
     for r in biz_rows:
         r["pct_owns_business"] = round(100 * r["owners"] / r["total"], 1) if r["total"] else None
 
-    biz_reasons_sql = f"""
-    SELECT owns_business, reason, COUNT(*) AS count
-    FROM {AWARENESS_KYC}, UNNEST(JSON_EXTRACT_STRING_ARRAY(registration_reasons)) AS reason
-    WHERE {elig_where}
-    GROUP BY owns_business, reason
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY owns_business ORDER BY COUNT(*) DESC) <= 5
-    ORDER BY owns_business DESC, count DESC
-    """
-    biz_reasons = database.run_query(biz_reasons_sql, base_params, role=user.role)
-
     # Channel chart splits eligible vs ineligible — needs its own query without
     # the elligible=TRUE restriction the rest of this endpoint uses.
     channel_sql = f"""
@@ -339,7 +329,7 @@ def awareness_kyc(
         },
         "activity": activity,
         "reasons": reasons,
-        "business": {"by_gender_district": biz_rows, "reasons_by_ownership": biz_reasons},
+        "business": {"by_gender_district": biz_rows},
         "channels": channels,
     }
 

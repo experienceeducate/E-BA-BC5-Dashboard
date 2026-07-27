@@ -1543,34 +1543,20 @@ function AwarenessKycPage({ filters }) {
         </Card>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="Who already owns a business" subtitle="Share of eligible youth, by gender and district" chip="REAL">
-          <State loading={loading} error={error} empty={!loading && bizByGenderDistrict.length === 0}>
-            <DataTable
-              columns={[
-                { key: "district", label: "District" },
-                { key: "gender", label: "Gender" },
-                { key: "owners", label: "Owners", align: "right", render: (v) => fmtNum(v) },
-                { key: "total", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
-                { key: "pct_owns_business", label: "% Owning", align: "right", render: (v) => fmtPct(v) },
-              ]}
-              rows={bizByGenderDistrict}
-            />
-          </State>
-        </Card>
-        <Card title="Why they're enrolling — owners vs non-owners" subtitle="Top reasons given, split by business ownership" chip="REAL">
-          <State loading={loading} error={error} empty={!loading && (data?.business?.reasons_by_ownership || []).length === 0}>
-            <DataTable
-              columns={[
-                { key: "owns_business", label: "Owns business", render: (v) => (v ? "Yes" : "No") },
-                { key: "reason", label: "Reason" },
-                { key: "count", label: "Count", align: "right", render: (v) => fmtNum(v) },
-              ]}
-              rows={data?.business?.reasons_by_ownership || []}
-            />
-          </State>
-        </Card>
-      </div>
+      <Card title="Who already owns a business" subtitle="Share of eligible youth, by gender and district" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && bizByGenderDistrict.length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "gender", label: "Gender" },
+              { key: "owners", label: "Owners", align: "right", render: (v) => fmtNum(v) },
+              { key: "total", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+              { key: "pct_owns_business", label: "% Owning", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={bizByGenderDistrict}
+          />
+        </State>
+      </Card>
 
       <Card title="Recruitment channels — how they heard about us" subtitle="Eligible vs ineligible split by channel" chip="REAL">
         <State loading={loading} error={error} empty={!loading && channels.length === 0}>

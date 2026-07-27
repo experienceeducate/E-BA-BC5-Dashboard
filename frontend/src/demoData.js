@@ -118,12 +118,6 @@ export const DEMO = {
         { district: "BUGWERI", gender: "Female", owners: 260, total: 900, pct_owns_business: 28.9 },
         { district: "BUGWERI", gender: "Male", owners: 190, total: 620, pct_owns_business: 30.6 },
       ],
-      reasons_by_ownership: [
-        { owns_business: true, reason: "Want to start a business", count: 900 },
-        { owns_business: true, reason: "Want a stable income", count: 700 },
-        { owns_business: false, reason: "Want a stable income", count: 2200 },
-        { owns_business: false, reason: "Want a new skill", count: 1200 },
-      ],
     },
     channels: [
       { channel: "Mobiliser referral", eligible: 2600, ineligible: 900 },
