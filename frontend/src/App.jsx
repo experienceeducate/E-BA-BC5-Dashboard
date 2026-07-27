@@ -1953,24 +1953,9 @@ function AwarenessForecastPage({ filters }) {
         </div>
       </State>
 
-      <Card title="Daily registration trend" subtitle="Cumulative registered youth vs the registration target" chip="REAL">
+      <Card title="Daily progress — registered vs eligible" subtitle="Eligible youth gained per day (bars) against cumulative registered, cumulative eligible, and the registration target (lines)" chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip /><Legend />
-              <Line type="monotone" name="Registered (cumulative)" dataKey="registered_cum" stroke={C.teal} strokeWidth={2} dot={false} />
-              <Line type="monotone" name="Target" dataKey="target" stroke={C.coral} strokeDasharray="6 4" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </State>
-      </Card>
-
-      <Card title="Daily progress — eligible youth" subtitle="Eligible youth gained per day (bars) vs the running total (line)" chip="REAL">
-        <State loading={loading} error={error} empty={!loading && daily.length === 0}>
-          <ResponsiveContainer width="100%" height={280}>
+          <ResponsiveContainer width="100%" height={320}>
             <ComposedChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
               <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
@@ -1978,7 +1963,9 @@ function AwarenessForecastPage({ filters }) {
               <YAxis yAxisId="cum" orientation="right" tick={{ fontSize: 11 }} />
               <Tooltip /><Legend />
               <Bar yAxisId="daily" name="Eligible gained (daily)" dataKey="eligible_daily" fill={C.gold} radius={[3, 3, 0, 0]} />
+              <Line yAxisId="cum" type="monotone" name="Registered (cumulative)" dataKey="registered_cum" stroke={C.inkSoft} strokeWidth={2} dot={false} />
               <Line yAxisId="cum" type="monotone" name="Eligible (cumulative)" dataKey="eligible_cum" stroke={C.teal} strokeWidth={2} dot={false} />
+              <Line yAxisId="cum" type="monotone" name="Registration target" dataKey="target" stroke={C.coral} strokeDasharray="6 4" strokeWidth={2} dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </State>
