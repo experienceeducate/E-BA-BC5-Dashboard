@@ -10,7 +10,7 @@
 
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
-  ResponsiveContainer, BarChart, Bar, LineChart, Line, ComposedChart, XAxis, YAxis,
+  ResponsiveContainer, BarChart, Bar, LineChart, Line, ComposedChart, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, Cell,
 } from "recharts";
 import { DEMO, DEMO_FILTERS } from "./demoData";
@@ -1883,8 +1883,7 @@ function AwarenessForecastPage({ filters }) {
   const byDistrict = data?.by_district || [];
 
   // Click-to-toggle legend: click a series name to hide/show it, so the
-  // four-line combo chart can be narrowed down to just the lines you want
-  // to compare (e.g. eligible-only, or registered vs target).
+  // chart can be narrowed down to just eligible or just the target line.
   const [hiddenSeries, setHiddenSeries] = useState({});
   function toggleSeries(dataKey) {
     setHiddenSeries((h) => ({ ...h, [dataKey]: !h[dataKey] }));
@@ -1894,11 +1893,10 @@ function AwarenessForecastPage({ filters }) {
     return <span style={{ textDecoration: isHidden ? "line-through" : "none", opacity: isHidden ? 0.5 : 1 }}>{value}</span>;
   }
 
-  let cum = 0, eligCum = 0;
+  let eligCum = 0;
   const cumDaily = daily.map((d) => {
-    cum += d.registered || 0;
     eligCum += d.eligible || 0;
-    return { event_date: d.event_date, registered_cum: cum, eligible_cum: eligCum, eligible_daily: d.eligible || 0, target: data?.target ?? null };
+    return { event_date: d.event_date, eligible_cum: eligCum, target: data?.target ?? null };
   });
 
   const progressPct = data?.target ? Math.round(1000 * (data.registered_to_date || 0) / data.target) / 10 : null;
@@ -1965,21 +1963,24 @@ function AwarenessForecastPage({ filters }) {
         </div>
       </State>
 
-      <Card title="Daily progress — registered vs eligible" subtitle="Eligible youth gained per day, cumulative registered, cumulative eligible, and the registration target — click a legend entry to show/hide it" chip="REAL">
+      <Card title="Daily trend — eligible youth vs target (cumulative)" subtitle="Running total of eligible youth against the registration target — the live registration_target field is the only real target BigQuery carries, so it stands in for the reference design's eligible-youth target line" chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
-          <ResponsiveContainer width="100%" height={320}>
-            <ComposedChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+          <ResponsiveContainer width="100%" height={280}>
+            <AreaChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <defs>
+                <linearGradient id="forecastEligibleFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={C.teal} stopOpacity={0.35} />
+                  <stop offset="100%" stopColor={C.teal} stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
               <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
-              <YAxis yAxisId="daily" tick={{ fontSize: 11 }} />
-              <YAxis yAxisId="cum" orientation="right" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
               <Tooltip />
               <Legend onClick={(e) => toggleSeries(e.dataKey)} formatter={legendFormatter} wrapperStyle={{ cursor: "pointer" }} />
-              <Line yAxisId="daily" type="monotone" name="Eligible gained (daily)" dataKey="eligible_daily" stroke={C.gold} strokeWidth={2} dot={false} hide={!!hiddenSeries.eligible_daily} />
-              <Line yAxisId="cum" type="monotone" name="Registered (cumulative)" dataKey="registered_cum" stroke={C.inkSoft} strokeWidth={2} dot={false} hide={!!hiddenSeries.registered_cum} />
-              <Line yAxisId="cum" type="monotone" name="Eligible (cumulative)" dataKey="eligible_cum" stroke={C.teal} strokeWidth={2} dot={false} hide={!!hiddenSeries.eligible_cum} />
-              <Line yAxisId="cum" type="monotone" name="Registration target" dataKey="target" stroke={C.coral} strokeDasharray="6 4" strokeWidth={2} dot={false} hide={!!hiddenSeries.target} />
-            </ComposedChart>
+              <Area type="monotone" name="Eligible (cumulative)" dataKey="eligible_cum" stroke={C.teal} strokeWidth={2} fill="url(#forecastEligibleFill)" hide={!!hiddenSeries.eligible_cum} />
+              <Area type="monotone" name="Registration target" dataKey="target" stroke={C.coral} strokeDasharray="6 4" strokeWidth={2} fill="none" dot={false} hide={!!hiddenSeries.target} />
+            </AreaChart>
           </ResponsiveContainer>
         </State>
       </Card>
