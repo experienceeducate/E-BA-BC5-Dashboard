@@ -339,6 +339,32 @@ function Insight({ tone = "neutral", children }) {
   );
 }
 
+// Persistent duplicate-records callout shown on Mobilisation and Acquisition
+// — matches the reference prototype's ".dupe-flag" banner (real phone-number
+// duplicates flagged across the FULL recruitment file, not just the eligible
+// subset the KYC page's duplicate_rate covers). Green/"clean" variant when
+// the live duplicate_rate comes back at 0.
+function DuplicateRecordsBanner({ filters }) {
+  const { data, loading, error } = useApi(`/api/recruitment/duplicate-summary${buildParams(filters)}`);
+  if (loading || error || !data?.total_count) return null;
+  const clean = !data.duplicate_count;
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 11,
+      background: clean ? "#E9F1EC" : "#FBF3E3",
+      border: `1px solid ${clean ? "#CFE3D6" : "#E9D9B0"}`,
+      borderLeft: `4px solid ${clean ? C.green : C.gold}`,
+      borderRadius: 6, padding: "9px 14px", fontSize: 12,
+      color: clean ? "#2F5D3A" : "#7A5A1E", marginBottom: 16,
+    }}>
+      <span style={{ fontWeight: 700, fontSize: 16, color: clean ? C.green : C.coral, flexShrink: 0 }}>{fmtNum(data.duplicate_count)}</span>
+      <div>
+        <b>Duplicate records identified</b> — {fmtNum(data.duplicate_count)} repeated phone numbers ({fmtPct(data.duplicate_rate)}) flagged across the recruitment file ({fmtNum(data.total_count)} total, this cohort). Real-time checks recommended at registration.
+      </div>
+    </div>
+  );
+}
+
 // Horizontal funnel visualization — bar width proportional to the first
 // stage's count, worst single drop-off outlined.
 function FunnelViz({ stages, onStageClick }) {
@@ -2055,6 +2081,7 @@ function AcquisitionTab({ filters }) {
       <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
         Verified → acquired at Karibu Day arrival, by district and by venue.
       </p>
+      <DuplicateRecordsBanner filters={filters} />
       <PageNav
         active={page}
         onChange={setPage}
@@ -2131,6 +2158,7 @@ function MobilisationTab({ filters }) {
         mobilisation rate, the funnel by day and venue, daily pace against target, and the
         randomised control arm.
       </p>
+      <DuplicateRecordsBanner filters={filters} />
       <PageNav
         active={page}
         onChange={setPage}

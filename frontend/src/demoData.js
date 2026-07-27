@@ -133,6 +133,12 @@ export const DEMO = {
     ],
   },
 
+  "/api/recruitment/duplicate-summary": {
+    total_count: 12000,
+    duplicate_count: 708,
+    duplicate_rate: 5.9,
+  },
+
   "/api/recruitment/awareness-kyc": {
     demographics: {
       eligible_count: 6700,
