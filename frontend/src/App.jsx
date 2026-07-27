@@ -1003,6 +1003,27 @@ function progressOnTarget(eligible, target) {
   return target ? Math.round((1000 * (eligible || 0)) / target) / 10 : null;
 }
 
+// Diagnoses WHERE the female-share gap actually sits — matches the reference
+// design's "female gauges" narrative note. Reach share and eligible share can
+// differ for two different reasons: not enough women engaged at awareness
+// events (a reach problem), or women who are reached qualify at a different
+// rate than men (a conversion problem) — the note names whichever applies
+// instead of just repeating the eligible-female number the gauge already shows.
+function buildFemaleGaugeNarrative(reachedPct, eligiblePct) {
+  if (reachedPct == null || eligiblePct == null) return null;
+  const atTarget = eligiblePct >= 60;
+  const gap = Math.round((eligiblePct - reachedPct) * 10) / 10;
+  let lever;
+  if (Math.abs(gap) <= 2) {
+    lever = <>The lever is <b>reach</b> — only {fmtPct(reachedPct)} of youth reached were female, so hitting the 60% target means engaging more women at awareness events, not changing who qualifies once reached.</>;
+  } else if (gap < 0) {
+    lever = <>Women who are reached are converting to eligible at a lower rate than men ({fmtPct(reachedPct)} reached-female down to {fmtPct(eligiblePct)} eligible-female, a {Math.abs(gap)}pp drop) — worth checking whether the eligibility criteria filter women disproportionately, not just reach.</>;
+  } else {
+    lever = <>Women who are reached convert to eligible at a higher rate than men ({fmtPct(reachedPct)} reached-female up to {fmtPct(eligiblePct)} eligible-female) — reach is still the main lever to close the gap.</>;
+  }
+  return <><b>{fmtPct(eligiblePct)} of eligible youth are female</b> — {atTarget ? "at or above" : "below"} the 60% target. {lever}</>;
+}
+
 function AwarenessOverviewPage({ filters }) {
   const drill = useDrill();
   const total = useApi(`/api/recruitment/awareness${buildParams(filters)}`);
@@ -1049,6 +1070,8 @@ function AwarenessOverviewPage({ filters }) {
 
   const femaleEligible = sumBy(fRows, "eligible");
   const femaleEligiblePct = stageStats.find((s) => s.stage === "Eligible")?.pct_female ?? null;
+  const reachedFemalePct = stageStats.find((s) => s.stage === "Reached")?.pct_female ?? null;
+  const femaleGaugeNarrative = buildFemaleGaugeNarrative(reachedFemalePct, femaleEligiblePct);
   const interestRate = reached ? Math.round((1000 * interested) / reached) / 10 : null;
   const eligibleProgressPct = progressOnTarget(eligible, target);
 
@@ -1142,6 +1165,9 @@ function AwarenessOverviewPage({ filters }) {
             <div style={{ paddingTop: 8 }}>
               {stageStats.map((s) => <Gauge key={s.stage} label={s.stage} pct={s.pct_female} target={60} />)}
             </div>
+            {femaleGaugeNarrative && (
+              <p style={{ fontSize: 12, color: C.muted, marginTop: 12, lineHeight: 1.5 }}>{femaleGaugeNarrative}</p>
+            )}
           </State>
         </Card>
       </div>
