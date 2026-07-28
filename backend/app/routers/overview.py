@@ -29,6 +29,10 @@ from app.core.tables import (
     SITE_FUNNEL_MEASURE_TARGET,
     SITE_FUNNEL_MEASURE_ACTUAL,
     AWARENESS_KYC,
+    ACQUISITION_CALL_LOG,
+    ATTENDANCE_SUMMARY,
+    CONTROL_CALLS_BC4,
+    RETENTION_ATTENDANCE_RAW,
     AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT,
     AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT,
     active_cohort_clause,
@@ -187,49 +191,53 @@ def _stage_counts(district, gender, role, cohort=None):
 
 @router.get("/api/filters")
 def get_filters(user: User = Depends(current_user)):
-    """Distinct filter options for the global filter bar (district / gender / cohort)
-    — every option queried live from BigQuery, nothing hardcoded.
-
-    Cohorts: every bootcamp_cycle value actually present in AWARENESS_SUMMARY
-    (not just the ACTIVE_COHORTS subset most other endpoints default to —
-    ACTIVE_COHORTS remains the fallback scope in tables.py's
-    resolve_active_cohorts() when no cohort filter is selected, but the
-    dropdown itself should show every real cohort, old ones included).
-    Genders: distinct youth_gender values from the live per-youth AWARENESS_KYC
-    record, not a fixed Female/Male assumption.
-    Districts: from the youth-facing live tables (AWARENESS_SUMMARY,
-    SITE_FUNNEL_METRICS) — DAILY_ACQUISITION_SUMMARY's agent_district is
-    excluded here since it's the *calling agent's* location (includes
-    non-Busoga districts like Jinja/Mbarara), not the youth's. Scoped to
-    every cohort discovered above, not just ACTIVE_COHORTS, so an older
-    cohort's districts aren't silently missing from the list.
+    """Universal filter options for the global filter bar (district / gender /
+    cohort) — every option queried live from BigQuery, unioned across every
+    confirmed-live table that carries that column anywhere in the app, not
+    scoped to any one tab. Nothing hardcoded; nothing tab-specific.
     """
-    cohort_rows = database.run_query(
-        f"SELECT DISTINCT bootcamp_cycle AS c FROM {AWARENESS_SUMMARY} WHERE bootcamp_cycle IS NOT NULL ORDER BY c",
-        role=user.role,
-    )
-    cohorts = [r["c"] for r in cohort_rows] or ACTIVE_COHORTS
+    district_sources = [
+        (AWARENESS_SUMMARY, "youth_district"),
+        (SITE_FUNNEL_METRICS, "district"),
+        (AWARENESS_KYC, "youth_district"),
+        (DAILY_ACQUISITION_SUMMARY, "agent_district"),
+        (CONTROL_CALLS_BC4, "district"),
+        (RETENTION_ATTENDANCE_RAW, "youth_district"),
+    ]
+    cohort_sources = [
+        (AWARENESS_SUMMARY, "bootcamp_cycle"),
+        (SITE_FUNNEL_METRICS, "bootcamp_cycle"),
+        (AWARENESS_KYC, "bootcamp_cycle"),
+        (DAILY_ACQUISITION_SUMMARY, "bootcamp_cycle"),
+        (ACQUISITION_CALL_LOG, "bootcamp_cycle"),
+        (ATTENDANCE_SUMMARY, "bootcamp_cycle"),
+    ]
+    gender_sources = [
+        (AWARENESS_KYC, "youth_gender"),
+        (DAILY_ACQUISITION_SUMMARY, "youth_gender"),
+        (SITE_FUNNEL_METRICS, "gender"),
+        (CONTROL_CALLS_BC4, "gender"),
+        (RETENTION_ATTENDANCE_RAW, "youth_gender"),
+    ]
 
-    gender_rows = database.run_query(
-        f"SELECT DISTINCT UPPER(youth_gender) AS g FROM {AWARENESS_KYC} WHERE youth_gender IS NOT NULL ORDER BY g",
-        role=user.role,
-    )
-    genders = [r["g"] for r in gender_rows] or ["FEMALE", "MALE"]
+    def _union_distinct(sources, upper=True):
+        expr = "UPPER({col})" if upper else "{col}"
+        parts = [
+            f"SELECT DISTINCT {expr.format(col=col)} AS v FROM {table} WHERE {col} IS NOT NULL"
+            for table, col in sources
+        ]
+        sql = " UNION DISTINCT ".join(parts) + " ORDER BY v"
+        return [r["v"] for r in database.run_query(sql, role=user.role)]
 
-    cycle_param = _array("cycle", "STRING", cohorts)
-    sql = f"""
-    SELECT DISTINCT UPPER(youth_district) AS district
-    FROM {AWARENESS_SUMMARY}
-    WHERE bootcamp_cycle IN UNNEST(@cycle) AND youth_district IS NOT NULL AND UPPER(youth_district) != 'UNKNOWN'
-    UNION DISTINCT
-    SELECT DISTINCT UPPER(district) AS district
-    FROM {SITE_FUNNEL_METRICS}
-    WHERE bootcamp_cycle IN UNNEST(@cycle) AND district IS NOT NULL
-    ORDER BY district
-    """
-    rows = database.run_query(sql, [cycle_param], role=user.role)
+    districts = [d for d in _union_distinct(district_sources) if d and d != "UNKNOWN"]
+    # Cohort values are already a consistent "BOOTCAMP_4" style enum (see
+    # tables.py) — no UPPER() here so a real value is never altered from what
+    # active_cohort_clause's exact-match `IN UNNEST(@cycle)` expects.
+    cohorts = _union_distinct(cohort_sources, upper=False) or ACTIVE_COHORTS
+    genders = _union_distinct(gender_sources) or ["FEMALE", "MALE"]
+
     return {
-        "districts": [r["district"] for r in rows],
+        "districts": districts,
         "genders": genders,
         "cohorts": cohorts,
     }
