@@ -2135,12 +2135,11 @@ function MobRecruitmentFunnelPage({ filters }) {
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
   const data = mob.data;
-  // by_venue and by_day are independent rollups — a row missing call_date
-  // still counts toward by_venue, and vice versa, so Insights/categorisation
-  // aren't zeroed out by a cohort (e.g. BOOTCAMP_4) where one of those two
-  // columns is sparser than the other.
+  // Venue-grain only — no insight here depends on call_date. Day-level
+  // tracking has proven sparse/unreliable for some cohorts (see the by_venue/
+  // by_day split below), so score cards and insights are built entirely from
+  // venue and cohort aggregates, which are consistently populated.
   const byVenue = heatmap.data?.by_venue || [];
-  const byDay = heatmap.data?.by_day || [];
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2161,9 +2160,6 @@ function MobRecruitmentFunnelPage({ filters }) {
     return { venue: v.venue, reached, confirmed, rate, category: categorizeRate(rate) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
-  const busiestDayEntry = [...byDay]
-    .map((d) => [d.event_date, d.confirmed || 0])
-    .sort((a, b) => b[1] - a[1])[0];
   const topVenue = venueRows[0];
 
   return (
@@ -2199,11 +2195,8 @@ function MobRecruitmentFunnelPage({ filters }) {
       </State>
 
       <ExecBand num="!" title="Insights" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && byVenue.length === 0 && byDay.length === 0}>
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && byVenue.length === 0}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-          {busiestDayEntry && (
-            <Insight tone="neutral"><b>{busiestDayEntry[0]}</b> was the highest-yield day, with {fmtNum(busiestDayEntry[1])} youth confirmed across all venues.</Insight>
-          )}
           {topVenue && (
             <Insight tone="pos"><b>{topVenue.venue}</b> confirmed the most youth overall ({fmtNum(topVenue.confirmed)}, {fmtPct(topVenue.rate)} of reached).</Insight>
           )}

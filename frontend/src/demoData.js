@@ -236,13 +236,6 @@ export const DEMO = {
       { venue: "Buwaya SS", reached: 2100, confirmed: 1800 },
       { venue: "Naigobya PS", reached: 1500, confirmed: 1300 },
     ],
-    by_day: [
-      { event_date: "2026-07-01", confirmed: 1080 },
-      { event_date: "2026-07-02", confirmed: 1030 },
-      { event_date: "2026-07-03", confirmed: 1050 },
-      { event_date: "2026-07-04", confirmed: 1050 },
-      { event_date: "2026-07-05", confirmed: 1040 },
-    ],
   },
 
   "/api/recruitment/mobilisation-forecast": {
