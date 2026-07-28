@@ -2195,8 +2195,26 @@ function MobRecruitmentFunnelPage({ filters }) {
       </State>
 
       <ExecBand num="!" title="Insights" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && byVenue.length === 0}>
+      <State loading={mob.loading || heatmap.loading} error={mob.error || heatmap.error} empty={!mob.loading && !heatmap.loading && !data && byVenue.length === 0}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {data?.progress_pct != null && (() => {
+            const tone = data.progress_pct >= 95 ? "pos" : data.progress_pct >= 75 ? "warn" : "risk";
+            return <Insight tone={tone}><b>{fmtPct(data.progress_pct)}</b> of the mobilisation target reached — {fmtNum(data.confirmed)} of {fmtNum(data.target)} youth confirmed.</Insight>;
+          })()}
+          {data?.confirmed_female_pct != null && (() => {
+            const pct = data.confirmed_female_pct;
+            const tone = pct >= 60 ? "pos" : pct >= 50 ? "warn" : "risk";
+            return (
+              <Insight tone={tone}>
+                Confirmed female share is <b>{fmtPct(pct)}</b> ({fmtNum(data.confirmed_female)} of {fmtNum(data.confirmed)} confirmed) — {tone === "pos" ? "at or above the 60% target." : "below the 60% target."}
+              </Insight>
+            );
+          })()}
+          {data?.four_week?.mobilisation_rate != null && data?.mobilisation_rate != null && Math.abs(data.mobilisation_rate - data.four_week.mobilisation_rate) >= 1 && (
+            <Insight tone="warn">
+              The blended mobilisation rate (<b>{fmtPct(data.mobilisation_rate)}</b>) reads {data.mobilisation_rate > data.four_week.mobilisation_rate ? "higher" : "lower"} than the 4-week cycle's real call-center rate (<b>{fmtPct(data.four_week.mobilisation_rate)}</b>) — the {fmtNum(data?.two_half_week?.assigned)} auto-confirmed pilot-subcounty youth skew the overall figure. See the cycle breakdown above.
+            </Insight>
+          )}
           {topVenue && (
             <Insight tone="pos"><b>{topVenue.venue}</b> confirmed the most youth overall ({fmtNum(topVenue.confirmed)}, {fmtPct(topVenue.rate)} of reached).</Insight>
           )}

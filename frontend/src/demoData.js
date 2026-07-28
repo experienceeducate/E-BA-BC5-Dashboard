@@ -228,6 +228,12 @@ export const DEMO = {
     confirmed: 5250,
     reach_rate: 95,
     mobilisation_rate: 86,
+    confirmed_female: 3150,
+    confirmed_female_pct: 60.0,
+    target: 6500,
+    progress_pct: 80.8,
+    four_week: { assigned: 6200, reached: 6100, confirmed: 5050, reach_rate: 98.4, mobilisation_rate: 81.5 },
+    two_half_week: { assigned: 200, reached: 0, confirmed: 200, reach_rate: 0.0, mobilisation_rate: 100.0 },
   },
 
   "/api/recruitment/mobilisation-heatmap": {
