@@ -187,16 +187,36 @@ def _stage_counts(district, gender, role, cohort=None):
 
 @router.get("/api/filters")
 def get_filters(user: User = Depends(current_user)):
-    """Distinct filter options for the global filter bar (district / gender / cohort).
+    """Distinct filter options for the global filter bar (district / gender / cohort)
+    — every option queried live from BigQuery, nothing hardcoded.
 
-    Districts come from the youth-facing live tables (AWARENESS_SUMMARY,
+    Cohorts: every bootcamp_cycle value actually present in AWARENESS_SUMMARY
+    (not just the ACTIVE_COHORTS subset most other endpoints default to —
+    ACTIVE_COHORTS remains the fallback scope in tables.py's
+    resolve_active_cohorts() when no cohort filter is selected, but the
+    dropdown itself should show every real cohort, old ones included).
+    Genders: distinct youth_gender values from the live per-youth AWARENESS_KYC
+    record, not a fixed Female/Male assumption.
+    Districts: from the youth-facing live tables (AWARENESS_SUMMARY,
     SITE_FUNNEL_METRICS) — DAILY_ACQUISITION_SUMMARY's agent_district is
     excluded here since it's the *calling agent's* location (includes
-    non-Busoga districts like Jinja/Mbarara), not the youth's. Genders and
-    cohorts aren't queried: gender is a fixed Female/Male dimension, and cohort
-    is restricted to ACTIVE_COHORTS (see tables.py).
+    non-Busoga districts like Jinja/Mbarara), not the youth's. Scoped to
+    every cohort discovered above, not just ACTIVE_COHORTS, so an older
+    cohort's districts aren't silently missing from the list.
     """
-    cycle_param = _array("cycle", "STRING", ACTIVE_COHORTS)
+    cohort_rows = database.run_query(
+        f"SELECT DISTINCT bootcamp_cycle AS c FROM {AWARENESS_SUMMARY} WHERE bootcamp_cycle IS NOT NULL ORDER BY c",
+        role=user.role,
+    )
+    cohorts = [r["c"] for r in cohort_rows] or ACTIVE_COHORTS
+
+    gender_rows = database.run_query(
+        f"SELECT DISTINCT UPPER(youth_gender) AS g FROM {AWARENESS_KYC} WHERE youth_gender IS NOT NULL ORDER BY g",
+        role=user.role,
+    )
+    genders = [r["g"] for r in gender_rows] or ["FEMALE", "MALE"]
+
+    cycle_param = _array("cycle", "STRING", cohorts)
     sql = f"""
     SELECT DISTINCT UPPER(youth_district) AS district
     FROM {AWARENESS_SUMMARY}
@@ -210,8 +230,8 @@ def get_filters(user: User = Depends(current_user)):
     rows = database.run_query(sql, [cycle_param], role=user.role)
     return {
         "districts": [r["district"] for r in rows],
-        "genders": ["FEMALE", "MALE"],
-        "cohorts": ACTIVE_COHORTS,
+        "genders": genders,
+        "cohorts": cohorts,
     }
 
 

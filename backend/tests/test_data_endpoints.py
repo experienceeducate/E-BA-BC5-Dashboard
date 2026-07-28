@@ -11,13 +11,20 @@ from app.core.tables import AWARENESS_SUMMARY, FUNNEL_STAGES
 
 
 def test_filters_shape(as_staff, mock_run_query):
-    # get_filters is a single UNION query across two tables in one run_query call.
-    mock_run_query.set_rows([{"district": "BUGIRI"}, {"district": "BUGWERI"}])
+    # get_filters now queries cohorts and genders live too (three run_query
+    # calls total), not just the district UNION — distinguish by SQL content.
+    def side_effect(sql, params, role):
+        if "bootcamp_cycle AS c" in sql:
+            return [{"c": "BOOTCAMP_2"}, {"c": "BOOTCAMP_4"}, {"c": "BOOTCAMP_5"}]
+        if "youth_gender) AS g" in sql:
+            return [{"g": "FEMALE"}, {"g": "MALE"}]
+        return [{"district": "BUGIRI"}, {"district": "BUGWERI"}]
+    mock_run_query.set_side_effect(side_effect)
     r = as_staff.get("/api/filters")
     assert r.status_code == 200
     assert r.json()["districts"] == ["BUGIRI", "BUGWERI"]
     assert r.json()["genders"] == ["FEMALE", "MALE"]
-    assert r.json()["cohorts"] == ["BOOTCAMP_4", "BOOTCAMP_5"]
+    assert r.json()["cohorts"] == ["BOOTCAMP_2", "BOOTCAMP_4", "BOOTCAMP_5"]
 
 
 def test_overview_funnel_orders_and_computes_pct(as_staff, mock_run_query):
