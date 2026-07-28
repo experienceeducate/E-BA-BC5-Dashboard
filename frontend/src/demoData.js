@@ -228,6 +228,12 @@ export const DEMO = {
     confirmed: 5250,
     reach_rate: 95,
     mobilisation_rate: 86,
+    confirmed_female: 3150,
+    confirmed_female_pct: 60.0,
+    target: 6500,
+    progress_pct: 80.8,
+    four_week: { assigned: 6200, reached: 6100, confirmed: 5050, reach_rate: 98.4, mobilisation_rate: 81.5 },
+    two_half_week: { assigned: 200, reached: 0, confirmed: 200, reach_rate: 0.0, mobilisation_rate: 100.0 },
   },
 
   "/api/recruitment/mobilisation-heatmap": {
@@ -235,13 +241,6 @@ export const DEMO = {
       { venue: "St. Peter's PS", reached: 2500, confirmed: 2150 },
       { venue: "Buwaya SS", reached: 2100, confirmed: 1800 },
       { venue: "Naigobya PS", reached: 1500, confirmed: 1300 },
-    ],
-    by_day: [
-      { event_date: "2026-07-01", confirmed: 1080 },
-      { event_date: "2026-07-02", confirmed: 1030 },
-      { event_date: "2026-07-03", confirmed: 1050 },
-      { event_date: "2026-07-04", confirmed: 1050 },
-      { event_date: "2026-07-05", confirmed: 1040 },
     ],
   },
 

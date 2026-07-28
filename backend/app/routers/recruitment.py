@@ -635,16 +635,14 @@ def mobilisation_heatmap(
     district: List[str] = Query(default=[]),
     cohort:   List[str] = Query(default=[]),
 ):
-    """Venue rollup and day rollup of unique youth reached and confirmed, for
-    the Mobilisation tab's Insights and venue categorisation.
+    """Venue rollup of unique youth reached and confirmed, for the
+    Mobilisation tab's Insights and venue categorisation.
 
-    Two independent GROUP BYs rather than one call_date×venue_name grid: a
-    row missing just one of those two columns (plausible for an
-    already-completed cohort like BOOTCAMP_4, where day-level tracking may be
-    sparser than venue attribution) used to drop out of the combined query
-    entirely, zeroing out venue-level insights that never needed a date in
-    the first place. by_venue only requires venue_name; by_day only requires
-    call_date — each is as complete as the underlying data allows.
+    Grouped by venue_name only — no call_date requirement. call_date has
+    proven sparse/unreliable for some cohorts (e.g. BOOTCAMP_4), and every
+    consumer of this endpoint (top venue, high-risk venues, the venue
+    categorisation panel) is venue-grain already, so there's no reason to let
+    a missing date null out a row that otherwise has everything it needs.
     """
     where, params = build_where(
         districts=district, extra=[active_cohort_clause("mh", requested=cohort)], prefix="mh",
@@ -658,17 +656,7 @@ def mobilisation_heatmap(
     GROUP BY venue
     ORDER BY venue
     """
-    by_day_sql = f"""
-    SELECT call_date AS event_date, SUM(total_acquired_youth) AS confirmed
-    FROM {DAILY_ACQUISITION_SUMMARY}
-    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND call_date IS NOT NULL
-    GROUP BY event_date
-    ORDER BY event_date
-    """
-    return {
-        "by_venue": database.run_query(by_venue_sql, params, role=user.role),
-        "by_day": database.run_query(by_day_sql, params, role=user.role),
-    }
+    return {"by_venue": database.run_query(by_venue_sql, params, role=user.role)}
 
 
 @router.get("/api/recruitment/mobilisation-forecast")

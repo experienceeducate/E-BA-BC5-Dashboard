@@ -2135,12 +2135,11 @@ function MobRecruitmentFunnelPage({ filters }) {
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
   const data = mob.data;
-  // by_venue and by_day are independent rollups — a row missing call_date
-  // still counts toward by_venue, and vice versa, so Insights/categorisation
-  // aren't zeroed out by a cohort (e.g. BOOTCAMP_4) where one of those two
-  // columns is sparser than the other.
+  // Venue-grain only — no insight here depends on call_date. Day-level
+  // tracking has proven sparse/unreliable for some cohorts (see the by_venue/
+  // by_day split below), so score cards and insights are built entirely from
+  // venue and cohort aggregates, which are consistently populated.
   const byVenue = heatmap.data?.by_venue || [];
-  const byDay = heatmap.data?.by_day || [];
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2161,9 +2160,6 @@ function MobRecruitmentFunnelPage({ filters }) {
     return { venue: v.venue, reached, confirmed, rate, category: categorizeRate(rate) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
-  const busiestDayEntry = [...byDay]
-    .map((d) => [d.event_date, d.confirmed || 0])
-    .sort((a, b) => b[1] - a[1])[0];
   const topVenue = venueRows[0];
 
   return (
@@ -2199,10 +2195,25 @@ function MobRecruitmentFunnelPage({ filters }) {
       </State>
 
       <ExecBand num="!" title="Insights" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && byVenue.length === 0 && byDay.length === 0}>
+      <State loading={mob.loading || heatmap.loading} error={mob.error || heatmap.error} empty={!mob.loading && !heatmap.loading && !data && byVenue.length === 0}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-          {busiestDayEntry && (
-            <Insight tone="neutral"><b>{busiestDayEntry[0]}</b> was the highest-yield day, with {fmtNum(busiestDayEntry[1])} youth confirmed across all venues.</Insight>
+          {data?.progress_pct != null && (() => {
+            const tone = data.progress_pct >= 95 ? "pos" : data.progress_pct >= 75 ? "warn" : "risk";
+            return <Insight tone={tone}><b>{fmtPct(data.progress_pct)}</b> of the mobilisation target reached — {fmtNum(data.confirmed)} of {fmtNum(data.target)} youth confirmed.</Insight>;
+          })()}
+          {data?.confirmed_female_pct != null && (() => {
+            const pct = data.confirmed_female_pct;
+            const tone = pct >= 60 ? "pos" : pct >= 50 ? "warn" : "risk";
+            return (
+              <Insight tone={tone}>
+                Confirmed female share is <b>{fmtPct(pct)}</b> ({fmtNum(data.confirmed_female)} of {fmtNum(data.confirmed)} confirmed) — {tone === "pos" ? "at or above the 60% target." : "below the 60% target."}
+              </Insight>
+            );
+          })()}
+          {data?.four_week?.mobilisation_rate != null && data?.mobilisation_rate != null && Math.abs(data.mobilisation_rate - data.four_week.mobilisation_rate) >= 1 && (
+            <Insight tone="warn">
+              The blended mobilisation rate (<b>{fmtPct(data.mobilisation_rate)}</b>) reads {data.mobilisation_rate > data.four_week.mobilisation_rate ? "higher" : "lower"} than the 4-week cycle's real call-center rate (<b>{fmtPct(data.four_week.mobilisation_rate)}</b>) — the {fmtNum(data?.two_half_week?.assigned)} auto-confirmed pilot-subcounty youth skew the overall figure. See the cycle breakdown above.
+            </Insight>
           )}
           {topVenue && (
             <Insight tone="pos"><b>{topVenue.venue}</b> confirmed the most youth overall ({fmtNum(topVenue.confirmed)}, {fmtPct(topVenue.rate)} of reached).</Insight>
