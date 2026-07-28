@@ -240,7 +240,7 @@ export const DEMO = {
     by_venue: [
       { venue: "St. Peter's PS", reached: 2500, confirmed: 2150 },
       { venue: "Buwaya SS", reached: 2100, confirmed: 1800 },
-      { venue: "Naigobya PS", reached: 1500, confirmed: 1300 },
+      { venue: "Naigobya PS", reached: 1500, confirmed: 1000 },
     ],
   },
 

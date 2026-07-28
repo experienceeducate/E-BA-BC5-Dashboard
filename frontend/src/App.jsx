@@ -2368,7 +2368,24 @@ function EntityCategorisation({ rows: entityRows, metricA, metricB, rateFraction
 
 function MobForecastsPage({ filters }) {
   const { data, loading, error } = useApi(`/api/recruitment/mobilisation-forecast${buildParams(filters)}`);
+  // Reference prototype's "Site early-warning flags" panel uses a fabricated
+  // "days elapsed / 16" cycle-length pace rule and hardcoded sample venues
+  // (explicitly tagged SIMULATED RULE there) — no such cycle-length field
+  // exists in live data. Real equivalent: flag venues by the same
+  // confirmed÷reached conversion-rate bands used on the Recruitment Funnel
+  // page's venue categorisation, driven by the live mobilisation-heatmap
+  // venue rollup instead of a fabricated pace projection.
+  const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
   const daily = data?.daily || [];
+  const flaggedVenues = (heatmap.data?.by_venue || [])
+    .map((v) => {
+      const reached = v.reached || 0, confirmed = v.confirmed || 0;
+      const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
+      return { venue: v.venue, reached, confirmed, rate, category: categorizeRate(rate) };
+    })
+    .filter((v) => v.category === "Low Risk" || v.category === "High Risk")
+    .sort((a, b) => (a.rate ?? -1) - (b.rate ?? -1));
+
   return (
     <div>
       <Grid cols={4}>
@@ -2389,6 +2406,20 @@ function MobForecastsPage({ filters }) {
               <Line type="monotone" dataKey="confirmed" name="Confirmed" stroke={C.gold} strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
+        </State>
+      </Card>
+      <Card title="Site early-warning flags" subtitle="Venues confirming below 85% of reached youth — see Recruitment Funnel → Performance categorisation for the full breakdown" chip="REAL">
+        <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && flaggedVenues.length === 0}>
+          <DataTable
+            columns={[
+              { key: "venue", label: "Site" },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "rate", label: "Confirmed ÷ reached", align: "right", render: (v) => fmtPct(v) },
+              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+            ]}
+            rows={flaggedVenues}
+          />
         </State>
       </Card>
     </div>
