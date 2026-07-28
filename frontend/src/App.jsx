@@ -2184,11 +2184,12 @@ function MobRecruitmentFunnelPage({ filters }) {
               { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
               { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
               { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "pct_female", label: "% Female", align: "right", render: (v) => fmtPct(v) },
             ]}
             rows={[
               { label: "4-week cycle", ...data?.four_week },
               { label: "2.5-week cycle (auto-confirm)", ...data?.two_half_week },
-              { label: "Overall (blended)", assigned: data?.assigned, reached: data?.reached, confirmed: data?.confirmed, reach_rate: data?.reach_rate, mobilisation_rate: data?.mobilisation_rate },
+              { label: "Overall (blended)", assigned: data?.assigned, reached: data?.reached, confirmed: data?.confirmed, reach_rate: data?.reach_rate, mobilisation_rate: data?.mobilisation_rate, pct_female: data?.confirmed_female_pct },
             ]}
           />
         </Card>

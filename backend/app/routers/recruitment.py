@@ -594,7 +594,11 @@ def mobilisation(
         f"SELECT SUM(total_acquired_youth) AS n FROM {DAILY_ACQUISITION_SUMMARY} "
         f"WHERE {gsplit_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND UPPER(youth_gender) = 'FEMALE'",
         gsplit_params, role=user.role) or [{}])[0].get("n") or 0
-    confirmed_female = four_week_confirmed_female + _auto_confirmed_count(district, "FEMALE", user.role, cohort)
+    two_half_week_confirmed_female = _auto_confirmed_count(district, "FEMALE", user.role, cohort)
+    confirmed_female = four_week_confirmed_female + two_half_week_confirmed_female
+
+    four_week["pct_female"] = round(100 * four_week_confirmed_female / four_week["confirmed"], 1) if four_week["confirmed"] else None
+    two_half_week["pct_female"] = round(100 * two_half_week_confirmed_female / two_half_week["confirmed"], 1) if two_half_week["confirmed"] else None
 
     # Same "ignore the gender query param" rule applies to this percentage's
     # DENOMINATOR, not just its numerator — reusing overall["confirmed"] here
