@@ -2135,7 +2135,12 @@ function MobRecruitmentFunnelPage({ filters }) {
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
   const data = mob.data;
-  const cells = heatmap.data?.cells || [];
+  // by_venue and by_day are independent rollups — a row missing call_date
+  // still counts toward by_venue, and vice versa, so Insights/categorisation
+  // aren't zeroed out by a cohort (e.g. BOOTCAMP_4) where one of those two
+  // columns is sparser than the other.
+  const byVenue = heatmap.data?.by_venue || [];
+  const byDay = heatmap.data?.by_day || [];
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2150,25 +2155,15 @@ function MobRecruitmentFunnelPage({ filters }) {
     });
   }
 
-  const venueTotals = {};
-  cells.forEach((c) => {
-    const v = venueTotals[c.venue] || { reached: 0, confirmed: 0 };
-    v.reached += c.reached || 0;
-    v.confirmed += c.confirmed || 0;
-    venueTotals[c.venue] = v;
-  });
-  const venueRows = Object.entries(venueTotals).map(([venue, v]) => {
-    const rate = v.reached ? Math.round((1000 * v.confirmed) / v.reached) / 10 : null;
-    const category = categorizeRate(rate);
-    return { venue, ...v, rate, category };
+  const venueRows = byVenue.map((v) => {
+    const reached = v.reached || 0, confirmed = v.confirmed || 0;
+    const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
+    return { venue: v.venue, reached, confirmed, rate, category: categorizeRate(rate) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
-  const busiestDay = cells.reduce((best, c) => {
-    const day = best[c.event_date] || 0;
-    best[c.event_date] = day + (c.confirmed || 0);
-    return best;
-  }, {});
-  const busiestDayEntry = Object.entries(busiestDay).sort((a, b) => b[1] - a[1])[0];
+  const busiestDayEntry = [...byDay]
+    .map((d) => [d.event_date, d.confirmed || 0])
+    .sort((a, b) => b[1] - a[1])[0];
   const topVenue = venueRows[0];
 
   return (
@@ -2204,7 +2199,7 @@ function MobRecruitmentFunnelPage({ filters }) {
       </State>
 
       <ExecBand num="!" title="Insights" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && cells.length === 0}>
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && byVenue.length === 0 && byDay.length === 0}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
           {busiestDayEntry && (
             <Insight tone="neutral"><b>{busiestDayEntry[0]}</b> was the highest-yield day, with {fmtNum(busiestDayEntry[1])} youth confirmed across all venues.</Insight>

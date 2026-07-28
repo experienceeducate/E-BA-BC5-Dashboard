@@ -231,22 +231,17 @@ export const DEMO = {
   },
 
   "/api/recruitment/mobilisation-heatmap": {
-    cells: [
-      { event_date: "2026-07-01", venue: "St. Peter's PS", reached: 520, confirmed: 450 },
-      { event_date: "2026-07-02", venue: "St. Peter's PS", reached: 480, confirmed: 410 },
-      { event_date: "2026-07-03", venue: "St. Peter's PS", reached: 510, confirmed: 440 },
-      { event_date: "2026-07-04", venue: "St. Peter's PS", reached: 500, confirmed: 430 },
-      { event_date: "2026-07-05", venue: "St. Peter's PS", reached: 490, confirmed: 420 },
-      { event_date: "2026-07-01", venue: "Buwaya SS", reached: 430, confirmed: 370 },
-      { event_date: "2026-07-02", venue: "Buwaya SS", reached: 420, confirmed: 360 },
-      { event_date: "2026-07-03", venue: "Buwaya SS", reached: 410, confirmed: 350 },
-      { event_date: "2026-07-04", venue: "Buwaya SS", reached: 420, confirmed: 360 },
-      { event_date: "2026-07-05", venue: "Buwaya SS", reached: 420, confirmed: 360 },
-      { event_date: "2026-07-01", venue: "Naigobya PS", reached: 300, confirmed: 260 },
-      { event_date: "2026-07-02", venue: "Naigobya PS", reached: 300, confirmed: 260 },
-      { event_date: "2026-07-03", venue: "Naigobya PS", reached: 300, confirmed: 260 },
-      { event_date: "2026-07-04", venue: "Naigobya PS", reached: 300, confirmed: 260 },
-      { event_date: "2026-07-05", venue: "Naigobya PS", reached: 300, confirmed: 260 },
+    by_venue: [
+      { venue: "St. Peter's PS", reached: 2500, confirmed: 2150 },
+      { venue: "Buwaya SS", reached: 2100, confirmed: 1800 },
+      { venue: "Naigobya PS", reached: 1500, confirmed: 1300 },
+    ],
+    by_day: [
+      { event_date: "2026-07-01", confirmed: 1080 },
+      { event_date: "2026-07-02", confirmed: 1030 },
+      { event_date: "2026-07-03", confirmed: 1050 },
+      { event_date: "2026-07-04", confirmed: 1050 },
+      { event_date: "2026-07-05", confirmed: 1040 },
     ],
   },
 
