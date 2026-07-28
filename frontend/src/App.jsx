@@ -2123,7 +2123,7 @@ function MobilisationTab({ filters }) {
       {page === "forecast" && <MobForecastsPage filters={filters} />}
       {page === "mobilisers" && <MobPerformancePage filters={filters} />}
       {page === "control" && <MobControlCallsPage />}
-      {page === "insights" && <MobCallCentreInsightsPage />}
+      {page === "insights" && <MobCallCentreInsightsPage filters={filters} />}
     </div>
   );
 }
@@ -2453,8 +2453,8 @@ function MobControlCallsPage() {
   );
 }
 
-function MobCallCentreInsightsPage() {
-  const barriers = useApi(`/api/recruitment/call-centre-insights`);
+function MobCallCentreInsightsPage({ filters }) {
+  const barriers = useApi(`/api/recruitment/call-centre-insights${buildParams(filters)}`);
   const rows = barriers.data?.barriers || [];
   return (
     <div>
