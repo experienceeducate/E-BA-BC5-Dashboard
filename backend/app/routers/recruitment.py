@@ -596,6 +596,18 @@ def mobilisation(
         gsplit_params, role=user.role) or [{}])[0].get("n") or 0
     confirmed_female = four_week_confirmed_female + _auto_confirmed_count(district, "FEMALE", user.role, cohort)
 
+    # Same "ignore the gender query param" rule applies to this percentage's
+    # DENOMINATOR, not just its numerator — reusing overall["confirmed"] here
+    # would silently pull in the gender filter (actual_where/auto_confirmed
+    # above both take `gender`), making confirmed_female_pct spike toward
+    # ~100% the moment someone filters to gender=Female. Recompute an
+    # all-gender confirmed total from the same gender-blind gsplit_where.
+    four_week_confirmed_allgender = (database.run_query(
+        f"SELECT SUM(total_acquired_youth) AS n FROM {DAILY_ACQUISITION_SUMMARY} "
+        f"WHERE {gsplit_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'",
+        gsplit_params, role=user.role) or [{}])[0].get("n") or 0
+    total_confirmed_allgender = four_week_confirmed_allgender + _auto_confirmed_count(district, None, user.role, cohort)
+
     target_where, target_params = build_where(
         districts=district, extra=[active_cohort_clause("mot", requested=cohort)], prefix="mot",
         district_col="agent_district",
@@ -609,7 +621,7 @@ def mobilisation(
     return {
         **overall,
         "confirmed_female": confirmed_female,
-        "confirmed_female_pct": round(100 * confirmed_female / total_confirmed, 1) if total_confirmed else None,
+        "confirmed_female_pct": round(100 * confirmed_female / total_confirmed_allgender, 1) if total_confirmed_allgender else None,
         "target": target,
         "progress_pct": round(100 * total_confirmed / target, 1) if target else None,
         "four_week": four_week,
@@ -623,24 +635,40 @@ def mobilisation_heatmap(
     district: List[str] = Query(default=[]),
     cohort:   List[str] = Query(default=[]),
 ):
-    """Day × venue matrix of unique youth reached and confirmed, for the
-    Mobilisation tab's heatmap. Backed by DAILY_ACQUISITION_SUMMARY's real
-    'daily_aggregates' rows (call_date and venue_name are both populated
-    there — see tables.py)."""
+    """Venue rollup and day rollup of unique youth reached and confirmed, for
+    the Mobilisation tab's Insights and venue categorisation.
+
+    Two independent GROUP BYs rather than one call_date×venue_name grid: a
+    row missing just one of those two columns (plausible for an
+    already-completed cohort like BOOTCAMP_4, where day-level tracking may be
+    sparser than venue attribution) used to drop out of the combined query
+    entirely, zeroing out venue-level insights that never needed a date in
+    the first place. by_venue only requires venue_name; by_day only requires
+    call_date — each is as complete as the underlying data allows.
+    """
     where, params = build_where(
         districts=district, extra=[active_cohort_clause("mh", requested=cohort)], prefix="mh",
         district_col="agent_district",
     )
-    sql = f"""
-    SELECT call_date AS event_date, venue_name AS venue,
+    by_venue_sql = f"""
+    SELECT venue_name AS venue,
            SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed
     FROM {DAILY_ACQUISITION_SUMMARY}
-    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'
-      AND call_date IS NOT NULL AND venue_name IS NOT NULL
-    GROUP BY event_date, venue
-    ORDER BY event_date, venue
+    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND venue_name IS NOT NULL
+    GROUP BY venue
+    ORDER BY venue
     """
-    return {"cells": database.run_query(sql, params, role=user.role)}
+    by_day_sql = f"""
+    SELECT call_date AS event_date, SUM(total_acquired_youth) AS confirmed
+    FROM {DAILY_ACQUISITION_SUMMARY}
+    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND call_date IS NOT NULL
+    GROUP BY event_date
+    ORDER BY event_date
+    """
+    return {
+        "by_venue": database.run_query(by_venue_sql, params, role=user.role),
+        "by_day": database.run_query(by_day_sql, params, role=user.role),
+    }
 
 
 @router.get("/api/recruitment/mobilisation-forecast")
