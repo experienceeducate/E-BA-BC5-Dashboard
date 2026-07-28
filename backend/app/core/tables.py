@@ -221,10 +221,19 @@ ACQUISITION_CALL_LOG = f"{_SILVER}.eba_bootcamp_acquisition"
 
 def resolve_active_cohorts(requested: list = None) -> list:
     """The cycles a live-table query should scope to: `requested` (the
-    frontend's cohort filter selection, intersected with ACTIVE_COHORTS so an
-    unknown/stale value can't slip through) when given and non-empty, else the
-    full ACTIVE_COHORTS set."""
-    return [c for c in (requested or []) if c in ACTIVE_COHORTS] or ACTIVE_COHORTS
+    frontend's cohort filter selection) when given and non-empty, else the
+    default ACTIVE_COHORTS set.
+
+    `requested` is trusted as-is rather than intersected against
+    ACTIVE_COHORTS — the filter dropdown's cohort options now come from a
+    live `SELECT DISTINCT bootcamp_cycle` (see /api/filters), which can
+    include cohorts outside ACTIVE_COHORTS (e.g. BOOTCAMP_2/3), so filtering
+    a real user selection down to just the BC4/5 default would silently
+    ignore it. Values are always passed as a BigQuery query parameter
+    (never string-interpolated), so there's no injection risk in trusting
+    an unrecognized string here — it just matches zero rows."""
+    cleaned = [c for c in (requested or []) if c]
+    return cleaned or ACTIVE_COHORTS
 
 
 def active_cohort_clause(prefix: str, requested: list = None):

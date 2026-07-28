@@ -423,6 +423,6 @@ export const DEMO = {
 // Filter-bar options when the live /api/filters call can't be reached.
 export const DEMO_FILTERS = {
   districts: ["BUGIRI", "BUGWERI", "IGANGA", "KAMULI", "MAYUGE"],
-  genders: ["Female", "Male"],
-  cohorts: ["BC2", "BC3", "BC4", "BC5"],
+  genders: ["FEMALE", "MALE"],
+  cohorts: ["BOOTCAMP_2", "BOOTCAMP_3", "BOOTCAMP_4", "BOOTCAMP_5", "MINI_BOOTCAMP_3"],
 };

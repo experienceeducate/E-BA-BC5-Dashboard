@@ -3062,7 +3062,7 @@ function FilterBar({ filters, setFilters, options }) {
       </select>
       <select style={sel} value={filters.cohort} onChange={(e) => setFilters({ ...filters, cohort: e.target.value })}>
         <option value="">All cohorts</option>
-        {(options.cohorts || ["BC2", "BC3", "BC4", "BC5"]).map((c) => <option key={c} value={c}>{c}</option>)}
+        {(options.cohorts || []).map((c) => <option key={c} value={c}>{c}</option>)}
       </select>
       <button style={{ fontSize: 11.5, fontWeight: 700, padding: "6px 12px", border: "none", borderRadius: 4, background: C.gold, color: C.ink, cursor: "pointer" }}
         onClick={() => setFilters({ district: "", gender: "", cohort: "" })}>Reset</button>
