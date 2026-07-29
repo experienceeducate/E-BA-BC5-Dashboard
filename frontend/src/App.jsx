@@ -2198,6 +2198,15 @@ function MobRecruitmentFunnelPage({ filters }) {
       <ExecBand num="!" title="Insights" />
       <State loading={mob.loading || heatmap.loading} error={mob.error || heatmap.error} empty={!mob.loading && !heatmap.loading && !data && byVenue.length === 0}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {(data?.date_cutoff_cohorts || []).map((c) => {
+            const cutoffAssigned = data?.two_half_week?.assigned || 0;
+            const pctOfAssigned = data?.assigned ? Math.round(1000 * cutoffAssigned / data.assigned) / 10 : null;
+            return (
+              <Insight key={c.cohort} tone="warn">
+                <b>{c.cohort}</b>'s auto-confirmed count is an open-ended rule — any youth registered on/after <b>{c.since}</b> counts as the pilot, unlike BOOTCAMP_4's fixed subcounty list, so it keeps growing every day the cutoff stays active. Right now <b>{fmtNum(cutoffAssigned)}</b> youth ({fmtPct(pctOfAssigned)} of Assigned) are counted this way — auto-confirmed by policy, not verified through the call center. Expect Assigned/Confirmed for this cohort to keep rising until a real upstream flag replaces this date rule.
+              </Insight>
+            );
+          })}
           {data?.progress_pct != null && (() => {
             const tone = data.progress_pct >= 95 ? "pos" : data.progress_pct >= 75 ? "warn" : "risk";
             return <Insight tone={tone}><b>{fmtPct(data.progress_pct)}</b> of the mobilisation target reached — {fmtNum(data.confirmed)} of {fmtNum(data.target)} youth confirmed.</Insight>;

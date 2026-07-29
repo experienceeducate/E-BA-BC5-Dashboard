@@ -92,6 +92,20 @@ def _auto_confirmed_count(district, gender, role, cohort=None):
     return total
 
 
+def _date_cutoff_cohorts(cohort=None):
+    """Which of the currently-resolved cohorts use the open-ended
+    AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT date-cutoff rule (BOOTCAMP_5)
+    rather than a fixed subcounty list (BOOTCAMP_4) — surfaced to the
+    frontend so it can flag, with the real cutoff date, that this cohort's
+    auto-confirmed count keeps growing over time rather than being a fixed
+    pilot-area count like BOOTCAMP_4's."""
+    return [
+        {"cohort": cycle, "since": AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT[cycle]}
+        for cycle in resolve_active_cohorts(cohort)
+        if cycle in AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT
+    ]
+
+
 def _filter_extra(cohort, prefix):
     extra = [NOT_TEST_DATA]
     coh_clause, coh_params = cohort_clause(cohort, prefix=prefix)
@@ -630,6 +644,7 @@ def mobilisation(
         "progress_pct": round(100 * total_confirmed / target, 1) if target else None,
         "four_week": four_week,
         "two_half_week": two_half_week,
+        "date_cutoff_cohorts": _date_cutoff_cohorts(cohort),
     }
 
 
