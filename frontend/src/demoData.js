@@ -238,9 +238,21 @@ export const DEMO = {
 
   "/api/recruitment/mobilisation-heatmap": {
     by_venue: [
-      { venue: "St. Peter's PS", reached: 2500, confirmed: 2150 },
-      { venue: "Buwaya SS", reached: 2100, confirmed: 1800 },
-      { venue: "Naigobya PS", reached: 1500, confirmed: 1000 },
+      { district: "BUGIRI", venue: "St. Peter's PS", reached: 1800, confirmed: 1500, confirmed_female: 900 },
+      { district: "BUGWERI", venue: "Buwaya SS", reached: 1200, confirmed: 950, confirmed_female: 570 },
+      // Deliberately below IGANGA's district-level confirmed total (1150) —
+      // a real district total can come from multiple venues, and this one's
+      // own rate (71.4%) is kept intentionally "High Risk" so the High-Risk-
+      // venue(s) insight and the Site early-warning flags panel both still
+      // have something to show in local demo mode.
+      { district: "IGANGA", venue: "Naigobya PS", reached: 1400, confirmed: 1000, confirmed_female: 600 },
+    ],
+    by_district: [
+      { district: "BUGIRI", assigned: 1800, target: 1900, reached: 1800, confirmed: 1500, confirmed_female: 900 },
+      { district: "BUGWERI", assigned: 1200, target: 1300, reached: 1200, confirmed: 950, confirmed_female: 570 },
+      { district: "IGANGA", assigned: 1400, target: 1450, reached: 1400, confirmed: 1150, confirmed_female: 690 },
+      { district: "KAMULI", assigned: 900, target: 950, reached: 850, confirmed: 700, confirmed_female: 385 },
+      { district: "MAYUGE", assigned: 900, target: 900, reached: 850, confirmed: 750, confirmed_female: 488 },
     ],
   },
 

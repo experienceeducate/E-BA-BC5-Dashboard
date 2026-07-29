@@ -2173,6 +2173,7 @@ function MobilisationTab({ filters }) {
 
 function MobRecruitmentFunnelPage({ filters }) {
   const drill = useDrill();
+  const [districtCat, setDistrictCat] = useState("All");
   const mob = useApi(`/api/recruitment/mobilisation${buildParams(filters)}`);
   const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
   const filterMeta = useApi("/api/filters");
@@ -2183,6 +2184,11 @@ function MobRecruitmentFunnelPage({ filters }) {
   // by_day split below), so score cards and insights are built entirely from
   // venue and cohort aggregates, which are consistently populated.
   const byVenue = heatmap.data?.by_venue || [];
+  // District-grain, not venue-grain: assigned/target (preload_youth/
+  // mobilisation_target) have no venue dimension in the source table at all
+  // (see tables.py), so Performance categorisation — which needs assigned+
+  // target alongside reached+confirmed — has to roll up by district.
+  const byDistrict = heatmap.data?.by_district || [];
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2197,13 +2203,55 @@ function MobRecruitmentFunnelPage({ filters }) {
     });
   }
 
+  // District -> venue drill for the three metrics that actually exist at
+  // venue grain (Reached, Confirmed, % Female confirmed) — Assigned/Target/
+  // Progress on target have no venue dimension in the source data at all
+  // (see the mobilisation-heatmap endpoint), so those columns aren't
+  // drillable here. No parish level either — this table has no parish
+  // column anywhere.
+  function openDistrictVenueDrill(metricKey, label, formatter = fmtNum) {
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: metricKey, label, align: "right", render: formatter }],
+      rootRows: [...districtRows].sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+    });
+  }
+
   const venueRows = byVenue.map((v) => {
     const reached = v.reached || 0, confirmed = v.confirmed || 0;
     const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
-    return { venue: v.venue, reached, confirmed, rate, category: categorizeRate(rate) };
+    const pctFemaleConfirmed = confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null;
+    return { district: v.district, venue: v.venue, reached, confirmed, pctFemaleConfirmed, rate, category: categorizeRate(rate) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
+
+  const districtRows = byDistrict.map((d) => {
+    const target = d.target || 0, confirmed = d.confirmed || 0;
+    const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
+    const pctFemaleConfirmed = confirmed ? Math.round((1000 * (d.confirmed_female || 0)) / confirmed) / 10 : null;
+    return {
+      district: d.district,
+      assigned: d.assigned || 0,
+      target,
+      reached: d.reached || 0,
+      confirmed,
+      progressPct,
+      pctFemaleConfirmed,
+      category: categorizeRate(progressPct),
+    };
+  }).sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
+
+  const districtCatCounts = { All: districtRows.length };
+  RATE_CATEGORY_ORDER.forEach((c) => { districtCatCounts[c] = districtRows.filter((d) => d.category === c).length; });
+  const filteredDistrictRows = districtCat === "All" ? districtRows : districtRows.filter((d) => d.category === districtCat);
+  const filteredSumTarget = sumBy(filteredDistrictRows, "target");
+  const filteredSumConfirmed = sumBy(filteredDistrictRows, "confirmed");
+  const filteredProgressPct = filteredSumTarget ? Math.round((1000 * filteredSumConfirmed) / filteredSumTarget) / 10 : null;
 
   return (
     <div>
@@ -2268,15 +2316,37 @@ function MobRecruitmentFunnelPage({ filters }) {
         </div>
       </State>
 
-      <ExecBand num="◆" title="Performance categorisation — venues vs target (filters)" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && venueRows.length === 0}>
-        <EntityCategorisation
-          rows={venueRows}
-          metricA={{ key: "reached", label: "Reached" }}
-          metricB={{ key: "confirmed", label: "Confirmed" }}
-          rateFraction="confirmed ÷ reached"
-          entityKey="venue" entityLabel="venue" entityLabelPlural="venues"
-        />
+      <ExecBand num="◆" title="Performance categorisation — districts vs target (filters)" />
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0}>
+        <Insight tone="neutral">
+          <b>How to use these filters.</b> Click a status to filter the score cards and table below to just those districts. Click <b>All</b> to reset.
+        </Insight>
+        <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
+        <Grid cols={4}>
+          <KpiTile label="Districts in view" value={String(filteredDistrictRows.length)} sub={districtCat} tag="REAL" />
+          <KpiTile label="Target (sum)" value={fmtNum(filteredSumTarget)} sub="sum of these districts" tag="REAL" />
+          <KpiTile label="Confirmed (sum)" value={fmtNum(filteredSumConfirmed)} sub="sum of these districts" tag="REAL" />
+          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(filteredProgressPct)] }}>{fmtPct(filteredProgressPct)}</span>} sub="confirmed ÷ target" tag="DERIVED" tone="sim" />
+        </Grid>
+        <Card
+          title="District performance"
+          subtitle="Assigned/target are district-grain only in the source data (no venue dimension) — excludes auto-confirmed 2.5-week pilot youth, who have no agent district since they bypass the call center entirely. Status is banded on Progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk."
+          chip="REAL"
+        >
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openDistrictVenueDrill("reached", "Reached") },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openDistrictVenueDrill("confirmed", "Confirmed") },
+              { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+              { key: "pctFemaleConfirmed", label: "% Female confirmed", align: "right", render: renderPctFemaleCell, onHeaderClick: () => openDistrictVenueDrill("pctFemaleConfirmed", "% Female confirmed", fmtPct) },
+              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+            ]}
+            rows={filteredDistrictRows}
+          />
+        </Card>
       </State>
     </div>
   );
