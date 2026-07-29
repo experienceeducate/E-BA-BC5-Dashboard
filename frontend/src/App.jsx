@@ -2173,6 +2173,7 @@ function MobilisationTab({ filters }) {
 
 function MobRecruitmentFunnelPage({ filters }) {
   const drill = useDrill();
+  const [districtCat, setDistrictCat] = useState("All");
   const mob = useApi(`/api/recruitment/mobilisation${buildParams(filters)}`);
   const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
   const filterMeta = useApi("/api/filters");
@@ -2225,6 +2226,13 @@ function MobRecruitmentFunnelPage({ filters }) {
       category: categorizeRate(progressPct),
     };
   }).sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
+
+  const districtCatCounts = { All: districtRows.length };
+  RATE_CATEGORY_ORDER.forEach((c) => { districtCatCounts[c] = districtRows.filter((d) => d.category === c).length; });
+  const filteredDistrictRows = districtCat === "All" ? districtRows : districtRows.filter((d) => d.category === districtCat);
+  const filteredSumTarget = sumBy(filteredDistrictRows, "target");
+  const filteredSumConfirmed = sumBy(filteredDistrictRows, "confirmed");
+  const filteredProgressPct = filteredSumTarget ? Math.round((1000 * filteredSumConfirmed) / filteredSumTarget) / 10 : null;
 
   return (
     <div>
@@ -2290,12 +2298,22 @@ function MobRecruitmentFunnelPage({ filters }) {
       </State>
 
       <ExecBand num="◆" title="Performance categorisation — districts vs target (filters)" />
-      <Card
-        title="District performance"
-        subtitle="Assigned/target are district-grain only in the source data (no venue dimension) — excludes auto-confirmed 2.5-week pilot youth, who have no agent district since they bypass the call center entirely. Status is banded on Progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk."
-        chip="REAL"
-      >
-        <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0}>
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0}>
+        <Insight tone="neutral">
+          <b>How to use these filters.</b> Click a status to filter the score cards and table below to just those districts. Click <b>All</b> to reset.
+        </Insight>
+        <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
+        <Grid cols={4}>
+          <KpiTile label="Districts in view" value={String(filteredDistrictRows.length)} sub={districtCat} tag="REAL" />
+          <KpiTile label="Target (sum)" value={fmtNum(filteredSumTarget)} sub="sum of these districts" tag="REAL" />
+          <KpiTile label="Confirmed (sum)" value={fmtNum(filteredSumConfirmed)} sub="sum of these districts" tag="REAL" />
+          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(filteredProgressPct)] }}>{fmtPct(filteredProgressPct)}</span>} sub="confirmed ÷ target" tag="DERIVED" tone="sim" />
+        </Grid>
+        <Card
+          title="District performance"
+          subtitle="Assigned/target are district-grain only in the source data (no venue dimension) — excludes auto-confirmed 2.5-week pilot youth, who have no agent district since they bypass the call center entirely. Status is banded on Progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk."
+          chip="REAL"
+        >
           <DataTable
             columns={[
               { key: "district", label: "District" },
@@ -2307,10 +2325,10 @@ function MobRecruitmentFunnelPage({ filters }) {
               { key: "pctFemaleConfirmed", label: "% Female confirmed", align: "right", render: renderPctFemaleCell },
               { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
             ]}
-            rows={districtRows}
+            rows={filteredDistrictRows}
           />
-        </State>
-      </Card>
+        </Card>
+      </State>
     </div>
   );
 }
