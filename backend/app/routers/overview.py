@@ -192,17 +192,21 @@ def _stage_counts(district, gender, role, cohort=None):
 @router.get("/api/filters")
 def get_filters(user: User = Depends(current_user)):
     """Universal filter options for the global filter bar (district / gender /
-    cohort) — every option queried live from BigQuery, unioned across every
-    confirmed-live table that carries that column anywhere in the app, not
-    scoped to any one tab. Nothing hardcoded; nothing tab-specific.
+    cohort) — every option queried live from BigQuery, nothing hardcoded.
+
+    district is sourced from DAILY_ACQUISITION_SUMMARY.agent_district alone,
+    not unioned across every table that happens to carry a district-shaped
+    column. That table is the one already driving every district filter on
+    the Mobilisation tab and is treated as the canonical list of Busoga
+    districts of operation; other tables' district-ish columns (youth_district
+    on per-youth tables, "district" on SITE_FUNNEL_METRICS/CONTROL_CALLS_BC4)
+    have carried out-of-region values (e.g. a youth's recorded home district
+    landing outside Busoga), which a union would surface as if they were
+    operational districts. gender/cohort still union across every table that
+    carries them — those columns aren't prone to the same drift.
     """
     district_sources = [
-        (AWARENESS_SUMMARY, "youth_district"),
-        (SITE_FUNNEL_METRICS, "district"),
-        (AWARENESS_KYC, "youth_district"),
         (DAILY_ACQUISITION_SUMMARY, "agent_district"),
-        (CONTROL_CALLS_BC4, "district"),
-        (RETENTION_ATTENDANCE_RAW, "youth_district"),
     ]
     cohort_sources = [
         (AWARENESS_SUMMARY, "bootcamp_cycle"),
