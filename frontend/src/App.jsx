@@ -2120,7 +2120,6 @@ function MobilisationTab({ filters }) {
         mobilisation rate, the funnel by day and venue, daily pace against target, and the
         randomised control arm.
       </p>
-      <DuplicateRecordsBanner filters={filters} />
       <PageNav
         active={page}
         onChange={setPage}
