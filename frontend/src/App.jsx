@@ -266,6 +266,18 @@ function Gauge({ label, pct, target, onClick }) {
 }
 
 // Numbered section divider, matching the reference design's "exec-band" style.
+// Prominent context/formula callout — matches the reference prototype's
+// ".note" box exactly (gold-tinted background, bold key phrases) rather than
+// a plain muted paragraph, so a page's core definition reads with the same
+// weight the reference design gives it.
+function PageNote({ children }) {
+  return (
+    <div style={{ background: "#FBF3E3", border: "1px solid #E9D9B0", borderRadius: 4, padding: "10px 14px", fontSize: 12, color: "#7A5A1E", marginBottom: 16 }}>
+      {children}
+    </div>
+  );
+}
+
 function ExecBand({ num, title }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "26px 0 14px" }}>
@@ -2255,6 +2267,9 @@ function MobRecruitmentFunnelPage({ filters }) {
 
   return (
     <div>
+      <PageNote>
+        <b style={{ color: "#5C3F0E" }}>Live mobilisation tracker.</b> Assigned to treatment → reached → confirmed. <b style={{ color: "#5C3F0E" }}>Mobilisation rate = youth confirmed ÷ youth assigned to treatment.</b>
+      </PageNote>
       <ExecBand num="◆" title="Progress on target" />
       <State loading={mob.loading} error={mob.error} empty={!mob.loading && !data}>
         <Grid cols={4}>
