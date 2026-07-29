@@ -2155,7 +2155,7 @@ function MobilisationTab({ filters }) {
         active={page}
         onChange={setPage}
         pages={[
-          { key: "funnel", label: "Recruitment Funnel" },
+          { key: "funnel", label: "Mobilisation overview" },
           { key: "forecast", label: "Mobilisation Forecasts" },
           { key: "mobilisers", label: "Mobiliser Performance" },
           { key: "control", label: "Control Mobilisation Calls" },
@@ -2241,15 +2241,6 @@ function MobRecruitmentFunnelPage({ filters }) {
       <ExecBand num="!" title="Insights" />
       <State loading={mob.loading || heatmap.loading} error={mob.error || heatmap.error} empty={!mob.loading && !heatmap.loading && !data && byVenue.length === 0}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-          {(data?.date_cutoff_cohorts || []).map((c) => {
-            const cutoffAssigned = data?.two_half_week?.assigned || 0;
-            const pctOfAssigned = data?.assigned ? Math.round(1000 * cutoffAssigned / data.assigned) / 10 : null;
-            return (
-              <Insight key={c.cohort} tone="warn">
-                <b>{c.cohort}</b>'s auto-confirmed count is an open-ended rule — any youth registered on/after <b>{c.since}</b> counts as the pilot, unlike BOOTCAMP_4's fixed subcounty list, so it keeps growing every day the cutoff stays active. Right now <b>{fmtNum(cutoffAssigned)}</b> youth ({fmtPct(pctOfAssigned)} of Assigned) are counted this way — auto-confirmed by policy, not verified through the call center. Expect Assigned/Confirmed for this cohort to keep rising until a real upstream flag replaces this date rule.
-              </Insight>
-            );
-          })}
           {data?.progress_pct != null && (() => {
             const tone = data.progress_pct >= 95 ? "pos" : data.progress_pct >= 75 ? "warn" : "risk";
             return <Insight tone={tone}><b>{fmtPct(data.progress_pct)}</b> of the mobilisation target reached — {fmtNum(data.confirmed)} of {fmtNum(data.target)} youth confirmed.</Insight>;
@@ -2424,7 +2415,7 @@ function MobForecastsPage({ filters }) {
   // "days elapsed / 16" cycle-length pace rule and hardcoded sample venues
   // (explicitly tagged SIMULATED RULE there) — no such cycle-length field
   // exists in live data. Real equivalent: flag venues by the same
-  // confirmed÷reached conversion-rate bands used on the Recruitment Funnel
+  // confirmed÷reached conversion-rate bands used on the Mobilisation overview
   // page's venue categorisation, driven by the live mobilisation-heatmap
   // venue rollup instead of a fabricated pace projection.
   const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
@@ -2460,7 +2451,7 @@ function MobForecastsPage({ filters }) {
           </ResponsiveContainer>
         </State>
       </Card>
-      <Card title="Site early-warning flags" subtitle="Venues confirming below 85% of reached youth — see Recruitment Funnel → Performance categorisation for the full breakdown" chip="REAL">
+      <Card title="Site early-warning flags" subtitle="Venues confirming below 85% of reached youth — see Mobilisation overview → Performance categorisation for the full breakdown" chip="REAL">
         <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && flaggedVenues.length === 0}>
           <DataTable
             columns={[
@@ -2882,7 +2873,7 @@ const GUIDE_PAGES = [
     what: "4 sub-pages — Funnel Overview, Mobilisers, KYC / Youth Profile, Forecast. Registered → interested → eligible by district, parish and mobiliser; youth demographics; registration-pace forecast." },
   { group: "Recruitment", page: "Mobilisation", tone: "real", navGroup: "rec", navTab: "mob",
     summary: "Assigned → reached → confirmed, 4-week vs 2.5-week cycles.",
-    what: "5 sub-pages — Recruitment Funnel, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
+    what: "5 sub-pages — Mobilisation overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
   { group: "Recruitment", page: "Acquisition", tone: "real", navGroup: "rec", navTab: "acq",
     summary: "Verified → acquired by district; venue risk categories.",
     what: "2 sub-pages — Overview, Arrival & Verification. Verified → acquired by district; venue risk categories (Target Achieved / On Track / Low Risk / High Risk)." },
