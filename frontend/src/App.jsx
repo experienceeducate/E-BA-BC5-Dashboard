@@ -2039,21 +2039,34 @@ function AcquisitionTab({ filters }) {
           { key: "arrival", label: "Arrival & Verification" },
         ]}
       />
-      {page === "overview" && (
-        <DistrictBarTab endpoint="/api/recruitment/acquisition" filters={filters} title="Acquisition" subtitle="Verified → Acquired by district"
-          bars={[{ key: "verified", label: "Verified" }, { key: "acquired", label: "Acquired" }]}
-          drill={{
-            childKey: "venue", childLabel: "Venue",
-            columns: [
-              { key: "verified", label: "Verified", align: "right", render: fmtNum },
-              { key: "acquired", label: "Acquired", align: "right", render: fmtNum },
-              { key: "acquisition_rate", label: "Rate", align: "right", render: fmtPct },
-            ],
-            getChildRows: (root) => (arrival.data?.by_venue || []).filter((v) => v.district === root.district),
-          }}
-        />
-      )}
+      {page === "overview" && <AcquisitionOverviewPage filters={filters} arrival={arrival} />}
       {page === "arrival" && <AcquisitionArrivalPage filters={filters} />}
+    </div>
+  );
+}
+
+function AcquisitionOverviewPage({ filters, arrival }) {
+  const { data } = useApi(`/api/recruitment/acquisition${buildParams(filters)}`);
+  const totals = data?.totals || {};
+  return (
+    <div>
+      <Grid cols={3}>
+        <KpiTile label="Acquisition rate" value={fmtPct(totals.acquisition_rate)} sub={`${fmtNum(totals.acquired)} acquired ÷ ${fmtNum(totals.verified)} verified`} tag="REAL" />
+        <KpiTile label="Overall conversion" value={fmtPct(totals.overall_conversion_rate)} sub={`${fmtNum(totals.acquired)} acquired ÷ ${fmtNum(totals.registered)} registered`} tag="REAL" />
+        <KpiTile label="Retention rate" value={fmtPct(totals.retention_rate)} sub={`${fmtNum(totals.retained)} retained ÷ ${fmtNum(totals.activated)} activated`} tag="REAL" />
+      </Grid>
+      <DistrictBarTab endpoint="/api/recruitment/acquisition" filters={filters} title="Acquisition" subtitle="Verified → Acquired by district"
+        bars={[{ key: "verified", label: "Verified" }, { key: "acquired", label: "Acquired" }]}
+        drill={{
+          childKey: "venue", childLabel: "Venue",
+          columns: [
+            { key: "verified", label: "Verified", align: "right", render: fmtNum },
+            { key: "acquired", label: "Acquired", align: "right", render: fmtNum },
+            { key: "acquisition_rate", label: "Rate", align: "right", render: fmtPct },
+          ],
+          getChildRows: (root) => (arrival.data?.by_venue || []).filter((v) => v.district === root.district),
+        }}
+      />
     </div>
   );
 }

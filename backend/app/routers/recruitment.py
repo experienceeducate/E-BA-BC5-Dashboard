@@ -830,7 +830,58 @@ def acquisition(
     GROUP BY district
     ORDER BY district
     """
-    return {"by_district": database.run_query(sql, params, role=user.role)}
+    by_district = database.run_query(sql, params, role=user.role)
+
+    # Cross-funnel KPIs for the Overview page's score-card band: "Overall
+    # conversion" (acquired ÷ registered, spanning Awareness through
+    # Acquisition) and "Retention rate". retention_rate uses retained ÷
+    # ACTIVATED — the same definition /api/implementation/retention uses
+    # (confirmed by the recruitment team), not retained ÷ acquired like the
+    # reference prototype's illustrative KPI card, so this stays consistent
+    # with the Implementation > Retention tab's number for the same cohort.
+    totals_sql = f"""
+    SELECT
+      SUM(IF(measure = '{SITE_FUNNEL_MEASURE_TARGET}', total_verified_youth, 0)) AS verified,
+      SUM(IF(measure = '{SITE_FUNNEL_MEASURE_ACTUAL}', acquired_youth, 0)) AS acquired,
+      SUM(IF(measure = '{SITE_FUNNEL_MEASURE_ACTUAL}', activated_youth, 0)) AS activated,
+      SUM(IF(measure = '{SITE_FUNNEL_MEASURE_ACTUAL}', youth_80pct_lessons, 0)) AS retained
+    FROM {SITE_FUNNEL_METRICS}
+    WHERE {where}
+    """
+    site_totals = (database.run_query(totals_sql, params, role=user.role) or [{}])[0]
+    verified = site_totals.get("verified") or 0
+    acquired = site_totals.get("acquired") or 0
+    activated = site_totals.get("activated") or 0
+    retained = site_totals.get("retained") or 0
+
+    g = (gender or "").strip().lower()
+    reg_col = (
+        "total_registered_female" if g == "female"
+        else "total_registered_male" if g == "male"
+        else "total_registered_youth"
+    )
+    reg_where, reg_params = build_where(
+        districts=district, extra=[active_cohort_clause("acr", requested=cohort)], prefix="acr",
+        district_col="youth_district",
+    )
+    registered = (database.run_query(
+        f"SELECT SUM({reg_col}) AS n FROM {AWARENESS_SUMMARY} "
+        f"WHERE {reg_where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'",
+        reg_params, role=user.role) or [{}])[0].get("n") or 0
+
+    return {
+        "by_district": by_district,
+        "totals": {
+            "verified": verified,
+            "acquired": acquired,
+            "registered": registered,
+            "activated": activated,
+            "retained": retained,
+            "acquisition_rate": round(100 * acquired / verified, 1) if verified else None,
+            "overall_conversion_rate": round(100 * acquired / registered, 1) if registered else None,
+            "retention_rate": round(100 * retained / activated, 1) if activated else None,
+        },
+    }
 
 
 @router.get("/api/recruitment/acquisition-arrival")

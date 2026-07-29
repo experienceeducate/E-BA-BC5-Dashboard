@@ -303,6 +303,16 @@ export const DEMO = {
       { district: "KAMULI", verified: 720, acquired: 620 },
       { district: "MAYUGE", verified: 730, acquired: 620 },
     ],
+    totals: {
+      verified: 4900,
+      acquired: 4200,
+      registered: 12000,
+      activated: 3820,
+      retained: 3210,
+      acquisition_rate: 85.7,
+      overall_conversion_rate: 35.0,
+      retention_rate: 84.0,
+    },
   },
 
   "/api/recruitment/acquisition-arrival": {
