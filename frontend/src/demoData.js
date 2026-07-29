@@ -242,6 +242,13 @@ export const DEMO = {
       { venue: "Buwaya SS", reached: 2100, confirmed: 1800 },
       { venue: "Naigobya PS", reached: 1500, confirmed: 1000 },
     ],
+    by_district: [
+      { district: "BUGIRI", assigned: 1800, target: 1900, reached: 1800, confirmed: 1500, confirmed_female: 900 },
+      { district: "BUGWERI", assigned: 1200, target: 1300, reached: 1200, confirmed: 950, confirmed_female: 570 },
+      { district: "IGANGA", assigned: 1400, target: 1450, reached: 1400, confirmed: 1150, confirmed_female: 690 },
+      { district: "KAMULI", assigned: 900, target: 950, reached: 850, confirmed: 700, confirmed_female: 385 },
+      { district: "MAYUGE", assigned: 900, target: 900, reached: 850, confirmed: 750, confirmed_female: 488 },
+    ],
   },
 
   "/api/recruitment/mobilisation-forecast": {

@@ -2183,6 +2183,11 @@ function MobRecruitmentFunnelPage({ filters }) {
   // by_day split below), so score cards and insights are built entirely from
   // venue and cohort aggregates, which are consistently populated.
   const byVenue = heatmap.data?.by_venue || [];
+  // District-grain, not venue-grain: assigned/target (preload_youth/
+  // mobilisation_target) have no venue dimension in the source table at all
+  // (see tables.py), so Performance categorisation — which needs assigned+
+  // target alongside reached+confirmed — has to roll up by district.
+  const byDistrict = heatmap.data?.by_district || [];
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2204,6 +2209,22 @@ function MobRecruitmentFunnelPage({ filters }) {
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
+
+  const districtRows = byDistrict.map((d) => {
+    const target = d.target || 0, confirmed = d.confirmed || 0;
+    const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
+    const pctFemaleConfirmed = confirmed ? Math.round((1000 * (d.confirmed_female || 0)) / confirmed) / 10 : null;
+    return {
+      district: d.district,
+      assigned: d.assigned || 0,
+      target,
+      reached: d.reached || 0,
+      confirmed,
+      progressPct,
+      pctFemaleConfirmed,
+      category: categorizeRate(progressPct),
+    };
+  }).sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
 
   return (
     <div>
@@ -2268,16 +2289,28 @@ function MobRecruitmentFunnelPage({ filters }) {
         </div>
       </State>
 
-      <ExecBand num="◆" title="Performance categorisation — venues vs target (filters)" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && venueRows.length === 0}>
-        <EntityCategorisation
-          rows={venueRows}
-          metricA={{ key: "reached", label: "Reached" }}
-          metricB={{ key: "confirmed", label: "Confirmed" }}
-          rateFraction="confirmed ÷ reached"
-          entityKey="venue" entityLabel="venue" entityLabelPlural="venues"
-        />
-      </State>
+      <ExecBand num="◆" title="Performance categorisation — districts vs target (filters)" />
+      <Card
+        title="District performance"
+        subtitle="Assigned/target are district-grain only in the source data (no venue dimension) — excludes auto-confirmed 2.5-week pilot youth, who have no agent district since they bypass the call center entirely. Status is banded on Progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk."
+        chip="REAL"
+      >
+        <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+              { key: "pctFemaleConfirmed", label: "% Female confirmed", align: "right", render: renderPctFemaleCell },
+              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+            ]}
+            rows={districtRows}
+          />
+        </State>
+      </Card>
     </div>
   );
 }

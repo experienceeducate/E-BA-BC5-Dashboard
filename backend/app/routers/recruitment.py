@@ -639,14 +639,23 @@ def mobilisation_heatmap(
     district: List[str] = Query(default=[]),
     cohort:   List[str] = Query(default=[]),
 ):
-    """Venue rollup of unique youth reached and confirmed, for the
-    Mobilisation tab's Insights and venue categorisation.
+    """Venue rollup (for Insights: top venue, high-risk venues) and district
+    rollup (for the Performance categorisation panel) of DAILY_ACQUISITION_
+    SUMMARY, for the Mobilisation overview page.
 
-    Grouped by venue_name only — no call_date requirement. call_date has
-    proven sparse/unreliable for some cohorts (e.g. BOOTCAMP_4), and every
-    consumer of this endpoint (top venue, high-risk venues, the venue
-    categorisation panel) is venue-grain already, so there's no reason to let
-    a missing date null out a row that otherwise has everything it needs.
+    by_venue is grouped by venue_name only — no call_date requirement.
+    call_date has proven sparse/unreliable for some cohorts (e.g. BOOTCAMP_4),
+    and this rollup's only consumers (top venue, high-risk venues) are
+    venue-grain already, so there's no reason to let a missing date null out
+    a row that otherwise has everything it needs.
+
+    by_district exists because assigned/target (preload_youth/
+    mobilisation_target, from 'targets' rows) have NO venue dimension at all
+    (see tables.py) — only district. So the categorisation panel, which needs
+    assigned+target alongside reached+confirmed, has to be district-grain,
+    not venue-grain like the old Rate/Status table was. Excludes the
+    auto-confirmed 2.5-week pilot youth (no agent_district — they bypass the
+    call center entirely), same as this page's "Reached"/reach-rate KPIs.
     """
     where, params = build_where(
         districts=district, extra=[active_cohort_clause("mh", requested=cohort)], prefix="mh",
@@ -660,7 +669,42 @@ def mobilisation_heatmap(
     GROUP BY venue
     ORDER BY venue
     """
-    return {"by_venue": database.run_query(by_venue_sql, params, role=user.role)}
+    by_venue = database.run_query(by_venue_sql, params, role=user.role)
+
+    targets_sql = f"""
+    SELECT UPPER(agent_district) AS district,
+           SUM(preload_youth) AS assigned, SUM(mobilisation_target) AS target
+    FROM {DAILY_ACQUISITION_SUMMARY}
+    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_TARGET}'
+    GROUP BY district
+    """
+    targets_by_district = {r["district"]: r for r in database.run_query(targets_sql, params, role=user.role)}
+
+    actual_sql = f"""
+    SELECT UPPER(agent_district) AS district,
+           SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed,
+           SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS confirmed_female
+    FROM {DAILY_ACQUISITION_SUMMARY}
+    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'
+    GROUP BY district
+    """
+    actual_by_district = {r["district"]: r for r in database.run_query(actual_sql, params, role=user.role)}
+
+    all_districts = sorted(set(targets_by_district) | set(actual_by_district))
+    by_district = []
+    for d in all_districts:
+        t = targets_by_district.get(d, {})
+        a = actual_by_district.get(d, {})
+        by_district.append({
+            "district": d,
+            "assigned": t.get("assigned") or 0,
+            "target": t.get("target") or 0,
+            "reached": a.get("reached") or 0,
+            "confirmed": a.get("confirmed") or 0,
+            "confirmed_female": a.get("confirmed_female") or 0,
+        })
+
+    return {"by_venue": by_venue, "by_district": by_district}
 
 
 @router.get("/api/recruitment/mobilisation-forecast")
