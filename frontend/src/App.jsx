@@ -2203,10 +2203,29 @@ function MobRecruitmentFunnelPage({ filters }) {
     });
   }
 
+  // District -> venue drill for the three metrics that actually exist at
+  // venue grain (Reached, Confirmed, % Female confirmed) — Assigned/Target/
+  // Progress on target have no venue dimension in the source data at all
+  // (see the mobilisation-heatmap endpoint), so those columns aren't
+  // drillable here. No parish level either — this table has no parish
+  // column anywhere.
+  function openDistrictVenueDrill(metricKey, label, formatter = fmtNum) {
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: metricKey, label, align: "right", render: formatter }],
+      rootRows: [...districtRows].sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+    });
+  }
+
   const venueRows = byVenue.map((v) => {
     const reached = v.reached || 0, confirmed = v.confirmed || 0;
     const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
-    return { venue: v.venue, reached, confirmed, rate, category: categorizeRate(rate) };
+    const pctFemaleConfirmed = confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null;
+    return { district: v.district, venue: v.venue, reached, confirmed, pctFemaleConfirmed, rate, category: categorizeRate(rate) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
@@ -2319,10 +2338,10 @@ function MobRecruitmentFunnelPage({ filters }) {
               { key: "district", label: "District" },
               { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
               { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openDistrictVenueDrill("reached", "Reached") },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openDistrictVenueDrill("confirmed", "Confirmed") },
               { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
-              { key: "pctFemaleConfirmed", label: "% Female confirmed", align: "right", render: renderPctFemaleCell },
+              { key: "pctFemaleConfirmed", label: "% Female confirmed", align: "right", render: renderPctFemaleCell, onHeaderClick: () => openDistrictVenueDrill("pctFemaleConfirmed", "% Female confirmed", fmtPct) },
               { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
             ]}
             rows={filteredDistrictRows}

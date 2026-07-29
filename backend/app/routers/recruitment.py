@@ -643,11 +643,14 @@ def mobilisation_heatmap(
     rollup (for the Performance categorisation panel) of DAILY_ACQUISITION_
     SUMMARY, for the Mobilisation overview page.
 
-    by_venue is grouped by venue_name only — no call_date requirement.
+    by_venue is grouped by district + venue_name — no call_date requirement.
     call_date has proven sparse/unreliable for some cohorts (e.g. BOOTCAMP_4),
-    and this rollup's only consumers (top venue, high-risk venues) are
-    venue-grain already, so there's no reason to let a missing date null out
-    a row that otherwise has everything it needs.
+    and this rollup's consumers (top venue, high-risk venues, and the
+    district->venue drill on Reached/Confirmed/% Female confirmed — the only
+    three metrics that actually exist at venue grain) are venue-grain already,
+    so there's no reason to let a missing date null out a row that otherwise
+    has everything it needs. district is carried alongside venue purely so
+    the drill can filter a clicked district's venues client-side.
 
     by_district exists because assigned/target (preload_youth/
     mobilisation_target, from 'targets' rows) have NO venue dimension at all
@@ -662,12 +665,13 @@ def mobilisation_heatmap(
         district_col="agent_district",
     )
     by_venue_sql = f"""
-    SELECT venue_name AS venue,
-           SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed
+    SELECT UPPER(agent_district) AS district, venue_name AS venue,
+           SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed,
+           SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS confirmed_female
     FROM {DAILY_ACQUISITION_SUMMARY}
     WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND venue_name IS NOT NULL
-    GROUP BY venue
-    ORDER BY venue
+    GROUP BY district, venue
+    ORDER BY district, venue
     """
     by_venue = database.run_query(by_venue_sql, params, role=user.role)
 
