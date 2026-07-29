@@ -736,6 +736,19 @@ function fetchPerDistrict(endpoint, filters, districts, extract) {
   ).then((rows) => rows.sort((a, b) => (b.value || 0) - (a.value || 0)));
 }
 
+// Same per-district fan-out as fetchPerDistrict, but for drills that need
+// several named fields side by side per district (e.g. a 4-week vs 2.5-week
+// vs overall comparison) instead of one bare `value` column.
+function fetchPerDistrictFields(endpoint, filters, districts, extract) {
+  return Promise.all(
+    districts.map((d) =>
+      apiGet(`${endpoint}${buildParamsOverride(filters, { district: d })}`)
+        .then((json) => ({ district: d, ...extract(json) }))
+        .catch(() => ({ district: d }))
+    )
+  );
+}
+
 function ExecutiveSummaryPage({ filters }) {
   const drill = useDrill();
   const q = buildParams(filters);
@@ -2191,6 +2204,12 @@ function MobRecruitmentFunnelPage({ filters }) {
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
   const data = mob.data;
+  // Bootcamp comparison — same /api/recruitment/mobilisation endpoint and
+  // formulas as everything else on this page, just called twice with the
+  // cohort filter forced to each cycle so the other active filters (district,
+  // gender) still apply. No new backend query or calculation.
+  const bc4 = useApi(`/api/recruitment/mobilisation${buildParamsOverride(filters, { cohort: "BOOTCAMP_4" })}`);
+  const bc5 = useApi(`/api/recruitment/mobilisation${buildParamsOverride(filters, { cohort: "BOOTCAMP_5" })}`);
   // Venue-grain only — no insight here depends on call_date. Day-level
   // tracking has proven sparse/unreliable for some cohorts (see the by_venue/
   // by_day split below), so score cards and insights are built entirely from
@@ -2230,6 +2249,59 @@ function MobRecruitmentFunnelPage({ filters }) {
       rootRows: [...districtRows].sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
       childKey: "venue", childLabel: "Venue",
       getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+    });
+  }
+
+  // Cycle-segment drill for the "4-week vs 2.5-week cycle" table — the one
+  // component on this page with no drill yet. Shows each district's value
+  // for all three segments side by side, since a single DataTable column
+  // here already spans all three rows (4-week / 2.5-week / overall).
+  function openSegmentDrill(metricKey, label, formatter = fmtNum, overallKey = metricKey) {
+    // The overall/blended field is named differently from the segment field
+    // for % Female (top-level confirmed_female_pct vs four_week/two_half_week's
+    // pct_female) — overallKey lets the one caller that needs it say so.
+    drill.open({
+      title: `${label} — 4-week vs 2.5-week, by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [
+        { key: "four_week", label: "4-week cycle", align: "right", render: formatter },
+        { key: "two_half_week", label: "2.5-week cycle", align: "right", render: formatter },
+        { key: "overall", label: "Overall (blended)", align: "right", render: formatter },
+      ],
+      rootRows: () => fetchPerDistrictFields("/api/recruitment/mobilisation", filters, allDistricts, (json) => ({
+        four_week: json?.four_week?.[metricKey] ?? null,
+        two_half_week: json?.two_half_week?.[metricKey] ?? null,
+        overall: json?.[overallKey] ?? null,
+      })),
+    });
+  }
+
+  // Bootcamp-comparison row drill — same district breakdown as openMobDrill,
+  // but with the cohort forced to whichever row (BC4/BC5) was clicked, so
+  // "which districts are driving BC5's lower reach rate" is one click away.
+  function openCohortDistrictDrill(cohortValue, cohortLabel) {
+    drill.open({
+      title: `${cohortLabel} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [
+        { key: "reach_rate", label: "Reach rate", align: "right", render: fmtPct },
+        { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
+        { key: "confirmed_female_pct", label: "% Female confirmed", align: "right", render: renderPctFemaleCell },
+      ],
+      // fetchPerDistrictFields overrides `district` per row via
+      // buildParamsOverride's {...filters, ...overrides} merge — passing a
+      // filters object with cohort pre-set here means that merge keeps the
+      // forced cohort while district still varies per row.
+      rootRows: () => fetchPerDistrictFields(
+        "/api/recruitment/mobilisation", { ...filters, cohort: cohortValue }, allDistricts,
+        (json) => ({
+          reach_rate: json?.reach_rate ?? null,
+          mobilisation_rate: json?.mobilisation_rate ?? null,
+          confirmed_female_pct: json?.confirmed_female_pct ?? null,
+        })
+      ),
     });
   }
 
@@ -2285,12 +2357,12 @@ function MobRecruitmentFunnelPage({ filters }) {
           <DataTable
             columns={[
               { key: "label", label: "Cycle" },
-              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
-              { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
-              { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
+              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openSegmentDrill("assigned", "Assigned") },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openSegmentDrill("reached", "Reached") },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openSegmentDrill("confirmed", "Confirmed") },
+              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v), onHeaderClick: () => openSegmentDrill("reach_rate", "Reach rate", fmtPct) },
+              { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate"), onHeaderClick: () => openSegmentDrill("mobilisation_rate", "Mobilisation rate", fmtPct) },
+              { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell, onHeaderClick: () => openSegmentDrill("pct_female", "% Female", fmtPct, "confirmed_female_pct") },
             ]}
             rows={[
               { label: "4-week cycle", ...data?.four_week },
@@ -2328,6 +2400,76 @@ function MobRecruitmentFunnelPage({ filters }) {
           {venueRows.filter((v) => v.category === "High Risk").length > 0 && (
             <Insight tone="risk"><b>{venueRows.filter((v) => v.category === "High Risk").length} venue(s)</b> are confirming fewer than 75% of reached youth — see the table below.</Insight>
           )}
+        </div>
+      </State>
+
+      <ExecBand num="⇄" title="Bootcamp comparison — BC4 vs BC5" />
+      <State loading={bc4.loading || bc5.loading} error={bc4.error || bc5.error} empty={!bc4.loading && !bc5.loading && !bc4.data && !bc5.data}>
+        <Card
+          title="BOOTCAMP_4 vs BOOTCAMP_5"
+          subtitle="Same mobilisation formulas as the rest of this page, called once per cohort — other active filters (district, gender) still apply. Click a row for its district breakdown."
+          chip="REAL"
+        >
+          <DataTable
+            columns={[
+              { key: "cohortLabel", label: "Cohort" },
+              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
+              { key: "confirmed_female_pct", label: "% Female confirmed", align: "right", render: renderPctFemaleCell },
+            ]}
+            rows={[
+              { cohortLabel: "BOOTCAMP_4", cohort: "BOOTCAMP_4", ...bc4.data },
+              { cohortLabel: "BOOTCAMP_5", cohort: "BOOTCAMP_5", ...bc5.data },
+            ]}
+            onRowClick={(r) => openCohortDistrictDrill(r.cohort, r.cohortLabel)}
+          />
+        </Card>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {bc4.data?.reach_rate != null && bc5.data?.reach_rate != null && (() => {
+            const diff = bc5.data.reach_rate - bc4.data.reach_rate;
+            if (Math.abs(diff) < 1) {
+              return <Insight tone="neutral">Reach rate is comparable across cohorts — BC4 <b>{fmtPct(bc4.data.reach_rate)}</b>, BC5 <b>{fmtPct(bc5.data.reach_rate)}</b>.</Insight>;
+            }
+            const behind = diff < 0 ? "BC5" : "BC4", ahead = diff < 0 ? "BC4" : "BC5";
+            const behindRate = diff < 0 ? bc5.data.reach_rate : bc4.data.reach_rate;
+            const aheadRate = diff < 0 ? bc4.data.reach_rate : bc5.data.reach_rate;
+            return (
+              <Insight tone={Math.abs(diff) >= 10 ? "risk" : "warn"}>
+                <b>{behind}</b>'s reach rate (<b>{fmtPct(behindRate)}</b>) trails <b>{ahead}</b>'s (<b>{fmtPct(aheadRate)}</b>) by <b>{fmtPct(Math.abs(diff))}</b> pts — worth checking whether {behind}'s call-center agents are carrying a heavier assigned-youth load per agent than {ahead}'s.
+              </Insight>
+            );
+          })()}
+          {bc4.data?.mobilisation_rate != null && bc5.data?.mobilisation_rate != null && (() => {
+            const diff = bc5.data.mobilisation_rate - bc4.data.mobilisation_rate;
+            if (Math.abs(diff) < 1) {
+              return <Insight tone="neutral">Mobilisation rate is comparable across cohorts — BC4 <b>{fmtPct(bc4.data.mobilisation_rate)}</b>, BC5 <b>{fmtPct(bc5.data.mobilisation_rate)}</b>.</Insight>;
+            }
+            const behind = diff < 0 ? "BC5" : "BC4", ahead = diff < 0 ? "BC4" : "BC5";
+            const behindRate = diff < 0 ? bc5.data.mobilisation_rate : bc4.data.mobilisation_rate;
+            const aheadRate = diff < 0 ? bc4.data.mobilisation_rate : bc5.data.mobilisation_rate;
+            return (
+              <Insight tone={Math.abs(diff) >= 10 ? "risk" : "warn"}>
+                <b>{behind}</b>'s mobilisation rate (<b>{fmtPct(behindRate)}</b>) trails <b>{ahead}</b>'s (<b>{fmtPct(aheadRate)}</b>) by <b>{fmtPct(Math.abs(diff))}</b> pts — since reach and mobilisation are separate steps, a gap here specifically points to reached-but-not-confirmed follow-through, not outreach. Click the {behind} row above to see which districts are driving it.
+              </Insight>
+            );
+          })()}
+          {bc4.data?.confirmed_female_pct != null && bc5.data?.confirmed_female_pct != null && (() => {
+            const bc4Pct = bc4.data.confirmed_female_pct, bc5Pct = bc5.data.confirmed_female_pct;
+            const worse = bc4Pct <= bc5Pct ? "BC4" : "BC5";
+            const worsePct = bc4Pct <= bc5Pct ? bc4Pct : bc5Pct;
+            const betterPct = bc4Pct <= bc5Pct ? bc5Pct : bc4Pct;
+            if (bc4Pct >= 60 && bc5Pct >= 60) {
+              return <Insight tone="pos">Both cohorts are at or above the 60% confirmed-female target — BC4 <b>{fmtPct(bc4Pct)}</b>, BC5 <b>{fmtPct(bc5Pct)}</b>.</Insight>;
+            }
+            return (
+              <Insight tone={worsePct < 50 ? "risk" : "warn"}>
+                <b>{worse}</b>'s confirmed-female share (<b>{fmtPct(worsePct)}</b>) is below the 60% target{Math.abs(betterPct - worsePct) >= 1 ? <> and behind the other cohort's <b>{fmtPct(betterPct)}</b></> : null} — a targeted female-mobilisation push in {worse}'s lower-performing districts (see the row drill above) would close this fastest.
+              </Insight>
+            );
+          })()}
         </div>
       </State>
 
