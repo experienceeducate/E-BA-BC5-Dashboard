@@ -2517,7 +2517,29 @@ function EntityCategorisation({ rows: entityRows, metricA, metricB, rateFraction
 }
 
 
+// Same avg-daily-rate ÷ remaining-to-target formula the backend uses for the
+// page-level "Days to target" KPI (see mobilisation_forecast in recruitment.py),
+// applied per-district/venue instead of in aggregate. `nDays` (how many
+// calendar days the current cohort/date-range's daily series covers) is
+// shared across every district/venue — it isn't entity-specific, just the
+// window length — so this only needs each entity's own real confirmed/target,
+// nothing estimated.
+function daysToTargetFor(confirmed, target, nDays) {
+  if (!target) return null;
+  if (confirmed >= target) return 0;
+  const avgDailyRate = nDays ? confirmed / nDays : 0;
+  if (!avgDailyRate) return null;
+  return Math.round((target - confirmed) / avgDailyRate);
+}
+
+const FORECAST_DRILL_COLUMNS = [
+  { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
+  { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+  { key: "daysToTarget", label: "Days to target", align: "right", render: (v) => (v == null ? "—" : v <= 0 ? "Met" : fmtNum(v)) },
+];
+
 function MobForecastsPage({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/recruitment/mobilisation-forecast${buildParams(filters)}`);
   // Reference prototype's "Site early-warning flags" panel uses a fabricated
   // "days elapsed / 16" cycle-length pace rule and hardcoded sample venues
@@ -2528,6 +2550,7 @@ function MobForecastsPage({ filters }) {
   // venue rollup instead of a fabricated pace projection.
   const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
   const daily = data?.daily || [];
+  const nDays = daily.length;
   const flaggedVenues = (heatmap.data?.by_venue || [])
     .map((v) => {
       const reached = v.reached || 0, confirmed = v.confirmed || 0;
@@ -2537,13 +2560,39 @@ function MobForecastsPage({ filters }) {
     .filter((v) => v.category === "Low Risk" || v.category === "High Risk")
     .sort((a, b) => (a.rate ?? -1) - (b.rate ?? -1));
 
+  // District root -> venue child, same "Days to target" formula at both
+  // grains, off the same heatmap data the rest of this page already uses.
+  function openDaysToTargetDrill() {
+    const districtRows = (heatmap.data?.by_district || []).map((d) => {
+      const target = d.target || 0, confirmed = d.confirmed || 0;
+      const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
+      return { district: d.district, target, progressPct, daysToTarget: daysToTargetFor(confirmed, target, nDays), category: categorizeRate(progressPct) };
+    });
+    drill.open({
+      title: "Days to target — by district",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      childKey: "venue", childLabel: "Venue",
+      columns: FORECAST_DRILL_COLUMNS,
+      rootRows: districtRows,
+      getChildRows: (root) => (heatmap.data?.by_venue || [])
+        .filter((v) => v.district === root.district)
+        .map((v) => {
+          const target = v.target ?? null, confirmed = v.confirmed || 0;
+          const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
+          return { venue: v.venue, target, progressPct, daysToTarget: daysToTargetFor(confirmed, target, nDays), category: categorizeRate(progressPct) };
+        })
+        .sort((a, b) => (a.daysToTarget ?? Infinity) - (b.daysToTarget ?? Infinity)),
+    });
+  }
+
   return (
     <div>
       <Grid cols={4}>
         <KpiTile label="Confirmed to date" value={fmtNum(data?.confirmed_to_date)} tag="REAL" />
         <KpiTile label="Mobilisation target" value={fmtNum(data?.target)} tag="REAL" />
         <KpiTile label="Avg daily rate" value={fmtNum(data?.avg_daily_rate)} tag="REAL" />
-        <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub="At current pace" tag="DERIVED" tone="sim" />
+        <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub="At current pace" tag="DERIVED" tone="sim" onClick={openDaysToTargetDrill} />
       </Grid>
       <Card title="Daily trend — youth confirmed vs unique call attempts" subtitle="Daily reach/confirm volume against the mobilisation target" chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
