@@ -2922,9 +2922,38 @@ function DomainBar({ label, pct }) {
   );
 }
 
+// `phase` isn't one of the global filter bar's dimensions (district/gender/
+// cohort) — it's page-local to Trainer Quality, since TRAINER_OBSERVATIONS
+// has no bootcamp_cycle column at all and no other live table has a
+// "BC5 TOT" value to filter on. Appends it to whatever buildParams(filters)
+// already produced instead of threading it through the shared global-filter
+// helpers.
+function withPhaseParam(baseQuery, phase) {
+  if (!phase) return baseQuery;
+  return `${baseQuery}${baseQuery ? "&" : "?"}phase=${encodeURIComponent(phase)}`;
+}
+
 function TrainersTab({ filters }) {
+  const [page, setPage] = useState("overview");
+  return (
+    <div>
+      <PageNav
+        active={page}
+        onChange={setPage}
+        pages={[
+          { key: "overview", label: "Overview" },
+          { key: "tot", label: "BC5 TOT" },
+        ]}
+      />
+      {page === "overview" && <TrainerQualityPage filters={filters} />}
+      {page === "tot" && <TrainerQualityPage filters={filters} phase="BC5 TOT" />}
+    </div>
+  );
+}
+
+function TrainerQualityPage({ filters, phase }) {
   const drill = useDrill();
-  const { data, loading, error } = useApi(`/api/implementation/trainers${buildParams(filters)}`);
+  const { data, loading, error } = useApi(withPhaseParam(`/api/implementation/trainers${buildParams(filters)}`, phase));
   const rows = data?.trainers || [];
   const byPhase = data?.by_phase || [];
   const domainDefs = data?.domains || [];
@@ -2974,28 +3003,30 @@ function TrainersTab({ filters }) {
   return (
     <div>
       <Grid cols={4}>
-        <KpiTile label="Trainers observed" value={String(nObs)} sub="BC5 TOT + BOOTCAMP_5, cumulative" tag="REAL" />
+        <KpiTile label="Trainers observed" value={String(nObs)} sub={phase ? phase : "BC5 TOT + BOOTCAMP_5, cumulative"} tag="REAL" />
         <KpiTile label="Exceeds expectations" value={String(nExceeds)} sub={nObs ? `${Math.round((nExceeds / nObs) * 100)}% of trainers` : undefined} tag="REAL" />
         <KpiTile label="Meets expectations" value={String(nMeets)} sub={nObs ? `${Math.round((nMeets / nObs) * 100)}% of trainers` : undefined} tag="REAL" />
         <KpiTile label="Below expectations" value={String(nBelow)} sub={nObs ? (nBelow === 0 ? "none flagged" : `${Math.round((nBelow / nObs) * 100)}% of trainers`) : undefined} tone={nBelow > 0 ? "sim" : "real"} tag="REAL" />
       </Grid>
 
-      <Card title="BC5 TOT vs BOOTCAMP_5" subtitle="Trainer certification (TOT, before teaching youth) vs in-classroom delivery (BOOTCAMP_5) — same observation-score formula, different phase of the cohort" chip="REAL">
-        <State loading={loading} error={error} empty={!loading && byPhase.length === 0}>
-          <DataTable
-            columns={[
-              { key: "phase", label: "Phase" },
-              { key: "trainers_observed", label: "Trainers observed", align: "right", render: (v) => fmtNum(v) },
-              { key: "pct_overall", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerBandColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
-            ]}
-            rows={byPhase}
-          />
-        </State>
-      </Card>
+      {!phase && (
+        <Card title="BC5 TOT vs BOOTCAMP_5" subtitle="Trainer certification (TOT, before teaching youth) vs in-classroom delivery (BOOTCAMP_5) — same observation-score formula, different phase of the cohort. See the BC5 TOT tab for a TOT-only breakdown." chip="REAL">
+          <State loading={loading} error={error} empty={!loading && byPhase.length === 0}>
+            <DataTable
+              columns={[
+                { key: "phase", label: "Phase" },
+                { key: "trainers_observed", label: "Trainers observed", align: "right", render: (v) => fmtNum(v) },
+                { key: "pct_overall", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerBandColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+              ]}
+              rows={byPhase}
+            />
+          </State>
+        </Card>
+      )}
 
       <Card
         title="Trainer observation register — who was observed & how they rated"
-        subtitle="Sorted lowest-first — trainers to prioritise for support appear at the top. Click Overall for a district breakdown."
+        subtitle={`Sorted lowest-first — trainers to prioritise for support appear at the top. Click Overall for a district breakdown.${phase ? ` Showing ${phase} only.` : ""}`}
         chip="PII" chipTone="pii"
       >
         <State loading={loading} error={error} empty={!loading && rows.length === 0}>
