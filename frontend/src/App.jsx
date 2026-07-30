@@ -2201,9 +2201,7 @@ function MobRecruitmentFunnelPage({ filters }) {
   // assigned alongside reached/confirmed for reach/mobilisation rate — has
   // to roll up by district.
   const byDistrict = heatmap.data?.by_district || [];
-  const [venuePage, setVenuePage] = useState(0);
   const [districtCat, setDistrictCat] = useState("All");
-  const [venueCat, setVenueCat] = useState("All");
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2218,11 +2216,20 @@ function MobRecruitmentFunnelPage({ filters }) {
     });
   }
 
+  // `target` comes from a hardcoded per-venue list (see VENUE_MOBILISATION_
+  // TARGET in tables.py — BigQuery has no real per-venue target). `rate`/
+  // `conversionCategory` (confirmed ÷ reached — call-center conversion) drive
+  // the Insights section below unchanged; `progressPct`/`category` (confirmed
+  // ÷ target) are a distinct signal that drives the categorisation table's
+  // filtering/Status instead, same basis as the district table. No per-venue
+  // "assigned" exists in that list or anywhere else, so Reach rate/
+  // Mobilisation rate (both ÷ assigned) can't be shown for venues.
   const venueRows = byVenue.map((v) => {
-    const reached = v.reached || 0, confirmed = v.confirmed || 0;
+    const reached = v.reached || 0, confirmed = v.confirmed || 0, target = v.target ?? null;
     const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
     const pctFemale = confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null;
-    return { venue: v.venue, reached, confirmed, pctFemale, rate, category: categorizeRate(rate) };
+    const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
+    return { district: v.district, venue: v.venue, reached, confirmed, pctFemale, target, rate, conversionCategory: categorizeRate(rate), progressPct, category: categorizeRate(progressPct) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
@@ -2246,27 +2253,39 @@ function MobRecruitmentFunnelPage({ filters }) {
   RATE_CATEGORY_ORDER.forEach((c) => { districtCatCounts[c] = districtRows.filter((d) => d.category === c).length; });
   const filteredDistrictRows = (districtCat === "All" ? districtRows : districtRows.filter((d) => d.category === districtCat))
     .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
-  const filteredSumAssigned = sumBy(filteredDistrictRows, "assigned");
-  const filteredSumTarget = sumBy(filteredDistrictRows, "target");
-  const filteredSumConfirmed = sumBy(filteredDistrictRows, "confirmed");
-  const filteredProgressPct = filteredSumTarget ? Math.round((1000 * filteredSumConfirmed) / filteredSumTarget) / 10 : null;
 
-  // Venues have no assigned/target in the source data (see byDistrict above),
-  // so venue categorisation bands on confirmed ÷ reached (venueRows.category)
-  // instead of progress on target — the same basis this page used for venues
-  // before the district rebuild.
-  const venueCatCounts = { All: venueRows.length };
-  RATE_CATEGORY_ORDER.forEach((c) => { venueCatCounts[c] = venueRows.filter((v) => v.category === c).length; });
-  const filteredVenueRows = (venueCat === "All" ? venueRows : venueRows.filter((v) => v.category === venueCat))
-    .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
-  const filteredSumReached = sumBy(filteredVenueRows, "reached");
-  const filteredSumVenueConfirmed = sumBy(filteredVenueRows, "confirmed");
-  const filteredVenueRate = filteredSumReached ? Math.round((1000 * filteredSumVenueConfirmed) / filteredSumReached) / 10 : null;
+  // Columns shared by the drill's district (root) and venue (child) rows —
+  // both objects carry these exact same keys, so one column set renders
+  // either grain correctly. Assigned/Reach rate/Mobilisation rate are left
+  // out here even though districtRows has them: venueRows doesn't (no
+  // per-venue Assigned anywhere), and the drill reuses one column set for
+  // both levels.
+  const districtVenueDrillColumns = [
+    { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
+    { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+    { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+    { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+    { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+    { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+  ];
 
-  const venuePageSize = 10;
-  const venueMaxPage = Math.max(0, Math.ceil(filteredVenueRows.length / venuePageSize) - 1);
-  const venuePageClamped = Math.min(venuePage, venueMaxPage);
-  const pagedVenueRows = filteredVenueRows.slice(venuePageClamped * venuePageSize, venuePageClamped * venuePageSize + venuePageSize);
+  // Row click on District performance vs target -> straight into that
+  // district's venues (openAt skips the root list entirely); "‹ Back"
+  // still works, showing all districts in the same column shape.
+  function openDistrictVenueDrill(districtRow) {
+    drill.openAt(
+      {
+        title: "Venue performance",
+        tone: "real", tagLabel: "REAL",
+        rootKey: "district", rootLabel: "District",
+        childKey: "venue", childLabel: "Venue",
+        columns: districtVenueDrillColumns,
+        rootRows: districtRows,
+        getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => b.confirmed - a.confirmed),
+      },
+      districtRow
+    );
+  }
 
   return (
     <div>
@@ -2334,30 +2353,20 @@ function MobRecruitmentFunnelPage({ filters }) {
           {topVenue && (
             <Insight tone="pos"><b>{topVenue.venue}</b> confirmed the most youth overall ({fmtNum(topVenue.confirmed)}, {fmtPct(topVenue.rate)} of reached).</Insight>
           )}
-          {venueRows.filter((v) => v.category === "High Risk").length > 0 && (
-            <Insight tone="risk"><b>{venueRows.filter((v) => v.category === "High Risk").length} venue(s)</b> are confirming fewer than 75% of reached youth — see the table below.</Insight>
+          {venueRows.filter((v) => v.conversionCategory === "High Risk").length > 0 && (
+            <Insight tone="risk"><b>{venueRows.filter((v) => v.conversionCategory === "High Risk").length} venue(s)</b> are confirming fewer than 75% of reached youth — see the table below.</Insight>
           )}
         </div>
       </State>
 
-      <ExecBand num="◆" title="Performance categorisation — districts and venues vs target (filters)" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0 && venueRows.length === 0}>
+      <ExecBand num="◆" title="Performance categorisation — districts vs target (filters)" />
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0}>
         <Insight tone="neutral">
-          <b>How to use these filters.</b> Click a status to filter the score cards and table below it to just those districts/venues. Click <b>All</b> to reset.
+          <b>How to use these filters.</b> Click a status to filter the table below to just those districts. Click <b>All</b> to reset. Click a district row for its venues.
         </Insight>
 
         <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
-        <Grid cols={4}>
-          <KpiTile label="Districts in view" value={String(filteredDistrictRows.length)} sub={districtCat} tag="REAL" />
-          <KpiTile label="Assigned (sum)" value={fmtNum(filteredSumAssigned)} sub="sum of these districts" tag="REAL" />
-          <KpiTile label="Target (sum)" value={fmtNum(filteredSumTarget)} sub="sum of these districts" tag="REAL" />
-          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(filteredProgressPct)] }}>{fmtPct(filteredProgressPct)}</span>} sub="confirmed ÷ target" tag="DERIVED" tone="sim" />
-        </Grid>
-        <Card
-          title="District performance vs target"
-          subtitle="Same Assigned/Reached/Confirmed/Reach rate/Mobilisation rate/% Female formulas as the cycle breakdown above, plus Target (both from DAILY_ACQUISITION_SUMMARY's district-grain 'targets' rows — no venue dimension in the source data). Status is banded on Progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk."
-          chip="REAL"
-        >
+        <Card title="District performance vs target" chip="REAL">
           <DataTable
             columns={[
               { key: "district", label: "District" },
@@ -2372,41 +2381,8 @@ function MobRecruitmentFunnelPage({ filters }) {
               { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
             ]}
             rows={filteredDistrictRows}
+            onRowClick={openDistrictVenueDrill}
           />
-        </Card>
-
-        <CategoryFilterTiles counts={venueCatCounts} active={venueCat} onChange={(c) => { setVenueCat(c); setVenuePage(0); }} entityLabelPlural="venues" />
-        <Grid cols={4}>
-          <KpiTile label="Venues in view" value={String(filteredVenueRows.length)} sub={venueCat} tag="REAL" />
-          <KpiTile label="Reached (sum)" value={fmtNum(filteredSumReached)} sub="sum of these venues" tag="REAL" />
-          <KpiTile label="Confirmed (sum)" value={fmtNum(filteredSumVenueConfirmed)} sub="sum of these venues" tag="REAL" />
-          <KpiTile label="Rate" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(filteredVenueRate)] }}>{fmtPct(filteredVenueRate)}</span>} sub="confirmed ÷ reached" tag="DERIVED" tone="sim" />
-        </Grid>
-        <Card
-          title="Venue performance"
-          subtitle="Venues have no Assigned/Target in the source data (district-grain only), so Status here bands on confirmed ÷ reached instead of progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk. Shows 10 venues at a time."
-          chip="REAL"
-        >
-          <DataTable
-            columns={[
-              { key: "venue", label: "Venue" },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-              { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
-              { key: "rate", label: "Rate", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
-              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
-            ]}
-            rows={pagedVenueRows}
-          />
-          {filteredVenueRows.length > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
-              <span>{venuePageClamped * venuePageSize + 1}–{Math.min(filteredVenueRows.length, venuePageClamped * venuePageSize + venuePageSize)} of {filteredVenueRows.length}</span>
-              <span style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => setVenuePage(Math.max(0, venuePageClamped - 1))} disabled={venuePageClamped === 0} style={{ ...PAGER_BTN, opacity: venuePageClamped === 0 ? 0.5 : 1 }}>‹ Prev</button>
-                <button onClick={() => setVenuePage(Math.min(venueMaxPage, venuePageClamped + 1))} disabled={venuePageClamped === venueMaxPage} style={{ ...PAGER_BTN, opacity: venuePageClamped === venueMaxPage ? 0.5 : 1 }}>Next ›</button>
-              </span>
-            </div>
-          )}
         </Card>
       </State>
     </div>
