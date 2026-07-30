@@ -238,13 +238,10 @@ def resolve_active_cohorts(requested: list = None) -> list:
 
 def active_cohort_clause(prefix: str, requested: list = None):
     """(clause, params) restricting bootcamp_cycle to resolve_active_cohorts(requested)
-    for a live-table query, AND-ed with NOT_TEST_DATA — this is the extra=[...]
-    every cohort-scoped query splices in, so the test-data exclusion travels
-    with it automatically instead of relying on each call site to add it
-    separately (most didn't). Splice into build_where(extra=[...]). See the
+    for a live-table query. Splice into build_where(extra=[...]). See the
     ACTIVE_COHORTS comment."""
     return (
-        f"{NOT_TEST_DATA} AND bootcamp_cycle IN UNNEST(@{prefix}_cycle)",
+        f"bootcamp_cycle IN UNNEST(@{prefix}_cycle)",
         [_array(f"{prefix}_cycle", "STRING", resolve_active_cohorts(requested))],
     )
 

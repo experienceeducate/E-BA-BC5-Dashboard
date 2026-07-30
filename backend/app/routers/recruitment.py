@@ -60,7 +60,7 @@ def _auto_confirmed_count(district, gender, role, cohort=None):
         if subcounties:
             where, params = build_where(
                 districts=district, gender=gender,
-                extra=[NOT_TEST_DATA, (f"bootcamp_cycle = @acf_cycle", [_scalar("acf_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @acf_cycle", [_scalar("acf_cycle", "STRING", cycle)])],
                 prefix="acf", district_col="youth_district", gender_col="youth_gender",
             )
             sql = f"""
@@ -79,7 +79,7 @@ def _auto_confirmed_count(district, gender, role, cohort=None):
             )
             where, params = build_where(
                 districts=district,
-                extra=[NOT_TEST_DATA, (f"bootcamp_cycle = @acfd_cycle", [_scalar("acfd_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @acfd_cycle", [_scalar("acfd_cycle", "STRING", cycle)])],
                 prefix="acfd", district_col="youth_district",
             )
             sql = f"""

@@ -72,7 +72,7 @@ def _auto_confirmed_count(district, gender, role, cohort=None):
         if subcounties:
             where, params = build_where(
                 districts=district, gender=gender,
-                extra=[NOT_TEST_DATA, (f"bootcamp_cycle = @acf_cycle", [_scalar("acf_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @acf_cycle", [_scalar("acf_cycle", "STRING", cycle)])],
                 prefix="acf", district_col="youth_district", gender_col="youth_gender",
             )
             sql = f"""
@@ -91,7 +91,7 @@ def _auto_confirmed_count(district, gender, role, cohort=None):
             )
             where, params = build_where(
                 districts=district,
-                extra=[NOT_TEST_DATA, (f"bootcamp_cycle = @acfd_cycle", [_scalar("acfd_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @acfd_cycle", [_scalar("acfd_cycle", "STRING", cycle)])],
                 prefix="acfd", district_col="youth_district",
             )
             sql = f"""
@@ -355,7 +355,7 @@ def overview_gender(
         if subcounties:
             acf_where, acf_params = build_where(
                 districts=district,
-                extra=[NOT_TEST_DATA, (f"bootcamp_cycle = @gnacf_cycle", [_scalar("gnacf_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @gnacf_cycle", [_scalar("gnacf_cycle", "STRING", cycle)])],
                 prefix="gnacf", district_col="youth_district",
             )
             acf_sql = f"""
@@ -370,7 +370,7 @@ def overview_gender(
         elif since_date:
             acfd_where, acfd_params = build_where(
                 districts=district,
-                extra=[NOT_TEST_DATA, (f"bootcamp_cycle = @gnacfd_cycle", [_scalar("gnacfd_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @gnacfd_cycle", [_scalar("gnacfd_cycle", "STRING", cycle)])],
                 prefix="gnacfd", district_col="youth_district",
             )
             acfd_sql = f"""
