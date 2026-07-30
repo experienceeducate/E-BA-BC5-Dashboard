@@ -736,19 +736,6 @@ function fetchPerDistrict(endpoint, filters, districts, extract) {
   ).then((rows) => rows.sort((a, b) => (b.value || 0) - (a.value || 0)));
 }
 
-// Same per-district fan-out as fetchPerDistrict, but for drills that need
-// several named fields side by side per district (e.g. a 4-week vs 2.5-week
-// vs overall comparison) instead of one bare `value` column.
-function fetchPerDistrictFields(endpoint, filters, districts, extract) {
-  return Promise.all(
-    districts.map((d) =>
-      apiGet(`${endpoint}${buildParamsOverride(filters, { district: d })}`)
-        .then((json) => ({ district: d, ...extract(json) }))
-        .catch(() => ({ district: d }))
-    )
-  );
-}
-
 function ExecutiveSummaryPage({ filters }) {
   const drill = useDrill();
   const q = buildParams(filters);
@@ -2180,7 +2167,7 @@ function MobilisationTab({ filters }) {
         active={page}
         onChange={setPage}
         pages={[
-          { key: "funnel", label: "Mobilisation overview" },
+          { key: "funnel", label: "Recruitment Funnel" },
           { key: "forecast", label: "Mobilisation Forecasts" },
           { key: "mobilisers", label: "Mobiliser Performance" },
           { key: "control", label: "Control Mobilisation Calls" },
@@ -2198,28 +2185,16 @@ function MobilisationTab({ filters }) {
 
 function MobRecruitmentFunnelPage({ filters }) {
   const drill = useDrill();
-  const [districtCat, setDistrictCat] = useState("All");
   const mob = useApi(`/api/recruitment/mobilisation${buildParams(filters)}`);
   const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
   const data = mob.data;
-  // Bootcamp comparison — same /api/recruitment/mobilisation endpoint and
-  // formulas as everything else on this page, just called twice with the
-  // cohort filter forced to each cycle so the other active filters (district,
-  // gender) still apply. No new backend query or calculation.
-  const bc4 = useApi(`/api/recruitment/mobilisation${buildParamsOverride(filters, { cohort: "BOOTCAMP_4" })}`);
-  const bc5 = useApi(`/api/recruitment/mobilisation${buildParamsOverride(filters, { cohort: "BOOTCAMP_5" })}`);
   // Venue-grain only — no insight here depends on call_date. Day-level
   // tracking has proven sparse/unreliable for some cohorts (see the by_venue/
   // by_day split below), so score cards and insights are built entirely from
   // venue and cohort aggregates, which are consistently populated.
   const byVenue = heatmap.data?.by_venue || [];
-  // District-grain, not venue-grain: assigned/target (preload_youth/
-  // mobilisation_target) have no venue dimension in the source table at all
-  // (see tables.py), so Performance categorisation — which needs assigned+
-  // target alongside reached+confirmed — has to roll up by district.
-  const byDistrict = heatmap.data?.by_district || [];
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2234,114 +2209,16 @@ function MobRecruitmentFunnelPage({ filters }) {
     });
   }
 
-  // District -> venue drill for the three metrics that actually exist at
-  // venue grain (Reached, Confirmed, % Female confirmed) — Assigned/Target/
-  // Progress on target have no venue dimension in the source data at all
-  // (see the mobilisation-heatmap endpoint), so those columns aren't
-  // drillable here. No parish level either — this table has no parish
-  // column anywhere.
-  function openDistrictVenueDrill(metricKey, label, formatter = fmtNum) {
-    drill.open({
-      title: `${label} — by district`,
-      tone: "real", tagLabel: "REAL",
-      rootKey: "district", rootLabel: "District",
-      columns: [{ key: metricKey, label, align: "right", render: formatter }],
-      rootRows: [...districtRows].sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
-      childKey: "venue", childLabel: "Venue",
-      getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
-    });
-  }
-
-  // Cycle-segment drill for the "4-week vs 2.5-week cycle" table — the one
-  // component on this page with no drill yet. Shows each district's value
-  // for all three segments side by side, since a single DataTable column
-  // here already spans all three rows (4-week / 2.5-week / overall).
-  function openSegmentDrill(metricKey, label, formatter = fmtNum, overallKey = metricKey) {
-    // The overall/blended field is named differently from the segment field
-    // for % Female (top-level confirmed_female_pct vs four_week/two_half_week's
-    // pct_female) — overallKey lets the one caller that needs it say so.
-    drill.open({
-      title: `${label} — 4-week vs 2.5-week, by district`,
-      tone: "real", tagLabel: "REAL",
-      rootKey: "district", rootLabel: "District",
-      columns: [
-        { key: "four_week", label: "4-week cycle", align: "right", render: formatter },
-        { key: "two_half_week", label: "2.5-week cycle", align: "right", render: formatter },
-        { key: "overall", label: "Overall (blended)", align: "right", render: formatter },
-      ],
-      rootRows: () => fetchPerDistrictFields("/api/recruitment/mobilisation", filters, allDistricts, (json) => ({
-        four_week: json?.four_week?.[metricKey] ?? null,
-        two_half_week: json?.two_half_week?.[metricKey] ?? null,
-        overall: json?.[overallKey] ?? null,
-      })),
-    });
-  }
-
-  // Bootcamp-comparison row drill — same district breakdown as openMobDrill,
-  // but with the cohort forced to whichever row (BC4/BC5) was clicked, so
-  // "which districts are driving BC5's lower reach rate" is one click away.
-  function openCohortDistrictDrill(cohortValue, cohortLabel) {
-    drill.open({
-      title: `${cohortLabel} — by district`,
-      tone: "real", tagLabel: "REAL",
-      rootKey: "district", rootLabel: "District",
-      columns: [
-        { key: "reach_rate", label: "Reach rate", align: "right", render: fmtPct },
-        { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
-        { key: "confirmed_female_pct", label: "% Female confirmed", align: "right", render: renderPctFemaleCell },
-      ],
-      // fetchPerDistrictFields overrides `district` per row via
-      // buildParamsOverride's {...filters, ...overrides} merge — passing a
-      // filters object with cohort pre-set here means that merge keeps the
-      // forced cohort while district still varies per row.
-      rootRows: () => fetchPerDistrictFields(
-        "/api/recruitment/mobilisation", { ...filters, cohort: cohortValue }, allDistricts,
-        (json) => ({
-          reach_rate: json?.reach_rate ?? null,
-          mobilisation_rate: json?.mobilisation_rate ?? null,
-          confirmed_female_pct: json?.confirmed_female_pct ?? null,
-        })
-      ),
-    });
-  }
-
   const venueRows = byVenue.map((v) => {
     const reached = v.reached || 0, confirmed = v.confirmed || 0;
     const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
-    const pctFemaleConfirmed = confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null;
-    return { district: v.district, venue: v.venue, reached, confirmed, pctFemaleConfirmed, rate, category: categorizeRate(rate) };
+    return { venue: v.venue, reached, confirmed, rate, category: categorizeRate(rate) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
 
-  const districtRows = byDistrict.map((d) => {
-    const target = d.target || 0, confirmed = d.confirmed || 0;
-    const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
-    const pctFemaleConfirmed = confirmed ? Math.round((1000 * (d.confirmed_female || 0)) / confirmed) / 10 : null;
-    return {
-      district: d.district,
-      assigned: d.assigned || 0,
-      target,
-      reached: d.reached || 0,
-      confirmed,
-      progressPct,
-      pctFemaleConfirmed,
-      category: categorizeRate(progressPct),
-    };
-  }).sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
-
-  const districtCatCounts = { All: districtRows.length };
-  RATE_CATEGORY_ORDER.forEach((c) => { districtCatCounts[c] = districtRows.filter((d) => d.category === c).length; });
-  const filteredDistrictRows = districtCat === "All" ? districtRows : districtRows.filter((d) => d.category === districtCat);
-  const filteredSumTarget = sumBy(filteredDistrictRows, "target");
-  const filteredSumConfirmed = sumBy(filteredDistrictRows, "confirmed");
-  const filteredProgressPct = filteredSumTarget ? Math.round((1000 * filteredSumConfirmed) / filteredSumTarget) / 10 : null;
-
   return (
     <div>
-      <PageNote>
-        <b style={{ color: "#5C3F0E" }}>Live mobilisation tracker.</b> Assigned to treatment → reached → confirmed. <b style={{ color: "#5C3F0E" }}>Mobilisation rate = youth confirmed ÷ youth assigned to treatment.</b>
-      </PageNote>
       <ExecBand num="◆" title="Progress on target" />
       <State loading={mob.loading} error={mob.error} empty={!mob.loading && !data}>
         <Grid cols={4}>
@@ -2357,12 +2234,12 @@ function MobRecruitmentFunnelPage({ filters }) {
           <DataTable
             columns={[
               { key: "label", label: "Cycle" },
-              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openSegmentDrill("assigned", "Assigned") },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openSegmentDrill("reached", "Reached") },
-              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openSegmentDrill("confirmed", "Confirmed") },
-              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v), onHeaderClick: () => openSegmentDrill("reach_rate", "Reach rate", fmtPct) },
-              { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate"), onHeaderClick: () => openSegmentDrill("mobilisation_rate", "Mobilisation rate", fmtPct) },
-              { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell, onHeaderClick: () => openSegmentDrill("pct_female", "% Female", fmtPct, "confirmed_female_pct") },
+              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
+              { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
             ]}
             rows={[
               { label: "4-week cycle", ...data?.four_week },
@@ -2376,6 +2253,15 @@ function MobRecruitmentFunnelPage({ filters }) {
       <ExecBand num="!" title="Insights" />
       <State loading={mob.loading || heatmap.loading} error={mob.error || heatmap.error} empty={!mob.loading && !heatmap.loading && !data && byVenue.length === 0}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {(data?.date_cutoff_cohorts || []).map((c) => {
+            const cutoffAssigned = data?.two_half_week?.assigned || 0;
+            const pctOfAssigned = data?.assigned ? Math.round(1000 * cutoffAssigned / data.assigned) / 10 : null;
+            return (
+              <Insight key={c.cohort} tone="warn">
+                <b>{c.cohort}</b>'s auto-confirmed count is an open-ended rule — any youth registered on/after <b>{c.since}</b> counts as the pilot, unlike BOOTCAMP_4's fixed subcounty list, so it keeps growing every day the cutoff stays active. Right now <b>{fmtNum(cutoffAssigned)}</b> youth ({fmtPct(pctOfAssigned)} of Assigned) are counted this way — auto-confirmed by policy, not verified through the call center. Expect Assigned/Confirmed for this cohort to keep rising until a real upstream flag replaces this date rule.
+              </Insight>
+            );
+          })}
           {data?.progress_pct != null && (() => {
             const tone = data.progress_pct >= 95 ? "pos" : data.progress_pct >= 75 ? "warn" : "risk";
             return <Insight tone={tone}><b>{fmtPct(data.progress_pct)}</b> of the mobilisation target reached — {fmtNum(data.confirmed)} of {fmtNum(data.target)} youth confirmed.</Insight>;
@@ -2403,107 +2289,15 @@ function MobRecruitmentFunnelPage({ filters }) {
         </div>
       </State>
 
-      <ExecBand num="⇄" title="Bootcamp comparison — BC4 vs BC5" />
-      <State loading={bc4.loading || bc5.loading} error={bc4.error || bc5.error} empty={!bc4.loading && !bc5.loading && !bc4.data && !bc5.data}>
-        <Card
-          title="BOOTCAMP_4 vs BOOTCAMP_5"
-          subtitle="Same mobilisation formulas as the rest of this page, called once per cohort — other active filters (district, gender) still apply. Click a row for its district breakdown."
-          chip="REAL"
-        >
-          <DataTable
-            columns={[
-              { key: "cohortLabel", label: "Cohort" },
-              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
-              { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
-              { key: "confirmed_female_pct", label: "% Female confirmed", align: "right", render: renderPctFemaleCell },
-            ]}
-            rows={[
-              { cohortLabel: "BOOTCAMP_4", cohort: "BOOTCAMP_4", ...bc4.data },
-              { cohortLabel: "BOOTCAMP_5", cohort: "BOOTCAMP_5", ...bc5.data },
-            ]}
-            onRowClick={(r) => openCohortDistrictDrill(r.cohort, r.cohortLabel)}
-          />
-        </Card>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-          {bc4.data?.reach_rate != null && bc5.data?.reach_rate != null && (() => {
-            const diff = bc5.data.reach_rate - bc4.data.reach_rate;
-            if (Math.abs(diff) < 1) {
-              return <Insight tone="neutral">Reach rate is comparable across cohorts — BC4 <b>{fmtPct(bc4.data.reach_rate)}</b>, BC5 <b>{fmtPct(bc5.data.reach_rate)}</b>.</Insight>;
-            }
-            const behind = diff < 0 ? "BC5" : "BC4", ahead = diff < 0 ? "BC4" : "BC5";
-            const behindRate = diff < 0 ? bc5.data.reach_rate : bc4.data.reach_rate;
-            const aheadRate = diff < 0 ? bc4.data.reach_rate : bc5.data.reach_rate;
-            return (
-              <Insight tone={Math.abs(diff) >= 10 ? "risk" : "warn"}>
-                <b>{behind}</b>'s reach rate (<b>{fmtPct(behindRate)}</b>) trails <b>{ahead}</b>'s (<b>{fmtPct(aheadRate)}</b>) by <b>{fmtPct(Math.abs(diff))}</b> pts — worth checking whether {behind}'s call-center agents are carrying a heavier assigned-youth load per agent than {ahead}'s.
-              </Insight>
-            );
-          })()}
-          {bc4.data?.mobilisation_rate != null && bc5.data?.mobilisation_rate != null && (() => {
-            const diff = bc5.data.mobilisation_rate - bc4.data.mobilisation_rate;
-            if (Math.abs(diff) < 1) {
-              return <Insight tone="neutral">Mobilisation rate is comparable across cohorts — BC4 <b>{fmtPct(bc4.data.mobilisation_rate)}</b>, BC5 <b>{fmtPct(bc5.data.mobilisation_rate)}</b>.</Insight>;
-            }
-            const behind = diff < 0 ? "BC5" : "BC4", ahead = diff < 0 ? "BC4" : "BC5";
-            const behindRate = diff < 0 ? bc5.data.mobilisation_rate : bc4.data.mobilisation_rate;
-            const aheadRate = diff < 0 ? bc4.data.mobilisation_rate : bc5.data.mobilisation_rate;
-            return (
-              <Insight tone={Math.abs(diff) >= 10 ? "risk" : "warn"}>
-                <b>{behind}</b>'s mobilisation rate (<b>{fmtPct(behindRate)}</b>) trails <b>{ahead}</b>'s (<b>{fmtPct(aheadRate)}</b>) by <b>{fmtPct(Math.abs(diff))}</b> pts — since reach and mobilisation are separate steps, a gap here specifically points to reached-but-not-confirmed follow-through, not outreach. Click the {behind} row above to see which districts are driving it.
-              </Insight>
-            );
-          })()}
-          {bc4.data?.confirmed_female_pct != null && bc5.data?.confirmed_female_pct != null && (() => {
-            const bc4Pct = bc4.data.confirmed_female_pct, bc5Pct = bc5.data.confirmed_female_pct;
-            const worse = bc4Pct <= bc5Pct ? "BC4" : "BC5";
-            const worsePct = bc4Pct <= bc5Pct ? bc4Pct : bc5Pct;
-            const betterPct = bc4Pct <= bc5Pct ? bc5Pct : bc4Pct;
-            if (bc4Pct >= 60 && bc5Pct >= 60) {
-              return <Insight tone="pos">Both cohorts are at or above the 60% confirmed-female target — BC4 <b>{fmtPct(bc4Pct)}</b>, BC5 <b>{fmtPct(bc5Pct)}</b>.</Insight>;
-            }
-            return (
-              <Insight tone={worsePct < 50 ? "risk" : "warn"}>
-                <b>{worse}</b>'s confirmed-female share (<b>{fmtPct(worsePct)}</b>) is below the 60% target{Math.abs(betterPct - worsePct) >= 1 ? <> and behind the other cohort's <b>{fmtPct(betterPct)}</b></> : null} — a targeted female-mobilisation push in {worse}'s lower-performing districts (see the row drill above) would close this fastest.
-              </Insight>
-            );
-          })()}
-        </div>
-      </State>
-
-      <ExecBand num="◆" title="Performance categorisation — districts vs target (filters)" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0}>
-        <Insight tone="neutral">
-          <b>How to use these filters.</b> Click a status to filter the score cards and table below to just those districts. Click <b>All</b> to reset.
-        </Insight>
-        <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
-        <Grid cols={4}>
-          <KpiTile label="Districts in view" value={String(filteredDistrictRows.length)} sub={districtCat} tag="REAL" />
-          <KpiTile label="Target (sum)" value={fmtNum(filteredSumTarget)} sub="sum of these districts" tag="REAL" />
-          <KpiTile label="Confirmed (sum)" value={fmtNum(filteredSumConfirmed)} sub="sum of these districts" tag="REAL" />
-          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(filteredProgressPct)] }}>{fmtPct(filteredProgressPct)}</span>} sub="confirmed ÷ target" tag="DERIVED" tone="sim" />
-        </Grid>
-        <Card
-          title="District performance"
-          subtitle="Assigned/target are district-grain only in the source data (no venue dimension) — excludes auto-confirmed 2.5-week pilot youth, who have no agent district since they bypass the call center entirely. Status is banded on Progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk."
-          chip="REAL"
-        >
-          <DataTable
-            columns={[
-              { key: "district", label: "District" },
-              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
-              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openDistrictVenueDrill("reached", "Reached") },
-              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openDistrictVenueDrill("confirmed", "Confirmed") },
-              { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
-              { key: "pctFemaleConfirmed", label: "% Female confirmed", align: "right", render: renderPctFemaleCell, onHeaderClick: () => openDistrictVenueDrill("pctFemaleConfirmed", "% Female confirmed", fmtPct) },
-              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
-            ]}
-            rows={filteredDistrictRows}
-          />
-        </Card>
+      <ExecBand num="◆" title="Performance categorisation — venues vs target (filters)" />
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && venueRows.length === 0}>
+        <EntityCategorisation
+          rows={venueRows}
+          metricA={{ key: "reached", label: "Reached" }}
+          metricB={{ key: "confirmed", label: "Confirmed" }}
+          rateFraction="confirmed ÷ reached"
+          entityKey="venue" entityLabel="venue" entityLabelPlural="venues"
+        />
       </State>
     </div>
   );
@@ -2635,6 +2429,7 @@ function EntityCategorisation({ rows: entityRows, metricA, metricB, rateFraction
     </div>
   );
 }
+
 
 function MobForecastsPage({ filters }) {
   const { data, loading, error } = useApi(`/api/recruitment/mobilisation-forecast${buildParams(filters)}`);
