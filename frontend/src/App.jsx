@@ -2195,6 +2195,14 @@ function MobRecruitmentFunnelPage({ filters }) {
   // by_day split below), so score cards and insights are built entirely from
   // venue and cohort aggregates, which are consistently populated.
   const byVenue = heatmap.data?.by_venue || [];
+  // District-grain, not venue-grain: assigned/target (preload_youth/
+  // mobilisation_target) have no venue dimension in the source table at all
+  // (see tables.py), so the District performance table — which needs
+  // assigned alongside reached/confirmed for reach/mobilisation rate — has
+  // to roll up by district.
+  const byDistrict = heatmap.data?.by_district || [];
+  const [venuePage, setVenuePage] = useState(0);
+  const [districtCat, setDistrictCat] = useState("All");
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2212,10 +2220,40 @@ function MobRecruitmentFunnelPage({ filters }) {
   const venueRows = byVenue.map((v) => {
     const reached = v.reached || 0, confirmed = v.confirmed || 0;
     const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
-    return { venue: v.venue, reached, confirmed, rate, category: categorizeRate(rate) };
+    const pctFemale = confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null;
+    return { venue: v.venue, reached, confirmed, pctFemale, rate, category: categorizeRate(rate) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
+
+  // Same shape as the "4-week vs 2.5-week cycle" table (assigned/reached/
+  // confirmed/reach rate/mobilisation rate/% female), rolled up by district
+  // instead of by cycle segment. assigned/target come straight off
+  // DAILY_ACQUISITION_SUMMARY's district-grain 'targets' rows (see
+  // mobilisation-heatmap) — progressPct/category (confirmed ÷ target) drive
+  // the Performance categorisation table below.
+  const districtRows = byDistrict.map((d) => {
+    const assigned = d.assigned || 0, target = d.target || 0, reached = d.reached || 0, confirmed = d.confirmed || 0;
+    const reachRate = assigned ? Math.round((1000 * reached) / assigned) / 10 : null;
+    const mobilisationRate = assigned ? Math.round((1000 * confirmed) / assigned) / 10 : null;
+    const pctFemale = confirmed ? Math.round((1000 * (d.confirmed_female || 0)) / confirmed) / 10 : null;
+    const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
+    return { district: d.district, assigned, target, reached, confirmed, reachRate, mobilisationRate, pctFemale, progressPct, category: categorizeRate(progressPct) };
+  }).sort((a, b) => b.confirmed - a.confirmed);
+
+  const venuePageSize = 10;
+  const venueMaxPage = Math.max(0, Math.ceil(venueRows.length / venuePageSize) - 1);
+  const venuePageClamped = Math.min(venuePage, venueMaxPage);
+  const pagedVenueRows = venueRows.slice(venuePageClamped * venuePageSize, venuePageClamped * venuePageSize + venuePageSize);
+
+  const districtCatCounts = { All: districtRows.length };
+  RATE_CATEGORY_ORDER.forEach((c) => { districtCatCounts[c] = districtRows.filter((d) => d.category === c).length; });
+  const filteredDistrictRows = (districtCat === "All" ? districtRows : districtRows.filter((d) => d.category === districtCat))
+    .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
+  const filteredSumAssigned = sumBy(filteredDistrictRows, "assigned");
+  const filteredSumTarget = sumBy(filteredDistrictRows, "target");
+  const filteredSumConfirmed = sumBy(filteredDistrictRows, "confirmed");
+  const filteredProgressPct = filteredSumTarget ? Math.round((1000 * filteredSumConfirmed) / filteredSumTarget) / 10 : null;
 
   return (
     <div>
@@ -2247,6 +2285,44 @@ function MobRecruitmentFunnelPage({ filters }) {
               { label: "Overall (blended)", assigned: data?.assigned, reached: data?.reached, confirmed: data?.confirmed, reach_rate: data?.reach_rate, mobilisation_rate: data?.mobilisation_rate, pct_female: data?.confirmed_female_pct },
             ]}
           />
+        </Card>
+        <Card title="District performance" subtitle="Same formulas as the cycle breakdown above, rolled up by district instead of by cycle segment." chip="REAL">
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "reachRate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "mobilisationRate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
+              { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+            ]}
+            rows={districtRows}
+          />
+        </Card>
+        <Card
+          title="Venue performance"
+          subtitle="Reached, Confirmed and % Female by venue — Assigned/Reach rate/Mobilisation rate have no venue dimension in the source data, so aren't shown here (see District performance above for those). Shows 10 venues at a time."
+          chip="REAL"
+        >
+          <DataTable
+            columns={[
+              { key: "venue", label: "Venue" },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+            ]}
+            rows={pagedVenueRows}
+          />
+          {venueRows.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
+              <span>{venuePageClamped * venuePageSize + 1}–{Math.min(venueRows.length, venuePageClamped * venuePageSize + venuePageSize)} of {venueRows.length}</span>
+              <span style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setVenuePage(Math.max(0, venuePageClamped - 1))} disabled={venuePageClamped === 0} style={{ ...PAGER_BTN, opacity: venuePageClamped === 0 ? 0.5 : 1 }}>‹ Prev</button>
+                <button onClick={() => setVenuePage(Math.min(venueMaxPage, venuePageClamped + 1))} disabled={venuePageClamped === venueMaxPage} style={{ ...PAGER_BTN, opacity: venuePageClamped === venueMaxPage ? 0.5 : 1 }}>Next ›</button>
+              </span>
+            </div>
+          )}
         </Card>
       </State>
 
@@ -2289,15 +2365,36 @@ function MobRecruitmentFunnelPage({ filters }) {
         </div>
       </State>
 
-      <ExecBand num="◆" title="Performance categorisation — venues vs target (filters)" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && venueRows.length === 0}>
-        <EntityCategorisation
-          rows={venueRows}
-          metricA={{ key: "reached", label: "Reached" }}
-          metricB={{ key: "confirmed", label: "Confirmed" }}
-          rateFraction="confirmed ÷ reached"
-          entityKey="venue" entityLabel="venue" entityLabelPlural="venues"
-        />
+      <ExecBand num="◆" title="Performance categorisation — districts vs target (filters)" />
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0}>
+        <Insight tone="neutral">
+          <b>How to use these filters.</b> Click a status to filter the score cards and table below to just those districts. Click <b>All</b> to reset.
+        </Insight>
+        <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
+        <Grid cols={4}>
+          <KpiTile label="Districts in view" value={String(filteredDistrictRows.length)} sub={districtCat} tag="REAL" />
+          <KpiTile label="Assigned (sum)" value={fmtNum(filteredSumAssigned)} sub="sum of these districts" tag="REAL" />
+          <KpiTile label="Target (sum)" value={fmtNum(filteredSumTarget)} sub="sum of these districts" tag="REAL" />
+          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(filteredProgressPct)] }}>{fmtPct(filteredProgressPct)}</span>} sub="confirmed ÷ target" tag="DERIVED" tone="sim" />
+        </Grid>
+        <Card
+          title="District performance vs target"
+          subtitle="Assigned/target come from DAILY_ACQUISITION_SUMMARY's district-grain 'targets' rows (no venue dimension in the source data). Status is banded on Progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk."
+          chip="REAL"
+        >
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+            ]}
+            rows={filteredDistrictRows}
+          />
+        </Card>
       </State>
     </div>
   );
