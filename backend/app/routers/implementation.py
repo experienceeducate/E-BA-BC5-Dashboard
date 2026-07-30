@@ -23,8 +23,10 @@ from app.core.tables import (
     SITE_FUNNEL_MEASURE_ACTUAL,
     ATTENDANCE_SUMMARY,
     TRAINER_OBSERVATIONS,
-    ACTIVE_COHORT_START_DATE,
-    ACTIVE_COHORT_END_DATE,
+    TRAINER_TOT_START_DATE,
+    TRAINER_TOT_END_DATE,
+    TRAINER_BOOTCAMP_START_DATE,
+    TRAINER_BOOTCAMP_END_DATE,
     active_cohort_clause,
     retention_calls_detail_sql,
 )
@@ -163,28 +165,59 @@ def retention_calls(
     return {"daily": database.run_query(sql, params, role=user.role)}
 
 
+# Column names straight from the recruitment team's reference query
+# (trainer_quality_summary_sql.sql) — including the "_scoret_" typo on
+# gender-responsiveness, which is the real BigQuery column name, not ours to
+# fix. percentage_* columns are 0-100; avg_score_*/total_score_* are the
+# underlying 0-4 scale and raw sum respectively (unused here — the domain
+# summary reads percentage, matching the reference design's bands).
+_TRAINER_DOMAIN_COLUMNS = [
+    ("pck", "percentage_score_pedagogical_content_knowledge", "Pedagogical content knowledge"),
+    ("fds", "percentage_score_facilitation_and_delivery_skills", "Facilitation & delivery"),
+    ("em", "percentage_score_entrepreneurship_mindset", "Entrepreneurial mindset"),
+    ("gr", "percentage_scoret_gender_responsive", "Gender responsiveness"),
+    ("cm", "percentage_score_coaching_and_mentoring", "Coaching & mentoring"),
+    ("language", "percentage_language", "Language"),
+    ("leadership", "percentage_leadership", "Leadership"),
+]
+
+
+def _trainer_where(district, prefix):
+    return build_where(
+        districts=district, prefix=prefix, district_col="district_name",
+        extra=[(
+            f"DATE(submission_date) BETWEEN @{prefix}_start AND @{prefix}_end",
+            [_scalar(f"{prefix}_start", "DATE", TRAINER_TOT_START_DATE), _scalar(f"{prefix}_end", "DATE", TRAINER_BOOTCAMP_END_DATE)],
+        )],
+    )
+
+
 @router.get("/api/implementation/trainers")
 def trainers(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
 ):
-    """Trainer observation scores. Names masked to initials for the guest role.
+    """Trainer observation scores + the seven E! teaching-domain percentages,
+    plus a BC5 TOT vs BOOTCAMP_5 phase breakdown. Names masked to initials
+    for the guest role.
 
     Backed by the live TRAINER_OBSERVATIONS raw lesson-observation export
-    (see tables.py — no bootcamp_cycle column, scoped by report_type + a
-    submission-date window instead). rating is a MEETS/EXCEEDS/BELOW band on
-    the average overall_average_class_observation_score, per the recruitment
-    team's reference query (trainer_quality_summary_sql.sql).
+    (see tables.py — no bootcamp_cycle column, scoped by report_type + the
+    TOT+BOOTCAMP_5 date window instead). rating is a MEETS/EXCEEDS/BELOW band
+    on the average overall_average_class_observation_score, per the
+    recruitment team's reference query (trainer_quality_summary_sql.sql).
     """
-    where, params = build_where(
-        districts=district, prefix="tq", district_col="district_name",
-    )
+    domain_select = ",\n      ".join(f"AVG(CAST({col} AS FLOAT64)) AS pct_{key}" for key, col, _label in _TRAINER_DOMAIN_COLUMNS)
+
+    where, params = _trainer_where(district, "tq")
     sql = f"""
     SELECT
       trainer_name,
       training_site AS venue,
       UPPER(district_name) AS district,
       AVG(CAST(overall_average_class_observation_score AS FLOAT64)) AS score,
+      AVG(CAST(overall_percentage_class_observation_score AS FLOAT64)) AS pct_overall,
+      {domain_select},
       CASE
         WHEN AVG(CAST(overall_average_class_observation_score AS FLOAT64)) >= 4 THEN 'EXCEEDS'
         WHEN AVG(CAST(overall_average_class_observation_score AS FLOAT64)) >= 3 THEN 'MEETS'
@@ -194,18 +227,46 @@ def trainers(
     WHERE {where}
       AND report_type = 'rct_lesson_observation'
       AND trainer_name IS NOT NULL
-      AND DATE(submission_date) BETWEEN @tq_start AND @tq_end
     GROUP BY trainer_name, venue, district
     ORDER BY score DESC
     """
-    params = params + [
-        _scalar("tq_start", "DATE", ACTIVE_COHORT_START_DATE),
-        _scalar("tq_end", "DATE", ACTIVE_COHORT_END_DATE),
-    ]
     rows = database.run_query(sql, params, role=user.role)
     for r in rows:
         r["trainer_name"] = mask_name(user.role, r.get("trainer_name"))
-    return {"trainers": rows}
+
+    # Phase rollup: same window, same rating bands, but grouped by phase
+    # instead of by trainer — TOT (trainer certification, before they teach
+    # youth) and the BOOTCAMP_5 delivery window are conceptually different
+    # populations, not just a date split.
+    phase_where, phase_params = _trainer_where(district, "tqp")
+    phase_sql = f"""
+    SELECT
+      CASE
+        WHEN DATE(submission_date) BETWEEN @tqp_tot_start AND @tqp_tot_end THEN 'BC5 TOT'
+        WHEN DATE(submission_date) BETWEEN @tqp_bc_start AND @tqp_bc_end THEN 'BOOTCAMP_5'
+      END AS phase,
+      COUNT(DISTINCT trainer_name) AS trainers_observed,
+      AVG(CAST(overall_average_class_observation_score AS FLOAT64)) AS score,
+      AVG(CAST(overall_percentage_class_observation_score AS FLOAT64)) AS pct_overall
+    FROM {TRAINER_OBSERVATIONS}
+    WHERE {phase_where}
+      AND report_type = 'rct_lesson_observation'
+      AND trainer_name IS NOT NULL
+    GROUP BY phase
+    """
+    phase_params = phase_params + [
+        _scalar("tqp_tot_start", "DATE", TRAINER_TOT_START_DATE),
+        _scalar("tqp_tot_end", "DATE", TRAINER_TOT_END_DATE),
+        _scalar("tqp_bc_start", "DATE", TRAINER_BOOTCAMP_START_DATE),
+        _scalar("tqp_bc_end", "DATE", TRAINER_BOOTCAMP_END_DATE),
+    ]
+    by_phase = database.run_query(phase_sql, phase_params, role=user.role)
+
+    return {
+        "trainers": rows,
+        "by_phase": by_phase,
+        "domains": [{"key": key, "label": label} for key, _col, label in _TRAINER_DOMAIN_COLUMNS],
+    }
 
 
 @router.get("/api/implementation/milestones")

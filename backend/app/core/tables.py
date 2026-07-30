@@ -166,11 +166,21 @@ ATTENDANCE_SUMMARY = f"{_GOLD}.eba_bootcamp_attendance_summary"
 # and the current v2 tool's 0-4 overall_average_class_observation_score) in the
 # same table, so rows are scoped to the current cohort by report_type + a
 # submission-date window instead (per the recruitment team's reference query,
-# trainer_quality_summary_sql.sql). Update the window alongside ACTIVE_COHORTS
-# once BC5 trainer-quality data lands. Backs /api/implementation/trainers.
+# trainer_quality_summary_sql.sql). Backs /api/implementation/trainers.
+#
+# BC5 observations span two distinct phases (per instruction, 2026-07-30):
+# TOT ("Training of Trainers" — trainers being certified, before they teach
+# youth) and the BOOTCAMP_5 delivery window itself (trainers observed while
+# actually teaching). These are contiguous but conceptually different
+# populations — a trainer's TOT score isn't the same signal as their in-
+# classroom BOOTCAMP_5 score — so the endpoint reports both the full-window
+# register and a per-phase breakdown. Update these four dates alongside
+# ACTIVE_COHORTS once BC6 trainer-quality data lands.
 TRAINER_OBSERVATIONS         = f"{_SILVER}.raw_eba_2025_monitoring_tool_v2_ug"
-ACTIVE_COHORT_START_DATE     = "2026-05-06"
-ACTIVE_COHORT_END_DATE       = "2026-05-30"
+TRAINER_TOT_START_DATE       = "2026-07-29"
+TRAINER_TOT_END_DATE         = "2026-08-16"
+TRAINER_BOOTCAMP_START_DATE  = "2026-08-17"
+TRAINER_BOOTCAMP_END_DATE    = "2026-09-11"
 
 # Retention calls (absent-youth follow-up) — no dedicated mart exists yet;
 # Afra is planning a silver model for this later. Until then, built directly

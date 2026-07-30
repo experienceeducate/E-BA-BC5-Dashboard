@@ -2876,10 +2876,80 @@ function RetentionCallsTab({ filters }) {
   );
 }
 
+// Matches the reference design's exact bands for the seven E! teaching
+// domains and the register's overall %-score column: green >=80, amber
+// 70-79, red <70 — distinct from RATE_CATEGORY_*'s 95/85/75 bands used
+// elsewhere, and from EXCEEDS/MEETS/BELOW (which bands the raw 0-4-scale
+// score at >=4/>=3, not this 0-100 percentage).
+const TRAINER_BAND_COLOR = { Strong: C.green, Solid: C.gold, Priority: C.coral };
+function trainerBand(pct) {
+  if (pct == null) return null;
+  if (pct >= 80) return "Strong";
+  if (pct >= 70) return "Solid";
+  return "Priority";
+}
+function trainerBandColor(pct) {
+  return TRAINER_BAND_COLOR[trainerBand(pct)] || C.muted;
+}
+
+const TRAINER_RATING_STYLE = {
+  EXCEEDS: { bg: "#E4EEE3", color: C.green, label: "Exceeds" },
+  MEETS:   { bg: "#FBF3E3", color: "#A87A1E", label: "Meets" },
+  BELOW:   { bg: "#F5E2DA", color: C.coral, label: "Below" },
+};
+function TrainerRatingBadge({ rating }) {
+  const s = TRAINER_RATING_STYLE[rating];
+  if (!s) return "—";
+  return <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 9, background: s.bg, color: s.color }}>{s.label}</span>;
+}
+
+// Same bar-and-percentage look as Gauge, but 3-tier RAG (trainerBandColor)
+// instead of Gauge's binary target/no-target coloring — the domain summary
+// needs Strong/Solid/Priority, not a single pass/fail line.
+function DomainBar({ label, pct }) {
+  const filled = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+  const color = trainerBandColor(pct);
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+        <span style={{ color: C.text, fontWeight: 600 }}>{label}</span>
+        <span style={{ color, fontWeight: 700 }}>{fmtPct(pct)} · {trainerBand(pct) || "—"}</span>
+      </div>
+      <div style={{ background: C.line, borderRadius: 6, height: 10 }}>
+        <div style={{ width: `${filled}%`, background: color, height: "100%", borderRadius: 6 }} />
+      </div>
+    </div>
+  );
+}
+
 function TrainersTab({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/trainers${buildParams(filters)}`);
   const rows = data?.trainers || [];
+  const byPhase = data?.by_phase || [];
+  const domainDefs = data?.domains || [];
+
+  const nObs = rows.length;
+  const nExceeds = rows.filter((r) => r.rating === "EXCEEDS").length;
+  const nMeets = rows.filter((r) => r.rating === "MEETS").length;
+  const nBelow = rows.filter((r) => r.rating === "BELOW").length;
+
+  // Lowest-first — same read as the reference design: trainers needing
+  // support surface at the top of the register, not buried under the stars.
+  const sortedRows = [...rows].sort((a, b) => (a.score ?? Infinity) - (b.score ?? Infinity));
+
+  // Mean of each trainer's own per-domain average — same aggregation the
+  // backend already does per trainer (see trainer_quality_summary_sql.sql),
+  // just rolled up one more level here instead of in SQL.
+  const domainAverages = domainDefs
+    .map((d) => {
+      const key = `pct_${d.key}`;
+      const vals = rows.map((r) => r[key]).filter((v) => v != null);
+      return { key: d.key, label: d.label, avg: vals.length ? Math.round((vals.reduce((a, v) => a + v, 0) / vals.length) * 10) / 10 : null };
+    })
+    .sort((a, b) => (b.avg ?? -1) - (a.avg ?? -1));
+  const strongestDomain = domainAverages[0];
+  const weakestDomains = [...domainAverages].filter((d) => d.avg != null).sort((a, b) => a.avg - b.avg).slice(0, 2);
 
   function openScoreDrill() {
     const byDistrict = {};
@@ -2902,20 +2972,84 @@ function TrainersTab({ filters }) {
   }
 
   return (
-    <Card title="Trainer quality" subtitle="Observation scores — names shown to staff only" chip="PII" chipTone="pii">
-      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
-        <DataTable
-          columns={[
-            { key: "trainer_name", label: "Trainer" },
-            { key: "venue", label: "Venue" },
-            { key: "district", label: "District" },
-            { key: "rating", label: "Rating" },
-            { key: "score", label: "Score", align: "right", onHeaderClick: openScoreDrill },
-          ]}
-          rows={rows}
-        />
-      </State>
-    </Card>
+    <div>
+      <Grid cols={4}>
+        <KpiTile label="Trainers observed" value={String(nObs)} sub="BC5 TOT + BOOTCAMP_5, cumulative" tag="REAL" />
+        <KpiTile label="Exceeds expectations" value={String(nExceeds)} sub={nObs ? `${Math.round((nExceeds / nObs) * 100)}% of trainers` : undefined} tag="REAL" />
+        <KpiTile label="Meets expectations" value={String(nMeets)} sub={nObs ? `${Math.round((nMeets / nObs) * 100)}% of trainers` : undefined} tag="REAL" />
+        <KpiTile label="Below expectations" value={String(nBelow)} sub={nObs ? (nBelow === 0 ? "none flagged" : `${Math.round((nBelow / nObs) * 100)}% of trainers`) : undefined} tone={nBelow > 0 ? "sim" : "real"} tag="REAL" />
+      </Grid>
+
+      <Card title="BC5 TOT vs BOOTCAMP_5" subtitle="Trainer certification (TOT, before teaching youth) vs in-classroom delivery (BOOTCAMP_5) — same observation-score formula, different phase of the cohort" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && byPhase.length === 0}>
+          <DataTable
+            columns={[
+              { key: "phase", label: "Phase" },
+              { key: "trainers_observed", label: "Trainers observed", align: "right", render: (v) => fmtNum(v) },
+              { key: "pct_overall", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerBandColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+            ]}
+            rows={byPhase}
+          />
+        </State>
+      </Card>
+
+      <Card
+        title="Trainer observation register — who was observed & how they rated"
+        subtitle="Sorted lowest-first — trainers to prioritise for support appear at the top. Click Overall for a district breakdown."
+        chip="PII" chipTone="pii"
+      >
+        <State loading={loading} error={error} empty={!loading && rows.length === 0}>
+          <div style={{ maxHeight: 380, overflowY: "auto" }}>
+            <DataTable
+              columns={[
+                { key: "trainer_name", label: "Trainer" },
+                { key: "venue", label: "Venue" },
+                { key: "district", label: "District" },
+                { key: "pct_overall", label: "Overall", align: "right", onHeaderClick: openScoreDrill, render: (v) => <span style={{ color: trainerBandColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+                { key: "rating", label: "Rating", render: (v) => <TrainerRatingBadge rating={v} /> },
+              ]}
+              rows={sortedRows}
+            />
+          </div>
+        </State>
+      </Card>
+
+      <Card title="Domain summary" subtitle="Mean score across all observed trainers by teaching domain. Green ≥80% · amber 70–79% · red <70%." chip="REAL">
+        <State loading={loading} error={error} empty={!loading && domainAverages.length === 0}>
+          <div style={{ paddingTop: 4 }}>
+            {domainAverages.map((d) => <DomainBar key={d.key} label={d.label} pct={d.avg} />)}
+          </div>
+        </State>
+      </Card>
+
+      <ExecBand num="!" title="The story" />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+        {nObs > 0 && (
+          <Insight tone={nBelow === 0 ? "pos" : nBelow / nObs > 0.1 ? "risk" : "warn"}>
+            <b>{Math.round(((nExceeds + nMeets) / nObs) * 100)}% of observed trainers meet or exceed expectations</b> ({fmtNum(nExceeds)} exceeds, {fmtNum(nMeets)} meets, out of {fmtNum(nObs)}) — {nBelow === 0 ? "none rated Below." : `${fmtNum(nBelow)} rated Below and need follow-up.`}
+          </Insight>
+        )}
+        {weakestDomains.length > 0 && (
+          <Insight tone="warn">
+            <b>{weakestDomains.map((d) => d.label).join(" and ")} score{weakestDomains.length === 1 ? "s" : ""} lowest</b> ({weakestDomains.map((d) => `${fmtPct(d.avg)}`).join(", ")}) across the observed cohort — worth targeting trainer support here specifically rather than delivery mechanics generally.
+          </Insight>
+        )}
+        {strongestDomain && (
+          <Insight tone="neutral">
+            <b>{strongestDomain.label}</b> is the strongest domain cohort-wide at <b>{fmtPct(strongestDomain.avg)}</b>.
+          </Insight>
+        )}
+        {byPhase.length === 2 && byPhase[0].pct_overall != null && byPhase[1].pct_overall != null && Math.abs(byPhase[0].pct_overall - byPhase[1].pct_overall) >= 3 && (() => {
+          const [a, b] = byPhase;
+          const higher = a.pct_overall >= b.pct_overall ? a : b, lower = a.pct_overall >= b.pct_overall ? b : a;
+          return (
+            <Insight tone="neutral">
+              <b>{higher.phase}</b> scores higher on average ({fmtPct(higher.pct_overall)}) than <b>{lower.phase}</b> ({fmtPct(lower.pct_overall)}) — worth checking whether that's a genuine delivery difference or just which trainers have been observed so far in each phase.
+            </Insight>
+          );
+        })()}
+      </div>
+    </div>
   );
 }
 
