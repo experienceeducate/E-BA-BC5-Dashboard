@@ -2201,9 +2201,7 @@ function MobRecruitmentFunnelPage({ filters }) {
   // assigned alongside reached/confirmed for reach/mobilisation rate — has
   // to roll up by district.
   const byDistrict = heatmap.data?.by_district || [];
-  const [venuePage, setVenuePage] = useState(0);
   const [districtCat, setDistrictCat] = useState("All");
-  const [venueCat, setVenueCat] = useState("All");
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2231,7 +2229,7 @@ function MobRecruitmentFunnelPage({ filters }) {
     const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
     const pctFemale = confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null;
     const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
-    return { venue: v.venue, reached, confirmed, pctFemale, target, rate, conversionCategory: categorizeRate(rate), progressPct, category: categorizeRate(progressPct) };
+    return { district: v.district, venue: v.venue, reached, confirmed, pctFemale, target, rate, conversionCategory: categorizeRate(rate), progressPct, category: categorizeRate(progressPct) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
@@ -2256,17 +2254,38 @@ function MobRecruitmentFunnelPage({ filters }) {
   const filteredDistrictRows = (districtCat === "All" ? districtRows : districtRows.filter((d) => d.category === districtCat))
     .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
 
-  // Venue categorisation bands on progress on target (confirmed ÷ target,
-  // venueRows.category), same basis as the district table above.
-  const venueCatCounts = { All: venueRows.length };
-  RATE_CATEGORY_ORDER.forEach((c) => { venueCatCounts[c] = venueRows.filter((v) => v.category === c).length; });
-  const filteredVenueRows = (venueCat === "All" ? venueRows : venueRows.filter((v) => v.category === venueCat))
-    .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
+  // Columns shared by the drill's district (root) and venue (child) rows —
+  // both objects carry these exact same keys, so one column set renders
+  // either grain correctly. Assigned/Reach rate/Mobilisation rate are left
+  // out here even though districtRows has them: venueRows doesn't (no
+  // per-venue Assigned anywhere), and the drill reuses one column set for
+  // both levels.
+  const districtVenueDrillColumns = [
+    { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
+    { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+    { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+    { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+    { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+    { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+  ];
 
-  const venuePageSize = 10;
-  const venueMaxPage = Math.max(0, Math.ceil(filteredVenueRows.length / venuePageSize) - 1);
-  const venuePageClamped = Math.min(venuePage, venueMaxPage);
-  const pagedVenueRows = filteredVenueRows.slice(venuePageClamped * venuePageSize, venuePageClamped * venuePageSize + venuePageSize);
+  // Row click on District performance vs target -> straight into that
+  // district's venues (openAt skips the root list entirely); "‹ Back"
+  // still works, showing all districts in the same column shape.
+  function openDistrictVenueDrill(districtRow) {
+    drill.openAt(
+      {
+        title: "Venue performance",
+        tone: "real", tagLabel: "REAL",
+        rootKey: "district", rootLabel: "District",
+        childKey: "venue", childLabel: "Venue",
+        columns: districtVenueDrillColumns,
+        rootRows: districtRows,
+        getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => b.confirmed - a.confirmed),
+      },
+      districtRow
+    );
+  }
 
   return (
     <div>
@@ -2340,10 +2359,10 @@ function MobRecruitmentFunnelPage({ filters }) {
         </div>
       </State>
 
-      <ExecBand num="◆" title="Performance categorisation — districts and venues vs target (filters)" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0 && venueRows.length === 0}>
+      <ExecBand num="◆" title="Performance categorisation — districts vs target (filters)" />
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0}>
         <Insight tone="neutral">
-          <b>How to use these filters.</b> Click a status to filter the score cards and table below it to just those districts/venues. Click <b>All</b> to reset.
+          <b>How to use these filters.</b> Click a status to filter the table below to just those districts. Click <b>All</b> to reset. Click a district row for its venues.
         </Insight>
 
         <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
@@ -2362,32 +2381,8 @@ function MobRecruitmentFunnelPage({ filters }) {
               { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
             ]}
             rows={filteredDistrictRows}
+            onRowClick={openDistrictVenueDrill}
           />
-        </Card>
-
-        <CategoryFilterTiles counts={venueCatCounts} active={venueCat} onChange={(c) => { setVenueCat(c); setVenuePage(0); }} entityLabelPlural="venues" />
-        <Card title="Venue performance" chip="REAL">
-          <DataTable
-            columns={[
-              { key: "venue", label: "Venue" },
-              { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-              { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
-              { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
-              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
-            ]}
-            rows={pagedVenueRows}
-          />
-          {filteredVenueRows.length > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
-              <span>{venuePageClamped * venuePageSize + 1}–{Math.min(filteredVenueRows.length, venuePageClamped * venuePageSize + venuePageSize)} of {filteredVenueRows.length}</span>
-              <span style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => setVenuePage(Math.max(0, venuePageClamped - 1))} disabled={venuePageClamped === 0} style={{ ...PAGER_BTN, opacity: venuePageClamped === 0 ? 0.5 : 1 }}>‹ Prev</button>
-                <button onClick={() => setVenuePage(Math.min(venueMaxPage, venuePageClamped + 1))} disabled={venuePageClamped === venueMaxPage} style={{ ...PAGER_BTN, opacity: venuePageClamped === venueMaxPage ? 0.5 : 1 }}>Next ›</button>
-              </span>
-            </div>
-          )}
         </Card>
       </State>
     </div>
