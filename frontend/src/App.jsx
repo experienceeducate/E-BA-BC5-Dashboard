@@ -3240,7 +3240,7 @@ function FilterBar({ filters, setFilters, options }) {
         {(options.cohorts || []).map((c) => <option key={c} value={c}>{c}</option>)}
       </select>
       <button style={{ fontSize: 11.5, fontWeight: 700, padding: "6px 12px", border: "none", borderRadius: 4, background: C.gold, color: C.ink, cursor: "pointer" }}
-        onClick={() => setFilters({ district: "", gender: "", cohort: "" })}>Reset</button>
+        onClick={() => setFilters({ district: "", gender: "", cohort: "BOOTCAMP_5" })}>Reset</button>
       <span style={{ color: "#9FB0BF", fontSize: 11, marginLeft: "auto" }}>Filters apply to every page</span>
     </div>
   );
@@ -3299,7 +3299,10 @@ export default function App() {
   const [userLoading, setUserLoading] = useState(!!token);
   const [groupIdx, setGroupIdx] = useState(() => Number(sessionStorage.getItem("eba_group") || 0));
   const [tabKey, setTabKey] = useState(() => sessionStorage.getItem("eba_tab") || "guide-main");
-  const [filters, setFilters] = useState({ district: "", gender: "", cohort: "" });
+  // Defaults to BOOTCAMP_5 — the current cohort — so every page across the
+  // dashboard opens on its performance first; "All cohorts" (or BOOTCAMP_4)
+  // is still one dropdown selection away for anyone who wants it.
+  const [filters, setFilters] = useState({ district: "", gender: "", cohort: "BOOTCAMP_5" });
   const [options, setOptions] = useState({});
   const [demoMode, setDemoMode] = useState(false);
 
