@@ -182,12 +182,21 @@ _TRAINER_DOMAIN_COLUMNS = [
 ]
 
 
-def _trainer_where(district, prefix):
+_TRAINER_PHASE_WINDOW = {
+    "BC5 TOT": (TRAINER_TOT_START_DATE, TRAINER_TOT_END_DATE),
+    "BOOTCAMP_5": (TRAINER_BOOTCAMP_START_DATE, TRAINER_BOOTCAMP_END_DATE),
+}
+
+
+def _trainer_where(district, prefix, phase=None):
+    """phase=None spans the full TOT+BOOTCAMP_5 window (both phases); a
+    specific phase narrows to just that phase's own date range."""
+    start, end = _TRAINER_PHASE_WINDOW.get(phase, (TRAINER_TOT_START_DATE, TRAINER_BOOTCAMP_END_DATE))
     return build_where(
         districts=district, prefix=prefix, district_col="district_name",
         extra=[(
             f"DATE(submission_date) BETWEEN @{prefix}_start AND @{prefix}_end",
-            [_scalar(f"{prefix}_start", "DATE", TRAINER_TOT_START_DATE), _scalar(f"{prefix}_end", "DATE", TRAINER_BOOTCAMP_END_DATE)],
+            [_scalar(f"{prefix}_start", "DATE", start), _scalar(f"{prefix}_end", "DATE", end)],
         )],
     )
 
@@ -196,20 +205,27 @@ def _trainer_where(district, prefix):
 def trainers(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
+    phase: Optional[str] = Query(None, description="'BC5 TOT' or 'BOOTCAMP_5' — omit for both"),
 ):
     """Trainer observation scores + the seven E! teaching-domain percentages,
     plus a BC5 TOT vs BOOTCAMP_5 phase breakdown. Names masked to initials
     for the guest role.
 
     Backed by the live TRAINER_OBSERVATIONS raw lesson-observation export
-    (see tables.py — no bootcamp_cycle column, scoped by report_type + the
-    TOT+BOOTCAMP_5 date window instead). rating is a MEETS/EXCEEDS/BELOW band
+    (see tables.py — no bootcamp_cycle column, scoped by report_type + a
+    date window instead: the full TOT+BOOTCAMP_5 span by default, or just
+    one phase's own range when `phase` narrows it — TOT (trainer
+    certification, before teaching youth) and BOOTCAMP_5 (in-classroom
+    delivery) are conceptually distinct populations, not just a date split,
+    which is why this is a page-level phase selector on Trainer Quality
+    rather than the app-wide cohort filter (no other live table has a
+    "BC5 TOT" bootcamp_cycle value). rating is a MEETS/EXCEEDS/BELOW band
     on the average overall_average_class_observation_score, per the
     recruitment team's reference query (trainer_quality_summary_sql.sql).
     """
     domain_select = ",\n      ".join(f"AVG(CAST({col} AS FLOAT64)) AS pct_{key}" for key, col, _label in _TRAINER_DOMAIN_COLUMNS)
 
-    where, params = _trainer_where(district, "tq")
+    where, params = _trainer_where(district, "tq", phase)
     sql = f"""
     SELECT
       trainer_name,
