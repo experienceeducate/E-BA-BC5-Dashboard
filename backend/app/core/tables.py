@@ -13,7 +13,7 @@ Naming discipline: the *product* is "E!BA Dashboard" (E!BA Recruitment) in the U
 the data layer keeps the same neutral `eba_` prefix. Do not rename tables to match UI copy.
 """
 
-from app.core.database import PROJECT_ID, DATASET, TABLE, _scalar
+from app.core.database import PROJECT_ID, DATASET, TABLE, _array, _scalar
 
 # Primary summary table (BQ_TABLE default = eba_recruitment_funnel).
 FULL_TABLE = f"`{PROJECT_ID}`.{DATASET}.{TABLE}"
@@ -22,12 +22,11 @@ _GOLD   = f"`{PROJECT_ID}`.gold_eba"
 _SILVER = f"`{PROJECT_ID}`.silver_eba"
 
 # ─── Live tables (confirmed against real BigQuery schemas) ─────────────────────
-# Cohort values in these tables are "BOOTCAMP_2".."BOOTCAMP_4" / "MINI_BOOTCAMP_3",
-# not "BC2".."BC5". The BC5 cycle isn't in the data yet, so every live-table query
-# below is pinned to the current active cycle rather than exposing the frontend's
-# BC2..BC5 cohort filter (which doesn't apply to these tables). To move onto BC5
-# once it lands, flip this one constant — nothing else needs to change.
-ACTIVE_COHORT = "BOOTCAMP_4"
+# Cohort values in these tables are "BOOTCAMP_2".."BOOTCAMP_5" / "MINI_BOOTCAMP_3",
+# not "BC2".."BC5". Every live-table query below is pinned to this list of active
+# cycles rather than exposing the frontend's BC2..BC5 cohort filter (which doesn't
+# apply to these tables). Add/remove a cycle here — nothing else needs to change.
+ACTIVE_COHORTS = ["BOOTCAMP_4", "BOOTCAMP_5"]
 
 # Awareness: district-level daily rollup — registered/interested/eligible counts
 # (+ female/male splits) per mobiliser/day/district. Backs /api/recruitment/awareness.
@@ -69,11 +68,19 @@ DAILY_ACQUISITION_SUMMARY = f"{_GOLD}.eba_bootcamp_daily_acquisition_summary"
 # at the mobilisation stage — they never go through daily_acquisition_summary's
 # call-center reach/confirm process at all, so they must be added on top of
 # that table's "confirmed" count, not looked up inside it. Per-cohort because
-# the recruitment team confirmed BC5 will have an equivalent pilot area with
-# different subcounties — update this dict (don't just overwrite BOOTCAMP_4's
-# list) once that guidance lands.
+# each cycle's pilot area has different subcounties — update this dict (don't
+# just overwrite an existing cycle's list) if a new one is confirmed.
 AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT = {
     "BOOTCAMP_4": ["IGOMBE", "NANKOMA"],
+}
+
+# BOOTCAMP_5's 2.5-week pilot isn't subcounty-scoped like BC4's — per Afra
+# (2026-07-25), any youth registered on/after this date counts as the
+# short-cycle pilot instead. TEMPORARY: a source-table flag distinguishing the
+# 2.5-week cohort is being added upstream — once that lands and Afra notifies,
+# replace this date cutoff with a filter on that flag instead.
+AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT = {
+    "BOOTCAMP_5": "2026-07-27",
 }
 
 # Site-level funnel: venue×gender×cycle grain — arrival verification (verified/
@@ -108,8 +115,8 @@ ATTENDANCE_SUMMARY = f"{_GOLD}.eba_bootcamp_attendance_summary"
 # and the current v2 tool's 0-4 overall_average_class_observation_score) in the
 # same table, so rows are scoped to the current cohort by report_type + a
 # submission-date window instead (per the recruitment team's reference query,
-# trainer_quality_summary_sql.sql). Update the window alongside ACTIVE_COHORT
-# when BC5 lands. Backs /api/implementation/trainers.
+# trainer_quality_summary_sql.sql). Update the window alongside ACTIVE_COHORTS
+# once BC5 trainer-quality data lands. Backs /api/implementation/trainers.
 TRAINER_OBSERVATIONS         = f"{_SILVER}.raw_eba_2025_monitoring_tool_v2_ug"
 ACTIVE_COHORT_START_DATE     = "2026-05-06"
 ACTIVE_COHORT_END_DATE       = "2026-05-30"
@@ -212,10 +219,31 @@ CONTROL_CALLS_BC4 = f"{_SILVER}.eba_bc4_control_calls"
 ACQUISITION_CALL_LOG = f"{_SILVER}.eba_bootcamp_acquisition"
 
 
-def active_cohort_clause(prefix: str):
-    """(clause, params) pinning bootcamp_cycle to ACTIVE_COHORT for a live-table
-    query. Splice into build_where(extra=[...]). See the ACTIVE_COHORT comment."""
-    return f"bootcamp_cycle = @{prefix}_cycle", [_scalar(f"{prefix}_cycle", "STRING", ACTIVE_COHORT)]
+def resolve_active_cohorts(requested: list = None) -> list:
+    """The cycles a live-table query should scope to: `requested` (the
+    frontend's cohort filter selection) when given and non-empty, else the
+    default ACTIVE_COHORTS set.
+
+    `requested` is trusted as-is rather than intersected against
+    ACTIVE_COHORTS — the filter dropdown's cohort options now come from a
+    live `SELECT DISTINCT bootcamp_cycle` (see /api/filters), which can
+    include cohorts outside ACTIVE_COHORTS (e.g. BOOTCAMP_2/3), so filtering
+    a real user selection down to just the BC4/5 default would silently
+    ignore it. Values are always passed as a BigQuery query parameter
+    (never string-interpolated), so there's no injection risk in trusting
+    an unrecognized string here — it just matches zero rows."""
+    cleaned = [c for c in (requested or []) if c]
+    return cleaned or ACTIVE_COHORTS
+
+
+def active_cohort_clause(prefix: str, requested: list = None):
+    """(clause, params) restricting bootcamp_cycle to resolve_active_cohorts(requested)
+    for a live-table query. Splice into build_where(extra=[...]). See the
+    ACTIVE_COHORTS comment."""
+    return (
+        f"bootcamp_cycle IN UNNEST(@{prefix}_cycle)",
+        [_array(f"{prefix}_cycle", "STRING", resolve_active_cohorts(requested))],
+    )
 
 # ─── gold_eba — aggregated marts (scaffold — BC5 feed not live yet) ────────────
 RECRUITMENT_FUNNEL   = f"{_GOLD}.eba_recruitment_funnel"      # TODO: confirm — district×gender×stage×cohort counts

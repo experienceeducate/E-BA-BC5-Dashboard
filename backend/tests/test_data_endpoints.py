@@ -1,7 +1,7 @@
 """Data endpoints reshape mocked BigQuery rows correctly and hit the run_query seam.
 
 /api/overview/funnel and /api/overview/kpis now span three live tables
-(AWARENESS_SUMMARY, DAILY_ACQUISITION_SUMMARY, SITE_FUNNEL_METRICS — see
+(AWARENESS_SUMMARY, DAILY_ACQUISITION_SUMMARY, SITE_FUNNEL_METRICS -- see
 _stage_counts in app/routers/overview.py), so these tests use set_side_effect
 to hand back the right shape per table rather than one set_rows() for a single
 query.
@@ -11,13 +11,22 @@ from app.core.tables import AWARENESS_SUMMARY, FUNNEL_STAGES
 
 
 def test_filters_shape(as_staff, mock_run_query):
-    # get_filters is a single UNION query across two tables in one run_query call.
-    mock_run_query.set_rows([{"district": "BUGIRI"}, {"district": "BUGWERI"}])
+    # get_filters unions DISTINCT values across every live table for each of
+    # district/cohort/gender -- three run_query calls total (one big UNION
+    # DISTINCT per dimension), every row aliased AS v. Distinguish by which
+    # column each dimension's UNION references.
+    def side_effect(sql, params, role):
+        if "bootcamp_cycle" in sql:
+            return [{"v": "BOOTCAMP_2"}, {"v": "BOOTCAMP_4"}, {"v": "BOOTCAMP_5"}]
+        if "gender" in sql:
+            return [{"v": "FEMALE"}, {"v": "MALE"}]
+        return [{"v": "BUGIRI"}, {"v": "BUGWERI"}]
+    mock_run_query.set_side_effect(side_effect)
     r = as_staff.get("/api/filters")
     assert r.status_code == 200
     assert r.json()["districts"] == ["BUGIRI", "BUGWERI"]
     assert r.json()["genders"] == ["FEMALE", "MALE"]
-    assert r.json()["cohorts"] == ["BOOTCAMP_4"]
+    assert r.json()["cohorts"] == ["BOOTCAMP_2", "BOOTCAMP_4", "BOOTCAMP_5"]
 
 
 def test_overview_funnel_orders_and_computes_pct(as_staff, mock_run_query):

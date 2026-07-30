@@ -68,7 +68,7 @@ def arrival(
 def attendance(
     user: User = Depends(current_user),
     venue: List[str] = Query(default=[]),
-    cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORTS
 ):
     """Daily attendance & churn.
 
@@ -98,7 +98,7 @@ def attendance(
 def retention(
     user: User = Depends(current_user),
     venue: List[str] = Query(default=[]),
-    cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORTS
 ):
     """Acquired -> activated -> retained per venue, against activation/retention targets.
 

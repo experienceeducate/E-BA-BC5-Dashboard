@@ -18,7 +18,7 @@ from app.core.tables import (
     RECRUITMENT_FUNNEL,
     FUNNEL_STAGES,
     NOT_TEST_DATA,
-    ACTIVE_COHORT,
+    ACTIVE_COHORTS,
     AWARENESS_SUMMARY,
     AWARENESS_MEASURE_ACTUAL,
     AWARENESS_MEASURE_TARGET,
@@ -29,8 +29,14 @@ from app.core.tables import (
     SITE_FUNNEL_MEASURE_TARGET,
     SITE_FUNNEL_MEASURE_ACTUAL,
     AWARENESS_KYC,
+    ACQUISITION_CALL_LOG,
+    ATTENDANCE_SUMMARY,
+    CONTROL_CALLS_BC4,
+    RETENTION_ATTENDANCE_RAW,
     AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT,
+    AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT,
     active_cohort_clause,
+    resolve_active_cohorts,
 )
 
 router = APIRouter()
@@ -49,34 +55,63 @@ def _filter_extra(cohort, prefix):
     return extra
 
 
-def _auto_confirmed_count(district, gender, role):
-    """Eligible + treatment-assigned youth from this cohort's short-cycle pilot
-    subcounties (see AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT in tables.py) — added
-    on top of DAILY_ACQUISITION_SUMMARY's confirmed count, never looked up
-    inside it (they bypass its call-center process entirely)."""
-    subcounties = AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT.get(ACTIVE_COHORT)
-    if not subcounties:
-        return 0
-    where, params = build_where(
-        districts=district, gender=gender,
-        extra=[active_cohort_clause("acf")], prefix="acf",
-        district_col="youth_district", gender_col="youth_gender",
-    )
-    sql = f"""
-    SELECT COUNT(*) AS n FROM {AWARENESS_KYC}
-    WHERE {where} AND elligible = TRUE AND is_treatment = TRUE
-      AND UPPER(youth_subcounty) IN UNNEST(@acf_subcounties)
-    """
-    params = params + [_array("acf_subcounties", "STRING", subcounties)]
-    return (database.run_query(sql, params, role=role) or [{}])[0].get("n") or 0
+def _auto_confirmed_count(district, gender, role, cohort=None):
+    """Youth auto-confirmed by policy as part of a cohort's short-cycle
+    ("2.5-week") pilot — bypassing DAILY_ACQUISITION_SUMMARY's call-center
+    reach/confirm process entirely, so added on top of that table's confirmed
+    count, never looked up inside it. Summed across resolve_active_cohorts(cohort)
+    (the requested cohort filter, or every cycle in ACTIVE_COHORTS when none is
+    given); each cycle's pilot is scoped by whichever mechanism tables.py has
+    on file for it — BOOTCAMP_4 by subcounty (AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT),
+    BOOTCAMP_5 by registration date (AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT,
+    temporary — see tables.py)."""
+    total = 0
+    for cycle in resolve_active_cohorts(cohort):
+        subcounties = AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT.get(cycle)
+        since_date = AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT.get(cycle)
+        if subcounties:
+            where, params = build_where(
+                districts=district, gender=gender,
+                extra=[(f"bootcamp_cycle = @acf_cycle", [_scalar("acf_cycle", "STRING", cycle)])],
+                prefix="acf", district_col="youth_district", gender_col="youth_gender",
+            )
+            sql = f"""
+            SELECT COUNT(*) AS n FROM {AWARENESS_KYC}
+            WHERE {where} AND elligible = TRUE AND is_treatment = TRUE
+              AND UPPER(youth_subcounty) IN UNNEST(@acf_subcounties)
+            """
+            params = params + [_array("acf_subcounties", "STRING", subcounties)]
+            total += (database.run_query(sql, params, role=role) or [{}])[0].get("n") or 0
+        elif since_date:
+            g = (gender or "").strip().lower()
+            reg_col = (
+                "total_registered_female" if g == "female"
+                else "total_registered_male" if g == "male"
+                else "total_registered_youth"
+            )
+            where, params = build_where(
+                districts=district,
+                extra=[(f"bootcamp_cycle = @acfd_cycle", [_scalar("acfd_cycle", "STRING", cycle)])],
+                prefix="acfd", district_col="youth_district",
+            )
+            sql = f"""
+            SELECT SUM({reg_col}) AS n FROM {AWARENESS_SUMMARY}
+            WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+              AND report_date >= @acfd_since
+            """
+            params = params + [_scalar("acfd_since", "DATE", since_date)]
+            total += (database.run_query(sql, params, role=role) or [{}])[0].get("n") or 0
+    return total
 
 
-def _stage_counts(district, gender, role):
+def _stage_counts(district, gender, role, cohort=None):
     """The full Registered..Retained funnel spans three live tables (no single
     fact table covers it) — see app/core/tables.py. Query each and merge by
     stage. `gender`, when given, filters AWARENESS_SUMMARY by selecting its
     female/male columns and filters the other two tables' per-row gender
-    column; when omitted all three return their unfiltered totals."""
+    column; when omitted all three return their unfiltered totals. `cohort`
+    restricts bootcamp_cycle to the requested selection (see
+    resolve_active_cohorts) instead of the full ACTIVE_COHORTS set."""
     g = (gender or "").strip().lower()
     if g == "female":
         reg_col, int_col, elig_col = "total_registered_female", "total_interested_female", "total_eligible_female"
@@ -86,7 +121,7 @@ def _stage_counts(district, gender, role):
         reg_col, int_col, elig_col = "total_registered_youth", "total_interested_youth", "total_eligible_youth"
 
     aw_where, aw_params = build_where(
-        districts=district, extra=[active_cohort_clause("scaw")], prefix="scaw",
+        districts=district, extra=[active_cohort_clause("scaw", requested=cohort)], prefix="scaw",
         district_col="youth_district",
     )
     aw_sql = f"""
@@ -100,7 +135,7 @@ def _stage_counts(district, gender, role):
     # split available); reached/confirmed come from the real 'daily_aggregates'
     # rows, which are gender-filterable.
     moa_where, moa_params = build_where(
-        districts=district, extra=[active_cohort_clause("scmoa")], prefix="scmoa",
+        districts=district, extra=[active_cohort_clause("scmoa", requested=cohort)], prefix="scmoa",
         district_col="agent_district",
     )
     preload_assigned = (database.run_query(
@@ -109,7 +144,7 @@ def _stage_counts(district, gender, role):
         moa_params, role=role) or [{}])[0].get("assigned") or 0
 
     mor_where, mor_params = build_where(
-        districts=district, gender=gender, extra=[active_cohort_clause("scmor")], prefix="scmor",
+        districts=district, gender=gender, extra=[active_cohort_clause("scmor", requested=cohort)], prefix="scmor",
         district_col="agent_district", gender_col="youth_gender",
     )
     # Read into fresh locals rather than mutating the row dict in place — it
@@ -121,7 +156,7 @@ def _stage_counts(district, gender, role):
         mor_params, role=role) or [{}])[0]
     # Auto-confirmed pilot-subcounty youth never entered the preload list
     # either — added onto both assigned and confirmed (see tables.py).
-    auto_confirmed = _auto_confirmed_count(district, gender, role)
+    auto_confirmed = _auto_confirmed_count(district, gender, role, cohort)
     mo = {
         "assigned": preload_assigned + auto_confirmed,
         "reached": mo_row.get("reached") or 0,
@@ -129,7 +164,7 @@ def _stage_counts(district, gender, role):
     }
 
     sf_where, sf_params = build_where(
-        districts=district, gender=gender, extra=[active_cohort_clause("scsf")], prefix="scsf",
+        districts=district, gender=gender, extra=[active_cohort_clause("scsf", requested=cohort)], prefix="scsf",
     )
     sf_sql = f"""
     SELECT SUM(IF(measure = '{SITE_FUNNEL_MEASURE_TARGET}', total_verified_youth, 0)) AS verified,
@@ -156,31 +191,59 @@ def _stage_counts(district, gender, role):
 
 @router.get("/api/filters")
 def get_filters(user: User = Depends(current_user)):
-    """Distinct filter options for the global filter bar (district / gender / cohort).
+    """Universal filter options for the global filter bar (district / gender /
+    cohort) — every option queried live from BigQuery, nothing hardcoded.
 
-    Districts come from the youth-facing live tables (AWARENESS_SUMMARY,
-    SITE_FUNNEL_METRICS) — DAILY_ACQUISITION_SUMMARY's agent_district is
-    excluded here since it's the *calling agent's* location (includes
-    non-Busoga districts like Jinja/Mbarara), not the youth's. Genders and
-    cohorts aren't queried: gender is a fixed Female/Male dimension, and cohort
-    is pinned to ACTIVE_COHORT (see tables.py) until BC5 lands.
+    district is sourced from DAILY_ACQUISITION_SUMMARY.agent_district alone,
+    not unioned across every table that happens to carry a district-shaped
+    column. That table is the one already driving every district filter on
+    the Mobilisation tab and is treated as the canonical list of Busoga
+    districts of operation; other tables' district-ish columns (youth_district
+    on per-youth tables, "district" on SITE_FUNNEL_METRICS/CONTROL_CALLS_BC4)
+    have carried out-of-region values (e.g. a youth's recorded home district
+    landing outside Busoga), which a union would surface as if they were
+    operational districts. gender/cohort still union across every table that
+    carries them — those columns aren't prone to the same drift.
     """
-    cycle_param = _scalar("cycle", "STRING", ACTIVE_COHORT)
-    sql = f"""
-    SELECT DISTINCT UPPER(youth_district) AS district
-    FROM {AWARENESS_SUMMARY}
-    WHERE bootcamp_cycle = @cycle AND youth_district IS NOT NULL AND UPPER(youth_district) != 'UNKNOWN'
-    UNION DISTINCT
-    SELECT DISTINCT UPPER(district) AS district
-    FROM {SITE_FUNNEL_METRICS}
-    WHERE bootcamp_cycle = @cycle AND district IS NOT NULL
-    ORDER BY district
-    """
-    rows = database.run_query(sql, [cycle_param], role=user.role)
+    district_sources = [
+        (DAILY_ACQUISITION_SUMMARY, "agent_district"),
+    ]
+    cohort_sources = [
+        (AWARENESS_SUMMARY, "bootcamp_cycle"),
+        (SITE_FUNNEL_METRICS, "bootcamp_cycle"),
+        (AWARENESS_KYC, "bootcamp_cycle"),
+        (DAILY_ACQUISITION_SUMMARY, "bootcamp_cycle"),
+        (ACQUISITION_CALL_LOG, "bootcamp_cycle"),
+        (ATTENDANCE_SUMMARY, "bootcamp_cycle"),
+    ]
+    gender_sources = [
+        (AWARENESS_KYC, "youth_gender"),
+        (DAILY_ACQUISITION_SUMMARY, "youth_gender"),
+        (SITE_FUNNEL_METRICS, "gender"),
+        (CONTROL_CALLS_BC4, "gender"),
+        (RETENTION_ATTENDANCE_RAW, "youth_gender"),
+    ]
+
+    def _union_distinct(sources, upper=True):
+        expr = "UPPER({col})" if upper else "{col}"
+        parts = [
+            f"SELECT DISTINCT {expr.format(col=col)} AS v FROM {table} WHERE {col} IS NOT NULL"
+            for table, col in sources
+        ]
+        sql = " UNION DISTINCT ".join(parts) + " ORDER BY v"
+        return [r["v"] for r in database.run_query(sql, role=user.role)]
+
+    districts = [d for d in _union_distinct(district_sources) if d and d != "UNKNOWN"]
+    # Cohort values are already a consistent "BOOTCAMP_4" style enum (see
+    # tables.py) — no UPPER() here so a real value is never altered from what
+    # active_cohort_clause's exact-match `IN UNNEST(@cycle)` expects.
+    cohorts = _union_distinct(cohort_sources, upper=False) or ACTIVE_COHORTS
+    genders = _union_distinct(gender_sources) or ["FEMALE", "MALE"]
+
     return {
-        "districts": [r["district"] for r in rows],
-        "genders": ["FEMALE", "MALE"],
-        "cohorts": [ACTIVE_COHORT],
+        "districts": districts,
+        "genders": genders,
+        "cohorts": cohorts,
     }
 
 
@@ -189,10 +252,10 @@ def overview_funnel(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     gender:   Optional[str] = Query(None),
-    cohort:   List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort:   List[str] = Query(default=[]),
 ):
     """Stage-by-stage funnel counts with % of previous stage and youth lost."""
-    by_stage = _stage_counts(district, gender, user.role)
+    by_stage = _stage_counts(district, gender, user.role, cohort)
     ordered = sorted(
         ({"stage": s, "count": c} for s, c in by_stage.items()),
         key=lambda r: _STAGE_ORDER.get(r["stage"], 999),
@@ -217,10 +280,10 @@ def overview_kpis(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     gender:   Optional[str] = Query(None),
-    cohort:   List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort:   List[str] = Query(default=[]),
 ):
     """Headline conversion KPIs derived from the funnel counts."""
-    by_stage = _stage_counts(district, gender, user.role)
+    by_stage = _stage_counts(district, gender, user.role, cohort)
 
     def rate(numerator, denominator):
         n, d = by_stage.get(numerator, 0), by_stage.get(denominator, 0)
@@ -242,7 +305,7 @@ def overview_kpis(
 def overview_gender(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
-    cohort:   List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort:   List[str] = Query(default=[]),
 ):
     """Female / male share of each funnel stage, against the 60% female target.
 
@@ -251,7 +314,7 @@ def overview_gender(
     each table is queried once with an explicit female/male breakdown.
     """
     aw_where, aw_params = build_where(
-        districts=district, extra=[active_cohort_clause("gnaw")], prefix="gnaw",
+        districts=district, extra=[active_cohort_clause("gnaw", requested=cohort)], prefix="gnaw",
         district_col="youth_district",
     )
     aw_sql = f"""
@@ -264,7 +327,7 @@ def overview_gender(
     aw = (database.run_query(aw_sql, aw_params, role=user.role) or [{}])[0]
 
     mo_where, mo_params = build_where(
-        districts=district, extra=[active_cohort_clause("gnmo")], prefix="gnmo",
+        districts=district, extra=[active_cohort_clause("gnmo", requested=cohort)], prefix="gnmo",
         district_col="agent_district",
     )
     # "assigned" (preload_youth) has no gender breakdown at all in this table
@@ -281,26 +344,48 @@ def overview_gender(
     # or an additive change would compound on every cache hit.
     mo_by_gender = {r["g"]: r for r in database.run_query(mo_sql, mo_params, role=user.role)}
 
-    # Auto-confirmed pilot-subcounty youth (see _auto_confirmed_count) do have
-    # gender on record, unlike "assigned" — added onto Confirmed by gender below.
+    # Auto-confirmed pilot youth (see _auto_confirmed_count) do have gender on
+    # record, unlike "assigned" — added onto Confirmed by gender below. Summed
+    # per-gender across resolve_active_cohorts(cohort), same per-cycle dispatch
+    # (subcounty vs registration-date) as _auto_confirmed_count.
     acf_by_gender = {}
-    auto_confirm_subcounties = AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT.get(ACTIVE_COHORT)
-    if auto_confirm_subcounties:
-        acf_where, acf_params = build_where(
-            districts=district, extra=[active_cohort_clause("gnacf")], prefix="gnacf",
-            district_col="youth_district",
-        )
-        acf_sql = f"""
-        SELECT UPPER(youth_gender) AS g, COUNT(*) AS n FROM {AWARENESS_KYC}
-        WHERE {acf_where} AND elligible = TRUE AND is_treatment = TRUE
-          AND UPPER(youth_subcounty) IN UNNEST(@gnacf_subcounties)
-        GROUP BY g
-        """
-        acf_params = acf_params + [_array("gnacf_subcounties", "STRING", auto_confirm_subcounties)]
-        acf_by_gender = {r["g"]: r.get("n") or 0 for r in database.run_query(acf_sql, acf_params, role=user.role)}
+    for cycle in resolve_active_cohorts(cohort):
+        subcounties = AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT.get(cycle)
+        since_date = AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT.get(cycle)
+        if subcounties:
+            acf_where, acf_params = build_where(
+                districts=district,
+                extra=[(f"bootcamp_cycle = @gnacf_cycle", [_scalar("gnacf_cycle", "STRING", cycle)])],
+                prefix="gnacf", district_col="youth_district",
+            )
+            acf_sql = f"""
+            SELECT UPPER(youth_gender) AS g, COUNT(*) AS n FROM {AWARENESS_KYC}
+            WHERE {acf_where} AND elligible = TRUE AND is_treatment = TRUE
+              AND UPPER(youth_subcounty) IN UNNEST(@gnacf_subcounties)
+            GROUP BY g
+            """
+            acf_params = acf_params + [_array("gnacf_subcounties", "STRING", subcounties)]
+            for r in database.run_query(acf_sql, acf_params, role=user.role):
+                acf_by_gender[r["g"]] = acf_by_gender.get(r["g"], 0) + (r.get("n") or 0)
+        elif since_date:
+            acfd_where, acfd_params = build_where(
+                districts=district,
+                extra=[(f"bootcamp_cycle = @gnacfd_cycle", [_scalar("gnacfd_cycle", "STRING", cycle)])],
+                prefix="gnacfd", district_col="youth_district",
+            )
+            acfd_sql = f"""
+            SELECT SUM(total_registered_female) AS f, SUM(total_registered_male) AS m
+            FROM {AWARENESS_SUMMARY}
+            WHERE {acfd_where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+              AND report_date >= @gnacfd_since
+            """
+            acfd_params = acfd_params + [_scalar("gnacfd_since", "DATE", since_date)]
+            row = (database.run_query(acfd_sql, acfd_params, role=user.role) or [{}])[0]
+            acf_by_gender["FEMALE"] = acf_by_gender.get("FEMALE", 0) + (row.get("f") or 0)
+            acf_by_gender["MALE"] = acf_by_gender.get("MALE", 0) + (row.get("m") or 0)
 
     sf_where, sf_params = build_where(
-        districts=district, extra=[active_cohort_clause("gnsf")], prefix="gnsf",
+        districts=district, extra=[active_cohort_clause("gnsf", requested=cohort)], prefix="gnsf",
     )
     # No per-gender VERIFIED figure exists — total_verified_youth only lives on
     # the genderless 'site_targets' rows (see tables.py's SITE_FUNNEL_METRICS
@@ -355,6 +440,7 @@ def stage_progress(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     gender:   Optional[str] = Query(None),
+    cohort:   List[str] = Query(default=[]),
 ):
     """Each stage's count against a target: registration_target for
     Registered/Interested/Eligible, mobilisation_target for
@@ -363,10 +449,10 @@ def stage_progress(
     their target is implied from docs/metrics.yaml's rate targets (90%/85%)
     applied to their own denominator — flagged via `target_is_implied`.
     """
-    by_stage = _stage_counts(district, gender, user.role)
+    by_stage = _stage_counts(district, gender, user.role, cohort)
 
     aw_where, aw_params = build_where(
-        districts=district, extra=[active_cohort_clause("spaw")], prefix="spaw",
+        districts=district, extra=[active_cohort_clause("spaw", requested=cohort)], prefix="spaw",
         district_col="youth_district",
     )
     aw_target = (database.run_query(
@@ -377,7 +463,7 @@ def stage_progress(
     # mobilisation_target has no gender breakdown (only the 'targets' rows
     # carry it, and those have no gender column at all — see tables.py).
     mo_where, mo_params = build_where(
-        districts=district, extra=[active_cohort_clause("spmo")], prefix="spmo",
+        districts=district, extra=[active_cohort_clause("spmo", requested=cohort)], prefix="spmo",
         district_col="agent_district",
     )
     mo_target = (database.run_query(
@@ -386,7 +472,7 @@ def stage_progress(
         mo_params, role=user.role) or [{}])[0].get("t") or 0
 
     sf_where, sf_params = build_where(
-        districts=district, gender=gender, extra=[active_cohort_clause("spsf")], prefix="spsf",
+        districts=district, gender=gender, extra=[active_cohort_clause("spsf", requested=cohort)], prefix="spsf",
     )
     sf_target = (database.run_query(
         f"SELECT SUM(acquisition_target) AS t FROM {SITE_FUNNEL_METRICS} WHERE {sf_where}",
@@ -419,7 +505,7 @@ def stage_progress(
 def eligibility_barriers(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
-    cohort:   List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORT
+    cohort:   List[str] = Query(default=[]),
 ):
     """Among reached youth who did not qualify, which criteria they failed.
 
@@ -432,7 +518,7 @@ def eligibility_barriers(
     prototype, which only had an illustrative ~12% estimate for prior training).
     """
     where, params = build_where(
-        districts=district, extra=[active_cohort_clause("eb")], prefix="eb",
+        districts=district, extra=[active_cohort_clause("eb", requested=cohort)], prefix="eb",
         district_col="youth_district",
     )
     sql = f"""
@@ -496,7 +582,7 @@ def cohort_comparison(user: User = Depends(current_user)):
     """Cycle-by-cycle side-by-side: eligible / acquired / female share / overall
     conversion. Unlike every other overview endpoint this deliberately spans
     ALL bootcamp cycles (BOOTCAMP_2..4, MINI_BOOTCAMP_3) rather than pinning to
-    ACTIVE_COHORT — that's the point of a comparison view. registered/eligible
+    ACTIVE_COHORTS — that's the point of a comparison view. registered/eligible
     come from AWARENESS_SUMMARY, acquired/female share from SITE_FUNNEL_METRICS
     (no single live table spans both)."""
     aw_sql = f"""
