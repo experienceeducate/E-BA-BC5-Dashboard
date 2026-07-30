@@ -2218,11 +2218,20 @@ function MobRecruitmentFunnelPage({ filters }) {
     });
   }
 
+  // `target` comes from a hardcoded per-venue list (see VENUE_MOBILISATION_
+  // TARGET in tables.py — BigQuery has no real per-venue target). `rate`/
+  // `conversionCategory` (confirmed ÷ reached — call-center conversion) drive
+  // the Insights section below unchanged; `progressPct`/`category` (confirmed
+  // ÷ target) are a distinct signal that drives the categorisation table's
+  // filtering/Status instead, same basis as the district table. No per-venue
+  // "assigned" exists in that list or anywhere else, so Reach rate/
+  // Mobilisation rate (both ÷ assigned) can't be shown for venues.
   const venueRows = byVenue.map((v) => {
-    const reached = v.reached || 0, confirmed = v.confirmed || 0;
+    const reached = v.reached || 0, confirmed = v.confirmed || 0, target = v.target ?? null;
     const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
     const pctFemale = confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null;
-    return { venue: v.venue, reached, confirmed, pctFemale, rate, category: categorizeRate(rate) };
+    const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
+    return { venue: v.venue, reached, confirmed, pctFemale, target, rate, conversionCategory: categorizeRate(rate), progressPct, category: categorizeRate(progressPct) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
@@ -2246,22 +2255,13 @@ function MobRecruitmentFunnelPage({ filters }) {
   RATE_CATEGORY_ORDER.forEach((c) => { districtCatCounts[c] = districtRows.filter((d) => d.category === c).length; });
   const filteredDistrictRows = (districtCat === "All" ? districtRows : districtRows.filter((d) => d.category === districtCat))
     .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
-  const filteredSumAssigned = sumBy(filteredDistrictRows, "assigned");
-  const filteredSumTarget = sumBy(filteredDistrictRows, "target");
-  const filteredSumConfirmed = sumBy(filteredDistrictRows, "confirmed");
-  const filteredProgressPct = filteredSumTarget ? Math.round((1000 * filteredSumConfirmed) / filteredSumTarget) / 10 : null;
 
-  // Venues have no assigned/target in the source data (see byDistrict above),
-  // so venue categorisation bands on confirmed ÷ reached (venueRows.category)
-  // instead of progress on target — the same basis this page used for venues
-  // before the district rebuild.
+  // Venue categorisation bands on progress on target (confirmed ÷ target,
+  // venueRows.category), same basis as the district table above.
   const venueCatCounts = { All: venueRows.length };
   RATE_CATEGORY_ORDER.forEach((c) => { venueCatCounts[c] = venueRows.filter((v) => v.category === c).length; });
   const filteredVenueRows = (venueCat === "All" ? venueRows : venueRows.filter((v) => v.category === venueCat))
-    .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
-  const filteredSumReached = sumBy(filteredVenueRows, "reached");
-  const filteredSumVenueConfirmed = sumBy(filteredVenueRows, "confirmed");
-  const filteredVenueRate = filteredSumReached ? Math.round((1000 * filteredSumVenueConfirmed) / filteredSumReached) / 10 : null;
+    .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
 
   const venuePageSize = 10;
   const venueMaxPage = Math.max(0, Math.ceil(filteredVenueRows.length / venuePageSize) - 1);
@@ -2334,8 +2334,8 @@ function MobRecruitmentFunnelPage({ filters }) {
           {topVenue && (
             <Insight tone="pos"><b>{topVenue.venue}</b> confirmed the most youth overall ({fmtNum(topVenue.confirmed)}, {fmtPct(topVenue.rate)} of reached).</Insight>
           )}
-          {venueRows.filter((v) => v.category === "High Risk").length > 0 && (
-            <Insight tone="risk"><b>{venueRows.filter((v) => v.category === "High Risk").length} venue(s)</b> are confirming fewer than 75% of reached youth — see the table below.</Insight>
+          {venueRows.filter((v) => v.conversionCategory === "High Risk").length > 0 && (
+            <Insight tone="risk"><b>{venueRows.filter((v) => v.conversionCategory === "High Risk").length} venue(s)</b> are confirming fewer than 75% of reached youth — see the table below.</Insight>
           )}
         </div>
       </State>
@@ -2347,17 +2347,7 @@ function MobRecruitmentFunnelPage({ filters }) {
         </Insight>
 
         <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
-        <Grid cols={4}>
-          <KpiTile label="Districts in view" value={String(filteredDistrictRows.length)} sub={districtCat} tag="REAL" />
-          <KpiTile label="Assigned (sum)" value={fmtNum(filteredSumAssigned)} sub="sum of these districts" tag="REAL" />
-          <KpiTile label="Target (sum)" value={fmtNum(filteredSumTarget)} sub="sum of these districts" tag="REAL" />
-          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(filteredProgressPct)] }}>{fmtPct(filteredProgressPct)}</span>} sub="confirmed ÷ target" tag="DERIVED" tone="sim" />
-        </Grid>
-        <Card
-          title="District performance vs target"
-          subtitle="Same Assigned/Reached/Confirmed/Reach rate/Mobilisation rate/% Female formulas as the cycle breakdown above, plus Target (both from DAILY_ACQUISITION_SUMMARY's district-grain 'targets' rows — no venue dimension in the source data). Status is banded on Progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk."
-          chip="REAL"
-        >
+        <Card title="District performance vs target" chip="REAL">
           <DataTable
             columns={[
               { key: "district", label: "District" },
@@ -2376,24 +2366,15 @@ function MobRecruitmentFunnelPage({ filters }) {
         </Card>
 
         <CategoryFilterTiles counts={venueCatCounts} active={venueCat} onChange={(c) => { setVenueCat(c); setVenuePage(0); }} entityLabelPlural="venues" />
-        <Grid cols={4}>
-          <KpiTile label="Venues in view" value={String(filteredVenueRows.length)} sub={venueCat} tag="REAL" />
-          <KpiTile label="Reached (sum)" value={fmtNum(filteredSumReached)} sub="sum of these venues" tag="REAL" />
-          <KpiTile label="Confirmed (sum)" value={fmtNum(filteredSumVenueConfirmed)} sub="sum of these venues" tag="REAL" />
-          <KpiTile label="Rate" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(filteredVenueRate)] }}>{fmtPct(filteredVenueRate)}</span>} sub="confirmed ÷ reached" tag="DERIVED" tone="sim" />
-        </Grid>
-        <Card
-          title="Venue performance"
-          subtitle="Venues have no Assigned/Target in the source data (district-grain only), so Status here bands on confirmed ÷ reached instead of progress on target: ≥95% Target Achieved, ≥85% On Track, ≥75% Low Risk, else High Risk. Shows 10 venues at a time."
-          chip="REAL"
-        >
+        <Card title="Venue performance" chip="REAL">
           <DataTable
             columns={[
               { key: "venue", label: "Venue" },
+              { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
               { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
               { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
               { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
-              { key: "rate", label: "Rate", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+              { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
               { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
             ]}
             rows={pagedVenueRows}

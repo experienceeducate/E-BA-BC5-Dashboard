@@ -62,6 +62,57 @@ DAILY_ACQ_MEASURE_ACTUAL = "daily_aggregates"
 DAILY_ACQ_MEASURE_TARGET = "targets"
 DAILY_ACQUISITION_SUMMARY = f"{_GOLD}.eba_bootcamp_daily_acquisition_summary"
 
+# Per-venue mobilisation targets — DAILY_ACQUISITION_SUMMARY's 'venue_targets'
+# measure was confirmed above to be an exact duplicate of the district-grain
+# 'targets' rows, not real per-venue values, so there's no live BigQuery
+# source for this yet. Hardcoded from the recruitment team's BC3 Control List
+# pending a real upstream fix — keyed by venue_name, matched case/whitespace-
+# insensitively in mobilisation_heatmap() since live venue_name casing varies.
+# "Busenda Primary School" appeared twice in that list (targets 39 and 17);
+# summed here (56) pending confirmation of whether that's two distinct venues.
+VENUE_MOBILISATION_TARGET = {
+    "Kinawambuzi Primary School": 50,
+    "Family Church Of God": 55,
+    "Walukuba Primary School": 24,
+    "Nakazigo Primary School": 64,
+    "Bugadde Primary School": 22,
+    "Busenda Primary School": 56,
+    "Busaala Primary School": 44,
+    "Kaluuba Primary School": 50,
+    "Bwondha Secondary School": 29,
+    "Bwondha Primary School": 39,
+    "Busimo Primary School": 42,
+    "Lutale 'A' Primary School": 84,
+    "Mitimito St. Philip'S Primary School": 47,
+    "Ndaiga Nasur Islamic Primary School": 44,
+    "Wandgeya Primary School": 42,
+    "Bukatabira Primary School": 59,
+    "Buluta Parents Primary School": 59,
+    "Golden Junior Primary School": 64,
+    "St. Jude Nango Primary School": 89,
+    "Namungalwe Primary School": 74,
+    "Seven Stars Junior School": 66,
+    "Prayer Centre Baptist Church": 35,
+    "Buseyi Primary School": 67,
+    "Nabirye Primary School": 49,
+    "Bugabwe Primary School": 134,
+    "Abu Hurairah Islamic Nus & Primary School": 59,
+}
+
+
+def venue_mobilisation_target(venue_name: str):
+    """Case/whitespace-insensitive lookup into VENUE_MOBILISATION_TARGET —
+    live venue_name values aren't guaranteed to match this hardcoded list's
+    casing exactly. Returns None (not 0) for an unmatched venue, so callers
+    can tell "no target on file" apart from "target is genuinely zero"."""
+    if not venue_name:
+        return None
+    key = " ".join(venue_name.split()).casefold()
+    for name, target in VENUE_MOBILISATION_TARGET.items():
+        if " ".join(name.split()).casefold() == key:
+            return target
+    return None
+
 # Some subcounties run a shorter pilot ("2.5 Recruitment Cycle") instead of the
 # standard "4-Week Recruitment Cycle" the rest of the cohort follows. Any
 # eligible + treatment-assigned youth from these subcounties is auto-confirmed
