@@ -38,6 +38,7 @@ from app.core.tables import (
     ACQUISITION_CALL_LOG,
     active_cohort_clause,
     resolve_active_cohorts,
+    venue_mobilisation_target,
 )
 
 router = APIRouter()
@@ -650,7 +651,9 @@ def mobilisation_heatmap(
     three metrics that actually exist at venue grain) are venue-grain already,
     so there's no reason to let a missing date null out a row that otherwise
     has everything it needs. district is carried alongside venue purely so
-    the drill can filter a clicked district's venues client-side.
+    the drill can filter a clicked district's venues client-side. `target` on
+    each row comes from VENUE_MOBILISATION_TARGET (hardcoded — see tables.py;
+    BigQuery has no real per-venue target), not from this query.
 
     by_district exists because assigned/target (preload_youth/
     mobilisation_target, from 'targets' rows) have NO venue dimension at all
@@ -674,6 +677,8 @@ def mobilisation_heatmap(
     ORDER BY district, venue
     """
     by_venue = database.run_query(by_venue_sql, params, role=user.role)
+    for r in by_venue:
+        r["target"] = venue_mobilisation_target(r.get("venue"))
 
     targets_sql = f"""
     SELECT UPPER(agent_district) AS district,
