@@ -2551,14 +2551,25 @@ function MobForecastsPage({ filters }) {
   const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
   const daily = data?.daily || [];
   const nDays = daily.length;
+  // Sorted worst-first (lowest conversion first) — the sites needing a
+  // follow-up round surface at the top, not buried under the healthy ones.
   const flaggedVenues = (heatmap.data?.by_venue || [])
     .map((v) => {
       const reached = v.reached || 0, confirmed = v.confirmed || 0;
       const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
-      return { venue: v.venue, reached, confirmed, rate, category: categorizeRate(rate) };
+      return { venue: v.venue, district: v.district, reached, confirmed, rate, category: categorizeRate(rate) };
     })
     .filter((v) => v.category === "Low Risk" || v.category === "High Risk")
     .sort((a, b) => (a.rate ?? -1) - (b.rate ?? -1));
+
+  const highRiskVenues = flaggedVenues.filter((v) => v.category === "High Risk");
+  const worstVenue = flaggedVenues[0];
+  // District with the most flagged sites — a concentration here points to a
+  // district-level fix (retrain agents, add a follow-up round) rather than
+  // one-off site visits.
+  const flaggedByDistrict = {};
+  flaggedVenues.forEach((v) => { flaggedByDistrict[v.district] = (flaggedByDistrict[v.district] || 0) + 1; });
+  const worstDistrict = Object.entries(flaggedByDistrict).sort((a, b) => b[1] - a[1])[0];
 
   // District root -> venue child, same "Days to target" formula at both
   // grains, off the same heatmap data the rest of this page already uses.
@@ -2608,20 +2619,42 @@ function MobForecastsPage({ filters }) {
           </ResponsiveContainer>
         </State>
       </Card>
-      <Card title="Site early-warning flags" subtitle="Venues confirming below 85% of reached youth — see Mobilisation overview → Performance categorisation for the full breakdown" chip="REAL">
+      <Card title="Site early-warning flags" subtitle="Venues confirming below 85% of reached youth, worst first — see Mobilisation overview → Performance categorisation for the full breakdown. Shows 10 at a time — scroll for the rest." chip="REAL">
         <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && flaggedVenues.length === 0}>
-          <DataTable
-            columns={[
-              { key: "venue", label: "Site" },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-              { key: "rate", label: "Confirmed ÷ reached", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
-              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
-            ]}
-            rows={flaggedVenues}
-          />
+          <div style={{ maxHeight: 380, overflowY: "auto" }}>
+            <DataTable
+              columns={[
+                { key: "venue", label: "Site" },
+                { key: "district", label: "District" },
+                { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+                { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+                { key: "rate", label: "Confirmed ÷ reached", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+                { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+              ]}
+              rows={flaggedVenues}
+            />
+          </div>
         </State>
       </Card>
+      {flaggedVenues.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          {worstVenue && (
+            <Insight tone="risk">
+              <b>{worstVenue.venue}</b> ({worstVenue.district}) has the lowest conversion at <b>{fmtPct(worstVenue.rate)}</b> ({fmtNum(worstVenue.confirmed)} of {fmtNum(worstVenue.reached)} reached) — prioritise this site for a follow-up call round first.
+            </Insight>
+          )}
+          {highRiskVenues.length > 0 && (
+            <Insight tone="risk">
+              <b>{fmtNum(highRiskVenues.length)} of {fmtNum(flaggedVenues.length)} flagged sites are High Risk</b> (confirming below 75% of reached) — these are the ones a single follow-up round is unlikely to fix on its own; consider re-assigning call-center agents or re-checking the reached-list quality at these sites specifically.
+            </Insight>
+          )}
+          {worstDistrict && worstDistrict[1] > 1 && (
+            <Insight tone="warn">
+              <b>{worstDistrict[0]}</b> has <b>{fmtNum(worstDistrict[1])}</b> flagged sites — more than any other district. Worth a district-level fix (agent retraining, an extra call round) rather than site-by-site follow-up.
+            </Insight>
+          )}
+        </div>
+      )}
     </div>
   );
 }
