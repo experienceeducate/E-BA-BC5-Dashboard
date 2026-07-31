@@ -109,6 +109,9 @@ def retention(
     "retained" definition); activation/retention rates are computed from the
     raw counts (denominator for retention_rate is activated_youth), not the
     table's own retention_rate* columns, to stay consistent across both rates.
+    site_metrics rows are venue×gender-grain (see tables.py), so
+    retained_female sums the same youth_80pct_lessons column filtered to
+    gender = 'FEMALE' rather than needing a second query.
     """
     where, params = build_where(
         venues=venue, extra=[active_cohort_clause("rt")], prefix="rt",
@@ -118,7 +121,8 @@ def retention(
     SELECT UPPER(district) AS district, venue_name AS venue,
            SUM(acquired_youth) AS acquired,
            SUM(activated_youth) AS activated,
-           SUM(youth_80pct_lessons) AS retained
+           SUM(youth_80pct_lessons) AS retained,
+           SUM(IF(UPPER(gender) = 'FEMALE', youth_80pct_lessons, 0)) AS retained_female
     FROM {SITE_FUNNEL_METRICS}
     WHERE {where} AND measure = '{SITE_FUNNEL_MEASURE_ACTUAL}'
     GROUP BY district, venue

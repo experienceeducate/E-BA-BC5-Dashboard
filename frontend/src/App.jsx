@@ -2787,10 +2787,26 @@ function RetentionTab({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/retention${buildParams(filters)}`);
   const rows = data?.by_venue || [];
+  const targetActivation = data?.targets?.activation ?? 90;
+  const targetRetention = data?.targets?.retention ?? 85;
   const rateFns = {
     activation_rate: (d) => (d.acquired ? Math.round((1000 * d.activated) / d.acquired) / 10 : null),
     retention_rate: (d) => (d.activated ? Math.round((1000 * d.retained) / d.activated) / 10 : null),
   };
+
+  const totalAcquired = sumBy(rows, "acquired");
+  const totalActivated = sumBy(rows, "activated");
+  const totalRetained = sumBy(rows, "retained");
+  const totalRetainedFemale = sumBy(rows, "retained_female");
+  const overallActivationRate = totalAcquired ? Math.round((1000 * totalActivated) / totalAcquired) / 10 : null;
+  const overallRetentionRate = totalActivated ? Math.round((1000 * totalRetained) / totalActivated) / 10 : null;
+  const pctFemaleOfRetained = totalRetained ? Math.round((1000 * totalRetainedFemale) / totalRetained) / 10 : null;
+
+  const districtRows = groupByDistrict(rows, ["acquired", "activated", "retained"], rateFns);
+  // Lowest-first — the venues needing retention support surface at the top,
+  // not buried under the ones already clearing target.
+  const venueRowsSorted = [...rows].sort((a, b) => (a.retention_rate ?? Infinity) - (b.retention_rate ?? Infinity));
+  const belowTargetVenues = venueRowsSorted.filter((v) => v.retention_rate != null && v.retention_rate < targetRetention);
 
   function openMetricDrill(metricKey, label, formatter = fmtNum) {
     const rootRows = groupByDistrict(rows, ["acquired", "activated", "retained"], rateFns)
@@ -2807,22 +2823,95 @@ function RetentionTab({ filters }) {
   }
 
   return (
-    <Card title="Retention by venue" subtitle={`Targets — activation ${data?.targets?.activation ?? 90}%, retention ${data?.targets?.retention ?? 85}%`} chip="REAL">
-      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
-        <DataTable
-          columns={[
-            { key: "district", label: "District" },
-            { key: "venue", label: "Venue" },
-            { key: "acquired", label: "Acquired", align: "right", onHeaderClick: () => openMetricDrill("acquired", "Acquired") },
-            { key: "activated", label: "Activated", align: "right", onHeaderClick: () => openMetricDrill("activated", "Activated") },
-            { key: "retained", label: "Retained", align: "right", onHeaderClick: () => openMetricDrill("retained", "Retained") },
-            { key: "activation_rate", label: "Activation %", align: "right", render: renderRateCell("activation_rate"), onHeaderClick: () => openMetricDrill("activation_rate", "Activation rate", fmtPct) },
-            { key: "retention_rate", label: "Retention %", align: "right", render: renderRateCell("retention_rate"), onHeaderClick: () => openMetricDrill("retention_rate", "Retention rate", fmtPct) },
-          ]}
-          rows={rows}
+    <div>
+      <Grid cols={4}>
+        <KpiTile label="Acquired" value={fmtNum(totalAcquired)} sub="waiver signed" tag="REAL" onClick={() => openMetricDrill("acquired", "Acquired")} />
+        <KpiTile
+          label="Activated" value={fmtNum(totalActivated)}
+          sub={<span style={{ color: rateColor(overallActivationRate, "activation_rate"), fontWeight: 700 }}>{fmtPct(overallActivationRate)} · target {targetActivation}%</span>}
+          tag="REAL" onClick={() => openMetricDrill("activation_rate", "Activation rate", fmtPct)}
         />
-      </State>
-    </Card>
+        <KpiTile
+          label="Retained" value={fmtNum(totalRetained)}
+          sub={<span style={{ color: rateColor(overallRetentionRate, "retention_rate"), fontWeight: 700 }}>{fmtPct(overallRetentionRate)} · target {targetRetention}%</span>}
+          tag="REAL" onClick={() => openMetricDrill("retention_rate", "Retention rate", fmtPct)}
+        />
+        <KpiTile
+          label="Female retained" value={fmtNum(totalRetainedFemale)}
+          sub={<span style={{ color: femaleShareStatus(pctFemaleOfRetained)?.color, fontWeight: 700 }}>{fmtPct(pctFemaleOfRetained)} of retained</span>}
+          tag="REAL"
+        />
+      </Grid>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title="Funnel by district" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && districtRows.length === 0}>
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={districtRows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis dataKey="district" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip /><Legend />
+                <Bar dataKey="acquired" name="Acquired" fill={C.line} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="activated" name="Activated" fill={C.teal} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="retained" name="Retained" fill={C.green} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+        <Card title="Activation & retention vs target" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && !data}>
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart
+                data={[
+                  { metric: "Activation", target: targetActivation, actual: overallActivationRate },
+                  { metric: "Retention", target: targetRetention, actual: overallRetentionRate },
+                ]}
+                margin={{ top: 8, right: 16, bottom: 8, left: 0 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis dataKey="metric" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
+                <Tooltip /><Legend />
+                <Bar dataKey="target" name="Target" fill={C.line} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="actual" name="Actual" fill={C.green} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+      </div>
+
+      <Card
+        title="Venue retention (lowest first)"
+        subtitle={`Retention rate = retained ÷ activated. Showing the 5 lowest-retention venues first — scroll to see all ${fmtNum(rows.length)}. Red flags venues below the ${targetRetention}% target.`}
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && rows.length === 0}>
+          <div style={{ maxHeight: 236, overflowY: "auto" }}>
+            <DataTable
+              columns={[
+                { key: "venue", label: "Venue" },
+                { key: "district", label: "District" },
+                { key: "acquired", label: "Acquired", align: "right", render: (v) => fmtNum(v) },
+                { key: "activated", label: "Activated", align: "right", render: (v) => fmtNum(v) },
+                { key: "retained", label: "Retained", align: "right", render: (v) => fmtNum(v) },
+                { key: "retention_rate", label: "Retention rate", align: "right", render: renderRateCell("retention_rate") },
+              ]}
+              rows={venueRowsSorted}
+            />
+          </div>
+        </State>
+      </Card>
+
+      {overallActivationRate != null && overallRetentionRate != null && (
+        <Insight tone={overallActivationRate >= targetActivation && overallRetentionRate >= targetRetention ? "pos" : "warn"}>
+          <b>Activation ({fmtPct(overallActivationRate)}) and retention ({fmtPct(overallRetentionRate)})</b> {overallActivationRate >= targetActivation && overallRetentionRate >= targetRetention ? "both clear target" : "are below one or both targets"} —
+          {belowTargetVenues.length > 0
+            ? <> the story is the tail: <b>{fmtNum(belowTargetVenues.length)} venue{belowTargetVenues.length === 1 ? "" : "s"}</b> sit below the {targetRetention}% retention target, so effort is best aimed there rather than across the board.</>
+            : <> no venue currently sits below the {targetRetention}% retention target.</>}
+        </Insight>
+      )}
+    </div>
   );
 }
 
