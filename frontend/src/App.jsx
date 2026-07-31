@@ -2853,26 +2853,100 @@ function AttendanceTab({ filters }) {
   );
 }
 
+// Reach rate (calls reached ÷ calls made) is a call-quality metric distinct
+// from the funnel-stage rates in RATE_TARGETS — same 60/45 bands the
+// reference design uses for this specific figure, kept local rather than
+// added to that shared, broader-purpose object.
+function callReachColor(pct) {
+  if (pct == null) return C.muted;
+  if (pct >= 60) return C.green;
+  if (pct >= 45) return C.gold;
+  return C.coral;
+}
+
 function RetentionCallsTab({ filters }) {
   const { data, loading, error } = useApi(`/api/implementation/retention-calls${buildParams(filters)}`);
-  const rows = data?.daily || [];
+  const daily = data?.daily || [];
+  const venueRows = data?.by_venue || [];
+
+  const totalCalled = sumBy(daily, "called");
+  const totalReached = sumBy(daily, "reached");
+  const totalPromised = sumBy(daily, "promised");
+  const totalReturned = sumBy(daily, "returned");
+  const reachRate = totalCalled ? Math.round((1000 * totalReached) / totalCalled) / 10 : null;
+  const promiseRate = totalReached ? Math.round((1000 * totalPromised) / totalReached) / 10 : null;
+  const recoveryRate = totalCalled ? Math.round((1000 * totalReturned) / totalCalled) / 10 : null;
+
+  // Bottom-performing (lowest reach rate) first, same read as the rest of
+  // this app's "worst first" tables — scroll for the rest.
+  const venueRowsSorted = [...venueRows].filter((v) => v.reach_rate != null).sort((a, b) => a.reach_rate - b.reach_rate);
+
   return (
-    <Card title="Retention follow-up calls" subtitle="Daily follow-up funnel for absent youth — called → reached → promised to return → returned" chip="SAMPLE" chipTone="sim">
-      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-            <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
-            <YAxis tick={{ fontSize: 11 }} />
-            <Tooltip /><Legend />
-            <Bar dataKey="called" name="Called" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
-            <Bar dataKey="reached" name="Reached" fill={CHART_COLORS[1]} radius={[4, 4, 0, 0]} />
-            <Bar dataKey="promised" name="Promised to return" fill={CHART_COLORS[2]} radius={[4, 4, 0, 0]} />
-            <Bar dataKey="returned" name="Returned" fill={CHART_COLORS[3]} radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </State>
-    </Card>
+    <div>
+      <Grid cols={4}>
+        <KpiTile label="Unique youth called" value={fmtNum(totalCalled)} sub="absent youth followed up" tag="REAL" />
+        <KpiTile label="Reached" value={fmtNum(totalReached)} sub={<span style={{ color: callReachColor(reachRate), fontWeight: 700 }}>{fmtPct(reachRate)} reach rate</span>} tag="REAL" />
+        <KpiTile label="Promised to return" value={fmtNum(totalPromised)} sub={`${fmtPct(promiseRate)} of reached`} tag="REAL" />
+        <KpiTile label="Youth returned" value={fmtNum(totalReturned)} sub={<span style={{ color: C.green, fontWeight: 700 }}>{fmtPct(recoveryRate)} recovery of called</span>} tag="REAL" />
+      </Grid>
+
+      <Card title="Daily follow-up funnel — called → reached → promised → returned" subtitle='Each line is unique youth per call day. "Returned" is logged on the next attendance day, so it reads zero on days before a weekend or holiday.' chip="REAL">
+        <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip /><Legend />
+              <Line type="monotone" dataKey="called" name="Called" stroke={C.inkSoft} strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="reached" name="Reached" stroke={C.teal} strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="promised" name="Promised to return" stroke={C.gold} strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="returned" name="Returned" stroke={C.green} strokeWidth={2} strokeDasharray="5 3" dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+
+      <ExecBand num="!" title="The story" />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+        {totalCalled > 0 && (
+          <Insight tone="pos">
+            <b>Calls work.</b> {fmtNum(totalReturned)} of {fmtNum(totalCalled)} absent youth (<b>{fmtPct(recoveryRate)}</b>) came back after follow-up.
+          </Insight>
+        )}
+        {reachRate != null && promiseRate != null && (
+          <Insight tone={reachRate < 60 ? "warn" : "neutral"}>
+            <b>{reachRate < 60 ? "Reach, not persuasion, is the bottleneck." : "Reach is solid."}</b> Only <b>{fmtPct(reachRate)}</b> of absentees are reached on the day ({fmtNum(totalReached)}/{fmtNum(totalCalled)}), but of those reached <b>{fmtPct(promiseRate)}</b> promise to return.
+          </Insight>
+        )}
+      </div>
+      <Insight tone="neutral">
+        Reasons for absence aren't shown yet — the reference design breaks this out by reason (sickness, family emergency, home responsibilities, ...), but that column hasn't been confirmed against live BigQuery in this codebase yet.
+      </Insight>
+
+      <Card
+        title="Retention calls by venue — absent, called, reached, returned"
+        subtitle={`Lowest reach rate first. Showing ${Math.min(5, venueRowsSorted.length)} of ${fmtNum(venueRowsSorted.length)} — scroll for the rest.`}
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && venueRowsSorted.length === 0}>
+          <div style={{ maxHeight: 236, overflowY: "auto" }}>
+            <DataTable
+              columns={[
+                { key: "venue", label: "Venue" },
+                { key: "district", label: "District" },
+                { key: "absent", label: "Absent", align: "right", render: (v) => fmtNum(v) },
+                { key: "called", label: "Calls made", align: "right", render: (v) => fmtNum(v) },
+                { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+                { key: "returned", label: "Returned", align: "right", render: (v) => <span style={{ color: C.green, fontWeight: 700 }}>{fmtNum(v)}</span> },
+                { key: "reach_rate", label: "Reach %", align: "right", render: (v) => <span style={{ color: callReachColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+              ]}
+              rows={venueRowsSorted}
+            />
+          </div>
+        </State>
+      </Card>
+    </div>
   );
 }
 
