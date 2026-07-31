@@ -408,7 +408,8 @@ def milestones(
     venue: List[str] = Query(default=[]),
     cohort: List[str] = Query(default=[]),
 ):
-    """Weekly pitch milestone distribution (below / meet / exceed) & completion."""
+    """Weekly pitch milestone distribution (below / meet / exceed) & completion,
+    plus a per-venue rollup (cumulative % exceeding, avg youth/week)."""
     where, params = build_where(venues=venue, extra=_filter_extra(cohort, "ms"), prefix="ms")
     sql = f"""
     SELECT week_number,
@@ -419,7 +420,32 @@ def milestones(
     GROUP BY week_number
     ORDER BY week_number
     """
-    return {"weekly": database.run_query(sql, params, role=user.role)}
+    weekly = database.run_query(sql, params, role=user.role)
+    for w in weekly:
+        total = (w.get("below") or 0) + (w.get("meet") or 0) + (w.get("exceed") or 0)
+        w["below_pct"] = round(100 * (w.get("below") or 0) / total, 1) if total else None
+        w["meet_pct"] = round(100 * (w.get("meet") or 0) / total, 1) if total else None
+        w["exceed_pct"] = round(100 * (w.get("exceed") or 0) / total, 1) if total else None
+
+    venue_where, venue_params = build_where(venues=venue, extra=_filter_extra(cohort, "msv"), prefix="msv")
+    venue_sql = f"""
+    SELECT venue, UPPER(district) AS district,
+           SUM(below) AS below, SUM(meet) AS meet, SUM(exceed) AS exceed,
+           AVG(completion_pct) AS completion_pct,
+           COUNT(DISTINCT week_number) AS weeks_reported
+    FROM {MILESTONES}
+    WHERE {venue_where}
+    GROUP BY venue, district
+    ORDER BY venue
+    """
+    by_venue = database.run_query(venue_sql, venue_params, role=user.role)
+    for v in by_venue:
+        total = (v.get("below") or 0) + (v.get("meet") or 0) + (v.get("exceed") or 0)
+        weeks = v.get("weeks_reported") or 0
+        v["exceed_pct"] = round(100 * (v.get("exceed") or 0) / total, 1) if total else None
+        v["avg_youth_per_week"] = round(total / weeks, 1) if weeks else None
+
+    return {"weekly": weekly, "by_venue": by_venue}
 
 
 @router.get("/api/implementation/youth-experience")
