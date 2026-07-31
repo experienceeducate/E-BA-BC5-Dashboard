@@ -66,16 +66,33 @@ def arrival(
     return {"by_district": database.run_query(sql, params, role=user.role)}
 
 
+def _norm_venue_key(venue_name):
+    """Case/whitespace-insensitive join key — ATTENDANCE_SUMMARY and
+    SITE_FUNNEL_METRICS aren't guaranteed to agree on venue_name casing."""
+    return " ".join((venue_name or "").split()).casefold()
+
+
 @router.get("/api/implementation/attendance")
 def attendance(
     user: User = Depends(current_user),
     venue: List[str] = Query(default=[]),
     cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORTS
 ):
-    """Daily attendance & churn.
+    """Daily attendance & churn, plus a real per-venue attendance rate.
 
-    Backed by the live ATTENDANCE_SUMMARY mart. There's no per-lesson
-    attendance-% table confirmed yet, so "lessons" stays empty until one is.
+    Backed by the live ATTENDANCE_SUMMARY mart for daily present/churn and
+    per-venue avg present. There's no per-lesson attendance-% table
+    confirmed yet, so "lessons" stays empty until one is.
+
+    ATTENDANCE_SUMMARY has no confirmed district column of its own, so
+    by_venue's attendance_rate is built by joining its real per-venue
+    present counts against SITE_FUNNEL_METRICS's real per-venue
+    activated_youth (the same table /api/implementation/retention already
+    uses) — present ÷ activated, both real, rather than modelling
+    attendance from retention quality the way the reference prototype
+    illustrates it. district comes from that join too. Matched
+    case/whitespace-insensitively since the two tables' venue_name casing
+    isn't guaranteed to agree.
     """
     where_d, params_d = build_where(
         venues=venue, extra=[active_cohort_clause("ad")], prefix="ad",
@@ -90,9 +107,54 @@ def attendance(
     GROUP BY event_date
     ORDER BY event_date
     """
+    daily = database.run_query(daily_sql, params_d, role=user.role)
+
+    present_where, present_params = build_where(
+        venues=venue, extra=[active_cohort_clause("adv")], prefix="adv",
+        venue_col="venue_name",
+    )
+    present_sql = f"""
+    SELECT venue_name AS venue, AVG(total_youths_present) AS present
+    FROM {ATTENDANCE_SUMMARY}
+    WHERE {present_where} AND report_date IS NOT NULL
+    GROUP BY venue
+    """
+    present_by_venue = {
+        _norm_venue_key(r["venue"]): r.get("present")
+        for r in database.run_query(present_sql, present_params, role=user.role)
+    }
+
+    activated_where, activated_params = build_where(
+        venues=venue, extra=[active_cohort_clause("ada")], prefix="ada",
+        venue_col="venue_name",
+    )
+    activated_sql = f"""
+    SELECT UPPER(district) AS district, venue_name AS venue,
+           SUM(activated_youth) AS activated
+    FROM {SITE_FUNNEL_METRICS}
+    WHERE {activated_where} AND measure = '{SITE_FUNNEL_MEASURE_ACTUAL}'
+    GROUP BY district, venue
+    ORDER BY district, venue
+    """
+    activated_rows = database.run_query(activated_sql, activated_params, role=user.role)
+
+    by_venue = []
+    for r in activated_rows:
+        activated = r.get("activated") or 0
+        present = present_by_venue.get(_norm_venue_key(r["venue"]))
+        rate = round(100 * present / activated, 1) if present is not None and activated else None
+        by_venue.append({
+            "district": r["district"],
+            "venue": r["venue"],
+            "activated": activated,
+            "present": round(present, 1) if present is not None else None,
+            "attendance_rate": rate,
+        })
+
     return {
-        "daily":   database.run_query(daily_sql, params_d, role=user.role),
-        "lessons": [],
+        "daily":    daily,
+        "by_venue": by_venue,
+        "lessons":  [],
     }
 
 

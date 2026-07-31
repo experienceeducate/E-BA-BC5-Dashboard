@@ -633,6 +633,7 @@ const RATE_TARGETS = {
   acquisition_rate:  { good: 80, warn: 70, label: "Acquisition" },
   activation_rate:   { good: 90, warn: 80, label: "Activation" },
   retention_rate:    { good: 85, warn: 75, label: "Retention" },
+  attendance_rate:   { good: 95, warn: 90, label: "Attendance" },
 };
 
 // One color rule for every rate-vs-target figure that uses RATE_TARGETS'
@@ -2827,24 +2828,123 @@ function RetentionTab({ filters }) {
 }
 
 function AttendanceTab({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/attendance${buildParams(filters)}`);
-  const rows = data?.daily || [];
+  const daily = data?.daily || [];
+  const venueRows = data?.by_venue || [];
+
+  const totalActivated = sumBy(venueRows, "activated");
+  const avgPresent = daily.length ? sumBy(daily, "present") / daily.length : null;
+  const avgChurn = daily.length ? sumBy(daily, "net_churn") / daily.length : null;
+  const avgChurnRate = avgPresent ? Math.round((1000 * avgChurn) / avgPresent) / 10 : null;
+  const latestDay = daily[daily.length - 1];
+  const latestAttendanceRate = latestDay && totalActivated ? Math.round((1000 * latestDay.present) / totalActivated) / 10 : null;
+
+  const rateFns = { attendance_rate: (d) => (d.activated ? Math.round((1000 * d.present) / d.activated) / 10 : null) };
+  const districtRows = groupByDistrict(venueRows, ["activated", "present"], rateFns);
+  // Bottom 5 only (not scrolled) — same read as the reference design's
+  // "Attendance rate — bottom 5 venues" panel.
+  const bottom5Venues = [...venueRows].filter((v) => v.attendance_rate != null).sort((a, b) => a.attendance_rate - b.attendance_rate).slice(0, 5);
+
+  function openMetricDrill(metricKey, label, formatter = fmtNum) {
+    const rootRows = groupByDistrict(venueRows, ["activated", "present"], rateFns)
+      .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: metricKey, label, align: "right", render: formatter }],
+      rootRows,
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+    });
+  }
+
   return (
     <div>
-      <Card title="Daily attendance & churn" subtitle="Youth present per day, and net churn (present minus newly absent) — programme-wide, not yet broken out by venue" chip="REAL">
-        <State loading={loading} error={error} empty={!loading && rows.length === 0}>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip /><Legend />
-              <Line type="monotone" dataKey="present" name="Present" stroke={C.teal} strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="net_churn" name="Net churn" stroke={C.coral} strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
+      <Grid cols={4}>
+        <KpiTile label="Venues reporting" value={String(venueRows.length)} sub="attendance × activation joined" tag="REAL" />
+        <KpiTile
+          label="Avg daily churn rate" value={fmtPct(avgChurnRate)}
+          sub={daily.length ? `net ~${fmtNum(Math.round(avgChurn || 0))} youth/day over ${fmtNum(daily.length)} days` : undefined}
+          tag="REAL"
+        />
+        <KpiTile
+          label="Latest attendance rate" value={fmtPct(latestAttendanceRate)}
+          sub={latestDay?.event_date} tag="REAL"
+          onClick={() => openMetricDrill("attendance_rate", "Attendance rate", fmtPct)}
+        />
+        <KpiTile label="Youth present (latest)" value={fmtNum(latestDay?.present)} sub={latestDay?.event_date} tag="REAL" onClick={() => openMetricDrill("present", "Present")} />
+      </Grid>
+
+      <ExecBand num="◆" title="Attendance by district" />
+      <State loading={loading} error={error} empty={!loading && districtRows.length === 0}>
+        <DataTable
+          columns={[
+            { key: "district", label: "District" },
+            { key: "activated", label: "Activated", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("activated", "Activated") },
+            { key: "present", label: "Present (avg)", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("present", "Present") },
+            { key: "attendance_rate", label: "Attendance rate", align: "right", render: renderRateCell("attendance_rate"), onHeaderClick: () => openMetricDrill("attendance_rate", "Attendance rate", fmtPct) },
+          ]}
+          rows={districtRows}
+        />
+      </State>
+      <Insight tone="neutral">
+        <b>Present ÷ activated,</b> not a fabricated pace projection — activated comes from SITE_FUNNEL_METRICS (same source as the Retention tab), joined against ATTENDANCE_SUMMARY's real per-venue present counts.
+      </Insight>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title="Daily attendance" subtitle="Programme-wide youth present by day" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+            <ResponsiveContainer width="100%" height={260}>
+              <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Line type="monotone" dataKey="present" name="Present" stroke={C.teal} strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+        <Card title="Daily net churn" subtitle="Negative bars = net growth (returns > drop-offs)" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Bar dataKey="net_churn" name="Net churn" radius={[4, 4, 0, 0]}>
+                  {daily.map((d, i) => <Cell key={i} fill={(d.net_churn ?? 0) <= 0 ? C.green : C.coral} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+      </div>
+
+      <Card title="Attendance rate — bottom 5 venues" subtitle="Lowest-attendance venues: present ÷ activated." chip="REAL">
+        <State loading={loading} error={error} empty={!loading && bottom5Venues.length === 0}>
+          <DataTable
+            columns={[
+              { key: "venue", label: "Venue" },
+              { key: "district", label: "District" },
+              { key: "activated", label: "Activated", align: "right", render: (v) => fmtNum(v) },
+              { key: "present", label: "Present (avg)", align: "right", render: (v) => fmtNum(v) },
+              { key: "attendance_rate", label: "Attendance rate", align: "right", render: renderRateCell("attendance_rate") },
+            ]}
+            rows={bottom5Venues}
+          />
         </State>
       </Card>
+
+      {avgChurnRate != null && latestAttendanceRate != null && (
+        <Insight tone={latestAttendanceRate >= 95 && avgChurnRate <= 1 ? "pos" : "warn"}>
+          <b>Attendance holds at {fmtPct(latestAttendanceRate)}</b> as of {latestDay?.event_date}, with average daily churn at <b>{fmtPct(avgChurnRate)}</b>
+          {bottom5Venues[0] ? <> — <b>{bottom5Venues[0].venue}</b> ({bottom5Venues[0].district}) is the lowest-attendance venue at {fmtPct(bottom5Venues[0].attendance_rate)}.</> : "."}
+        </Insight>
+      )}
       <Insight tone="neutral">
         Per-lesson attendance isn't shown yet — no per-lesson attendance-% table has been confirmed against
         live BigQuery. This page will grow a lesson-by-lesson breakdown once one is.
