@@ -3506,6 +3506,14 @@ function MilestonesTab({ filters }) {
   const parentVals = weekly.map((w) => w.parent_present_pct).filter((v) => v != null);
   const parentGapWide = parentVals.length >= 2 && (Math.max(...parentVals) - Math.min(...parentVals) > 40);
 
+  // Climb-then-reverse narrative — same read as the reference design's "Wk1
+  // 35% -> Wk3 59% -> Wk4 26%", but built off whichever week actually peaks
+  // and whichever week is latest, not a hardcoded "Week 3"/"Week 4".
+  const firstWeek = weekly[0];
+  const climbed = firstWeek && peakWeek && peakWeek !== firstWeek && peakWeek.exceed_pct != null && firstWeek.exceed_pct != null
+    ? Math.round((peakWeek.exceed_pct - firstWeek.exceed_pct) * 10) / 10
+    : null;
+
   // Row click on a venue -> jump straight into that venue's district (openAt
   // skips the root district picker since the row already names one), same
   // pattern as the Attendance/Retention district->venue drills.
@@ -3623,7 +3631,6 @@ function MilestonesTab({ filters }) {
         </State>
       </Card>
 
-      <ExecBand num="!" title="Actionable insights" />
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
         {spread != null && top5[0] && bottom5[0] && (
           <Insight tone="warn">
@@ -3640,14 +3647,23 @@ function MilestonesTab({ filters }) {
             <b>{bottom5AvgCompletion >= 85 ? "Weak pitch quality, not weak attendance." : "Completion is soft too at the bottom venues."}</b> The bottom-5 venues still average {fmtPct(bottom5AvgCompletion)} completion{bottom5AvgCompletion >= 85 ? " — youth turn up and finish; the gap is pitch quality, which coaching can lift directly." : " — attendance itself needs attention alongside pitch coaching."}
           </Insight>
         )}
+      </div>
+
+      <ExecBand num="!" title="The story" />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+        {climbed != null && climbed > 0 && (
+          <Insight tone="pos">
+            <b>Youth get sharper every week — until they don't.</b> The share exceeding expectations climbs from <b>{fmtPct(firstWeek.exceed_pct)} (Week {firstWeek.week_number})</b> to <b>{fmtPct(peakWeek.exceed_pct)} (Week {peakWeek.week_number})</b> — the weekly milestone rhythm is doing exactly what it should.
+          </Insight>
+        )}
         {weekOverWeek != null && weekOverWeek < -10 && prior && latest && (
           <Insight tone="risk">
-            <b>Quality reversed in the latest week.</b> The share exceeding expectations fell {Math.abs(weekOverWeek)}pp from week {prior.week_number} to week {latest.week_number} — worth concentrating coaching before the next milestone rather than after.
+            <b>Then week {latest.week_number} reverses it.</b> Exceeding expectations falls to <b>{fmtPct(latest.exceed_pct)}</b>, down {Math.abs(weekOverWeek)}pp from week {prior.week_number}, even as completion holds at {fmtPct(latest.completion_pct)} — this is the moment to concentrate coaching, before graduation rather than after.
           </Insight>
         )}
         {parentGapWide && (
           <Insight tone="warn">
-            <b>Parent-engagement capture looks like a data gap, not real attendance.</b> Reported parent presence swings from {fmtPct(Math.min(...parentVals))} to {fmtPct(Math.max(...parentVals))} across weeks — standardising the Friday capture would turn this into a metric the team can actually manage.
+            <b>Fix the parent-engagement capture.</b> Reported parent presence swings from {fmtPct(Math.min(...parentVals))} to {fmtPct(Math.max(...parentVals))} across weeks — that's a data-capture gap, not real absence. Standardising the Friday capture would turn parent engagement into a metric the team can actually manage.
           </Insight>
         )}
       </div>
