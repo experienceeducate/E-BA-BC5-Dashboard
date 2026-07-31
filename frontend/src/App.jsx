@@ -3087,6 +3087,7 @@ function callReachColor(pct) {
 }
 
 function RetentionCallsTab({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/retention-calls${buildParams(filters)}`);
   const daily = data?.daily || [];
   const venueRows = data?.by_venue || [];
@@ -3103,27 +3104,55 @@ function RetentionCallsTab({ filters }) {
   // this app's "worst first" tables — scroll for the rest.
   const venueRowsSorted = [...venueRows].filter((v) => v.reach_rate != null).sort((a, b) => a.reach_rate - b.reach_rate);
 
+  // Click-to-toggle legend: click a series name to hide/show it — same
+  // pattern as the Awareness Forecast chart.
+  const [hiddenSeries, setHiddenSeries] = useState({});
+  function toggleSeries(dataKey) {
+    setHiddenSeries((h) => ({ ...h, [dataKey]: !h[dataKey] }));
+  }
+  function legendFormatter(value, entry) {
+    const isHidden = !!hiddenSeries[entry.dataKey];
+    return <span style={{ textDecoration: isHidden ? "line-through" : "none", opacity: isHidden ? 0.5 : 1 }}>{value}</span>;
+  }
+
+  // Every score card drills district -> site (venue), off the same by_venue
+  // rows the "by venue" table below already has — no new query.
+  function openMetricDrill(metricKey, label, formatter = fmtNum) {
+    const rootRows = groupByDistrict(venueRows, [metricKey], {})
+      .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: metricKey, label, align: "right", render: formatter }],
+      rootRows,
+      childKey: "venue", childLabel: "Site",
+      getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+    });
+  }
+
   return (
     <div>
       <Grid cols={4}>
-        <KpiTile label="Unique youth called" value={fmtNum(totalCalled)} sub="absent youth followed up" tag="REAL" />
-        <KpiTile label="Reached" value={fmtNum(totalReached)} sub={<span style={{ color: callReachColor(reachRate), fontWeight: 700 }}>{fmtPct(reachRate)} reach rate</span>} tag="REAL" />
-        <KpiTile label="Promised to return" value={fmtNum(totalPromised)} sub={`${fmtPct(promiseRate)} of reached`} tag="REAL" />
-        <KpiTile label="Youth returned" value={fmtNum(totalReturned)} sub={<span style={{ color: C.green, fontWeight: 700 }}>{fmtPct(recoveryRate)} recovery of called</span>} tag="REAL" />
+        <KpiTile label="Unique youth called" value={fmtNum(totalCalled)} sub="absent youth followed up" tag="REAL" onClick={() => openMetricDrill("called", "Called")} />
+        <KpiTile label="Reached" value={fmtNum(totalReached)} sub={<span style={{ color: callReachColor(reachRate), fontWeight: 700 }}>{fmtPct(reachRate)} reach rate</span>} tag="REAL" onClick={() => openMetricDrill("reached", "Reached")} />
+        <KpiTile label="Promised to return" value={fmtNum(totalPromised)} sub={`${fmtPct(promiseRate)} of reached`} tag="REAL" onClick={() => openMetricDrill("promised", "Promised to return")} />
+        <KpiTile label="Youth returned" value={fmtNum(totalReturned)} sub={<span style={{ color: C.green, fontWeight: 700 }}>{fmtPct(recoveryRate)} recovery of called</span>} tag="REAL" onClick={() => openMetricDrill("returned", "Returned")} />
       </Grid>
 
-      <Card title="Daily follow-up funnel — called → reached → promised → returned" subtitle='Each line is unique youth per call day. "Returned" is logged on the next attendance day, so it reads zero on days before a weekend or holiday.' chip="REAL">
+      <Card title="Daily follow-up funnel — called → reached → promised → returned" subtitle='Each line is unique youth per call day. "Returned" is logged on the next attendance day, so it reads zero on days before a weekend or holiday. Click a legend item to hide/show that line.' chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
               <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
               <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip /><Legend />
-              <Line type="monotone" dataKey="called" name="Called" stroke={C.inkSoft} strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="reached" name="Reached" stroke={C.teal} strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="promised" name="Promised to return" stroke={C.gold} strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="returned" name="Returned" stroke={C.green} strokeWidth={2} strokeDasharray="5 3" dot={false} />
+              <Tooltip />
+              <Legend onClick={(e) => toggleSeries(e.dataKey)} formatter={legendFormatter} wrapperStyle={{ cursor: "pointer" }} />
+              <Line type="monotone" dataKey="called" name="Called" stroke={C.inkSoft} strokeWidth={2} dot={false} hide={!!hiddenSeries.called} />
+              <Line type="monotone" dataKey="reached" name="Reached" stroke={C.teal} strokeWidth={2} dot={false} hide={!!hiddenSeries.reached} />
+              <Line type="monotone" dataKey="promised" name="Promised to return" stroke={C.gold} strokeWidth={2} dot={false} hide={!!hiddenSeries.promised} />
+              <Line type="monotone" dataKey="returned" name="Returned" stroke={C.green} strokeWidth={2} strokeDasharray="5 3" dot={false} hide={!!hiddenSeries.returned} />
             </LineChart>
           </ResponsiveContainer>
         </State>

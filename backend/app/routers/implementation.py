@@ -245,6 +245,7 @@ def retention_calls(
            COUNT(*) AS absent,
            SUM(calls_made_today) AS called,
            SUM(calls_reached_today) AS reached,
+           SUM(promised_return_today) AS promised,
            SUM(returned) AS returned
     FROM ({retention_calls_detail_sql()}) AS rc
     WHERE {venue_where}
