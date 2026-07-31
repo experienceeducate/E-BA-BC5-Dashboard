@@ -205,19 +205,25 @@ def retention_calls(
     gender:   Optional[str] = Query(None),
     venue:    List[str] = Query(default=[]),
 ):
-    """Daily follow-up call funnel for absent youth: called -> reached -> promised -> returned.
+    """Daily follow-up call funnel for absent youth (called -> reached ->
+    promised -> returned), plus a real per-venue breakdown.
 
     No RETENTION_CALLS mart exists yet — built directly from the two raw
     silver sources retention_calls_detail_sql() joins (see tables.py and
     Retention_calls_sql.sql at the repo root, the recruitment team's
     reference query). Once a dedicated table lands, only that one function
     needs to change — this aggregation query doesn't.
+
+    by_venue is real (not modelled/illustrative) — the detail query already
+    carries venue_name and youth_district per absence-event row, so this is
+    just grouping by venue instead of by date. absent = distinct absence
+    events at that venue; reach_rate = calls_reached ÷ calls_made.
     """
     where, params = build_where(
         districts=district, gender=gender, venues=venue,
         prefix="rc", district_col="youth_district", gender_col="youth_gender", venue_col="venue_name",
     )
-    sql = f"""
+    daily_sql = f"""
     SELECT event_date,
            SUM(calls_made_today) AS called,
            SUM(calls_reached_today) AS reached,
@@ -228,7 +234,29 @@ def retention_calls(
     GROUP BY event_date
     ORDER BY event_date
     """
-    return {"daily": database.run_query(sql, params, role=user.role)}
+    daily = database.run_query(daily_sql, params, role=user.role)
+
+    venue_where, venue_params = build_where(
+        districts=district, gender=gender, venues=venue,
+        prefix="rcv", district_col="youth_district", gender_col="youth_gender", venue_col="venue_name",
+    )
+    venue_sql = f"""
+    SELECT venue_name AS venue, UPPER(youth_district) AS district,
+           COUNT(*) AS absent,
+           SUM(calls_made_today) AS called,
+           SUM(calls_reached_today) AS reached,
+           SUM(returned) AS returned
+    FROM ({retention_calls_detail_sql()}) AS rc
+    WHERE {venue_where}
+    GROUP BY venue, district
+    ORDER BY absent DESC
+    """
+    by_venue = database.run_query(venue_sql, venue_params, role=user.role)
+    for r in by_venue:
+        called = r.get("called") or 0
+        r["reach_rate"] = round(100 * (r.get("reached") or 0) / called, 1) if called else None
+
+    return {"daily": daily, "by_venue": by_venue}
 
 
 # Column names straight from the recruitment team's reference query
