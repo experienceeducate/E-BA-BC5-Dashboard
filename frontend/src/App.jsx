@@ -3089,20 +3089,60 @@ function callReachColor(pct) {
 function RetentionCallsTab({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/retention-calls${buildParams(filters)}`);
-  const daily = data?.daily || [];
+  const dailyAll = data?.daily || [];
+  const dailyByVenue = data?.daily_by_venue || [];
   const venueRows = data?.by_venue || [];
 
-  const totalCalled = sumBy(daily, "called");
-  const totalReached = sumBy(daily, "reached");
-  const totalPromised = sumBy(daily, "promised");
-  const totalReturned = sumBy(daily, "returned");
+  // Search by venue — narrows every component on this page (score cards,
+  // chart, story, by-venue table), same "search filters everything" pattern
+  // as the Awareness Funnel Overview page.
+  const [venueSearch, setVenueSearch] = useState("");
+  const q = venueSearch.trim().toLowerCase();
+  const matchedVenueRows = q ? venueRows.filter((v) => (v.venue || "").toLowerCase().includes(q)) : venueRows;
+
+  // The programme-wide daily series has no venue dimension, so a search
+  // re-derives it from the venue-grain rows instead — sum just the matched
+  // venue(s) per date, client-side, no extra request per keystroke.
+  const daily = q
+    ? Object.values(
+        dailyByVenue.filter((r) => (r.venue || "").toLowerCase().includes(q)).reduce((acc, r) => {
+          const d = acc[r.event_date] || (acc[r.event_date] = { event_date: r.event_date, called: 0, reached: 0, promised: 0, returned: 0 });
+          d.called += r.called || 0; d.reached += r.reached || 0; d.promised += r.promised || 0; d.returned += r.returned || 0;
+          return acc;
+        }, {})
+      ).sort((a, b) => (a.event_date < b.event_date ? -1 : a.event_date > b.event_date ? 1 : 0))
+    : dailyAll;
+
+  const totalCalled = sumBy(matchedVenueRows, "called");
+  const totalReached = sumBy(matchedVenueRows, "reached");
+  const totalPromised = sumBy(matchedVenueRows, "promised");
+  const totalReturned = sumBy(matchedVenueRows, "returned");
   const reachRate = totalCalled ? Math.round((1000 * totalReached) / totalCalled) / 10 : null;
   const promiseRate = totalReached ? Math.round((1000 * totalPromised) / totalReached) / 10 : null;
   const recoveryRate = totalCalled ? Math.round((1000 * totalReturned) / totalCalled) / 10 : null;
 
   // Bottom-performing (lowest reach rate) first, same read as the rest of
   // this app's "worst first" tables — scroll for the rest.
-  const venueRowsSorted = [...venueRows].filter((v) => v.reach_rate != null).sort((a, b) => a.reach_rate - b.reach_rate);
+  const venueRowsSorted = [...matchedVenueRows].filter((v) => v.reach_rate != null).sort((a, b) => a.reach_rate - b.reach_rate);
+
+  // Absences on record but zero follow-up calls logged — a call-center
+  // coverage gap, not a reach-quality problem (that's reach_rate's job).
+  const noCallVenues = [...matchedVenueRows]
+    .filter((v) => (v.absent || 0) > 0 && (v.called || 0) === 0)
+    .sort((a, b) => (b.absent || 0) - (a.absent || 0));
+
+  function openNoCallsDrill() {
+    drill.open({
+      title: "Sites with absences but no follow-up calls",
+      tone: "risk", tagLabel: "REAL",
+      rootKey: "venue", rootLabel: "Site",
+      columns: [
+        { key: "district", label: "District" },
+        { key: "absent", label: "Absent", align: "right", render: (v) => fmtNum(v) },
+      ],
+      rootRows: noCallVenues,
+    });
+  }
 
   // Click-to-toggle legend: click a series name to hide/show it — same
   // pattern as the Awareness Forecast chart.
@@ -3115,10 +3155,10 @@ function RetentionCallsTab({ filters }) {
     return <span style={{ textDecoration: isHidden ? "line-through" : "none", opacity: isHidden ? 0.5 : 1 }}>{value}</span>;
   }
 
-  // Every score card drills district -> site (venue), off the same by_venue
-  // rows the "by venue" table below already has — no new query.
+  // Every score card drills district -> site (venue), off matchedVenueRows
+  // so the drill reflects whatever the venue search currently narrows to.
   function openMetricDrill(metricKey, label, formatter = fmtNum) {
-    const rootRows = groupByDistrict(venueRows, [metricKey], {})
+    const rootRows = groupByDistrict(matchedVenueRows, [metricKey], {})
       .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
     drill.open({
       title: `${label} — by district`,
@@ -3127,20 +3167,37 @@ function RetentionCallsTab({ filters }) {
       columns: [{ key: metricKey, label, align: "right", render: formatter }],
       rootRows,
       childKey: "venue", childLabel: "Site",
-      getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
+      getChildRows: (root) => matchedVenueRows.filter((v) => v.district === root.district).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
     });
   }
 
   return (
     <div>
+      <input
+        type="text"
+        value={venueSearch}
+        onChange={(e) => setVenueSearch(e.target.value)}
+        placeholder="Search by venue…"
+        style={{ width: "100%", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5, marginBottom: 4 }}
+      />
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
+        Filters every metric on this page to the matching venue(s) — score cards, the daily funnel chart, the story, and the by-venue table below.
+      </div>
+
       <Grid cols={4}>
         <KpiTile label="Unique youth called" value={fmtNum(totalCalled)} sub="absent youth followed up" tag="REAL" onClick={() => openMetricDrill("called", "Called")} />
         <KpiTile label="Reached" value={fmtNum(totalReached)} sub={<span style={{ color: callReachColor(reachRate), fontWeight: 700 }}>{fmtPct(reachRate)} reach rate</span>} tag="REAL" onClick={() => openMetricDrill("reached", "Reached")} />
         <KpiTile label="Promised to return" value={fmtNum(totalPromised)} sub={`${fmtPct(promiseRate)} of reached`} tag="REAL" onClick={() => openMetricDrill("promised", "Promised to return")} />
         <KpiTile label="Youth returned" value={fmtNum(totalReturned)} sub={<span style={{ color: C.green, fontWeight: 700 }}>{fmtPct(recoveryRate)} recovery of called</span>} tag="REAL" onClick={() => openMetricDrill("returned", "Returned")} />
+        <KpiTile
+          label="Sites with no follow-up calls" value={fmtNum(noCallVenues.length)}
+          sub={noCallVenues.length > 0 ? <span style={{ color: C.coral, fontWeight: 700 }}>absences on record, zero calls made</span> : "every site with an absence got at least one call"}
+          tone={noCallVenues.length > 0 ? "sim" : "real"} tag="REAL"
+          onClick={noCallVenues.length > 0 ? openNoCallsDrill : undefined}
+        />
       </Grid>
 
-      <Card title="Daily follow-up funnel — called → reached → promised → returned" subtitle='Each line is unique youth per call day. "Returned" is logged on the next attendance day, so it reads zero on days before a weekend or holiday. Click a legend item to hide/show that line.' chip="REAL">
+      <Card title="Daily follow-up funnel — called → reached → promised → returned" subtitle={`Each line is unique youth per call day. "Returned" is logged on the next attendance day, so it reads zero on days before a weekend or holiday. Click a legend item to hide/show that line.${q ? ` Showing venues matching "${venueSearch.trim()}".` : ""}`} chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>

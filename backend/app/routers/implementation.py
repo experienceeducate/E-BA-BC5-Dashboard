@@ -236,6 +236,28 @@ def retention_calls(
     """
     daily = database.run_query(daily_sql, params, role=user.role)
 
+    # Venue-grain daily rows too, purely additive alongside the programme-
+    # wide `daily` above — lets the frontend's venue search re-derive the
+    # daily funnel chart for just the matched venue(s) without a second
+    # round trip, by summing these rows per date client-side instead of
+    # querying BigQuery again per keystroke.
+    daily_venue_where, daily_venue_params = build_where(
+        districts=district, gender=gender, venues=venue,
+        prefix="rcdv", district_col="youth_district", gender_col="youth_gender", venue_col="venue_name",
+    )
+    daily_by_venue_sql = f"""
+    SELECT event_date, venue_name AS venue,
+           SUM(calls_made_today) AS called,
+           SUM(calls_reached_today) AS reached,
+           SUM(promised_return_today) AS promised,
+           SUM(returned) AS returned
+    FROM ({retention_calls_detail_sql()}) AS rc
+    WHERE {daily_venue_where}
+    GROUP BY event_date, venue
+    ORDER BY event_date, venue
+    """
+    daily_by_venue = database.run_query(daily_by_venue_sql, daily_venue_params, role=user.role)
+
     venue_where, venue_params = build_where(
         districts=district, gender=gender, venues=venue,
         prefix="rcv", district_col="youth_district", gender_col="youth_gender", venue_col="venue_name",
@@ -257,7 +279,7 @@ def retention_calls(
         called = r.get("called") or 0
         r["reach_rate"] = round(100 * (r.get("reached") or 0) / called, 1) if called else None
 
-    return {"daily": daily, "by_venue": by_venue}
+    return {"daily": daily, "daily_by_venue": daily_by_venue, "by_venue": by_venue}
 
 
 # Column names straight from the recruitment team's reference query
