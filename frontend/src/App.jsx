@@ -3466,33 +3466,192 @@ function TrainerQualityPage({ filters, phase }) {
   );
 }
 
+// Same read as the reference design's RAGc(v,50,30) for "% exceeding
+// expectations" — distinct from RATE_TARGETS' funnel-stage bands, since a
+// milestone quality score isn't a funnel conversion rate.
+function milestoneColor(pct) {
+  if (pct == null) return C.muted;
+  return pct >= 50 ? C.green : pct >= 30 ? C.gold : C.coral;
+}
+
 function MilestonesTab({ filters }) {
+  const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/milestones${buildParams(filters)}`);
-  const rows = data?.weekly || [];
+  const weekly = data?.weekly || [];
+  const byVenue = data?.by_venue || [];
+
+  const latest = weekly[weekly.length - 1];
+  const prior = weekly.length > 1 ? weekly[weekly.length - 2] : null;
+  const weekOverWeek = latest && prior && latest.exceed_pct != null && prior.exceed_pct != null
+    ? Math.round((latest.exceed_pct - prior.exceed_pct) * 10) / 10
+    : null;
+  const peakWeek = weekly.reduce((best, w) => (w.exceed_pct != null && (best == null || w.exceed_pct > best.exceed_pct) ? w : best), null);
+
+  const venuesRanked = [...byVenue].filter((v) => v.exceed_pct != null).sort((a, b) => b.exceed_pct - a.exceed_pct);
+  const top5 = venuesRanked.slice(0, 5);
+  const bottom5 = venuesRanked.slice(-5).reverse();
+  const cohortAvgExceed = venuesRanked.length ? Math.round((10 * sumBy(venuesRanked, "exceed_pct")) / venuesRanked.length) / 10 : null;
+  const spread = top5[0] && bottom5[0] ? Math.round((top5[0].exceed_pct - bottom5[0].exceed_pct) * 10) / 10 : null;
+
+  // District skew across the top/bottom 5 — mirrors the reference design's
+  // "the bottom skews Bugweri" read, but computed from whatever the live
+  // ranking actually shows rather than a hardcoded district name.
+  const districtTally = {};
+  top5.forEach((v) => { const d = districtTally[v.district] || (districtTally[v.district] = { top: 0, bottom: 0 }); d.top += 1; });
+  bottom5.forEach((v) => { const d = districtTally[v.district] || (districtTally[v.district] = { top: 0, bottom: 0 }); d.bottom += 1; });
+  const worstDistrict = Object.entries(districtTally).sort((a, b) => b[1].bottom - a[1].bottom)[0];
+
+  const bottom5AvgCompletion = bottom5.length ? Math.round((10 * sumBy(bottom5, "completion_pct")) / bottom5.length) / 10 : null;
+
+  const parentVals = weekly.map((w) => w.parent_present_pct).filter((v) => v != null);
+  const parentGapWide = parentVals.length >= 2 && (Math.max(...parentVals) - Math.min(...parentVals) > 40);
+
+  // Row click on a venue -> jump straight into that venue's district (openAt
+  // skips the root district picker since the row already names one), same
+  // pattern as the Attendance/Retention district->venue drills.
+  function openVenueDistrictDrill(v) {
+    const rootRows = groupByDistrict(byVenue, ["below", "meet", "exceed"], {
+      exceed_pct: (d) => { const t = (d.below || 0) + (d.meet || 0) + (d.exceed || 0); return t ? Math.round((1000 * d.exceed) / t) / 10 : null; },
+    }).sort((a, b) => (b.exceed_pct || 0) - (a.exceed_pct || 0));
+    drill.openAt({
+      title: "Milestone quality — by district",
+      tone: "sim", tagLabel: "SAMPLE",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: "exceed_pct", label: "% exceeding", align: "right", render: fmtPct }],
+      rootRows,
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => byVenue.filter((r) => r.district === root.district).sort((a, b) => (b.exceed_pct || 0) - (a.exceed_pct || 0)),
+    }, { district: v.district });
+  }
+
   return (
-    <Card title="Weekly business-pitch milestones" subtitle="Below / meets / exceeds expectations by week, plus completion and parental-attendance rate" chip="SAMPLE" chipTone="sim">
-      <State loading={loading} error={error} empty={!loading && rows.length === 0}>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-            <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
-            <YAxis tick={{ fontSize: 11 }} />
-            <Tooltip /><Legend />
-            <Bar dataKey="below" name="Below" stackId="w" fill={C.coral} />
-            <Bar dataKey="meet" name="Meets" stackId="w" fill={C.gold} />
-            <Bar dataKey="exceed" name="Exceeds" stackId="w" fill={C.green} radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-        <DataTable
-          columns={[
-            { key: "week_number", label: "Week" },
-            { key: "completion_pct", label: "Completion", align: "right", render: (v) => fmtPct(v) },
-            { key: "parent_present_pct", label: "Parent present", align: "right", render: (v) => fmtPct(v) },
-          ]}
-          rows={rows}
+    <div>
+      <Grid cols={4}>
+        <KpiTile label="Weeks reported" value={String(weekly.length)} sub="Friday milestone captures, this cohort" tag="SAMPLE" tone="sim" />
+        <KpiTile label="Latest completion" value={fmtPct(latest?.completion_pct)} sub={latest ? `Week ${latest.week_number}` : undefined} tag="SAMPLE" tone="sim" />
+        <KpiTile label="Peak quality week" value={peakWeek ? `Week ${peakWeek.week_number}` : "—"} sub={peakWeek ? `${fmtPct(peakWeek.exceed_pct)} exceeding expectations` : undefined} tag="SAMPLE" tone="sim" />
+        <KpiTile
+          label="Latest vs prior week"
+          value={weekOverWeek == null ? "—" : <span style={{ color: weekOverWeek >= 0 ? C.green : C.coral }}>{weekOverWeek > 0 ? "+" : ""}{weekOverWeek}pp</span>}
+          sub="share exceeding expectations, week-on-week"
+          tag="SAMPLE" tone="sim"
         />
-      </State>
-    </Card>
+      </Grid>
+
+      <Card title="Pitch quality by week" subtitle="Share of youth below / meeting / exceeding expectations, captured every Friday." chip="SAMPLE" chipTone="sim">
+        <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
+              <Tooltip /><Legend />
+              <Bar dataKey="below_pct" name="Below" stackId="w" fill={C.coral} />
+              <Bar dataKey="meet_pct" name="Meets" stackId="w" fill={C.gold} />
+              <Bar dataKey="exceed_pct" name="Exceeds" stackId="w" fill={C.green} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title="Quality trajectory" subtitle="Exceeding vs below expectations, week on week." chip="SAMPLE" chipTone="sim">
+          <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip /><Legend />
+                <Line type="monotone" dataKey="exceed_pct" name="Exceeds %" stroke={C.green} strokeWidth={2} />
+                <Line type="monotone" dataKey="below_pct" name="Below %" stroke={C.coral} strokeWidth={2} />
+              </LineChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+        <Card title="Parent engagement present (%)" subtitle="Share of youth with a parent engaged that week." chip="SAMPLE" chipTone="sim">
+          <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
+                <Tooltip />
+                <Bar dataKey="parent_present_pct" name="Parent present %" radius={[4, 4, 0, 0]}>
+                  {weekly.map((w, i) => <Cell key={i} fill={(w.parent_present_pct ?? 0) < 10 ? "#D8CFB8" : C.gold} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+      </div>
+
+      <Card
+        title="Venue milestone performance — top & bottom 5"
+        subtitle={`Ranked by share of youth exceeding pitch expectations, cumulative across weeks reported. ${fmtNum(byVenue.length)} venue${byVenue.length === 1 ? "" : "s"}${cohortAvgExceed != null ? `; cohort average ${fmtPct(cohortAvgExceed)} exceeding` : ""}. Click a row for the district breakdown.`}
+        chip="SAMPLE" chipTone="sim"
+      >
+        <State loading={loading} error={error} empty={!loading && venuesRanked.length === 0}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.green, marginBottom: 6 }}>▲ Top 5 venues</div>
+              <DataTable
+                columns={[
+                  { key: "venue", label: "Venue" },
+                  { key: "district", label: "District" },
+                  { key: "avg_youth_per_week", label: "Youth/wk", align: "right", render: (v) => fmtNum(v) },
+                  { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+                ]}
+                rows={top5}
+                onRowClick={openVenueDistrictDrill}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.coral, marginBottom: 6 }}>▼ Bottom 5 venues</div>
+              <DataTable
+                columns={[
+                  { key: "venue", label: "Venue" },
+                  { key: "district", label: "District" },
+                  { key: "avg_youth_per_week", label: "Youth/wk", align: "right", render: (v) => fmtNum(v) },
+                  { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+                ]}
+                rows={bottom5}
+                onRowClick={openVenueDistrictDrill}
+              />
+            </div>
+          </div>
+        </State>
+      </Card>
+
+      <ExecBand num="!" title="Actionable insights" />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+        {spread != null && top5[0] && bottom5[0] && (
+          <Insight tone="warn">
+            <b>A {spread}pp spread on the identical milestone.</b> {top5[0].venue} leads at {fmtPct(top5[0].exceed_pct)} exceeding while {bottom5[0].venue} trails at {fmtPct(bottom5[0].exceed_pct)} — every venue runs the same curriculum, so the gap points to venue- and trainer-level execution, not the programme design. Peer-pairing and targeted coaching at the weakest venues should close this fastest.
+          </Insight>
+        )}
+        {worstDistrict && worstDistrict[1].bottom >= 2 && (
+          <Insight tone="neutral">
+            <b>{worstDistrict[0]} skews the bottom.</b> {worstDistrict[1].bottom} of the 5 weakest venues are in {worstDistrict[0]}{worstDistrict[1].top ? `, while it also holds ${worstDistrict[1].top} of the top 5 — so it isn't a blanket district problem` : ""} — worth a focused coaching push there before the next milestone cycle.
+          </Insight>
+        )}
+        {bottom5AvgCompletion != null && bottom5.length > 0 && (
+          <Insight tone={bottom5AvgCompletion >= 85 ? "pos" : "neutral"}>
+            <b>{bottom5AvgCompletion >= 85 ? "Weak pitch quality, not weak attendance." : "Completion is soft too at the bottom venues."}</b> The bottom-5 venues still average {fmtPct(bottom5AvgCompletion)} completion{bottom5AvgCompletion >= 85 ? " — youth turn up and finish; the gap is pitch quality, which coaching can lift directly." : " — attendance itself needs attention alongside pitch coaching."}
+          </Insight>
+        )}
+        {weekOverWeek != null && weekOverWeek < -10 && prior && latest && (
+          <Insight tone="risk">
+            <b>Quality reversed in the latest week.</b> The share exceeding expectations fell {Math.abs(weekOverWeek)}pp from week {prior.week_number} to week {latest.week_number} — worth concentrating coaching before the next milestone rather than after.
+          </Insight>
+        )}
+        {parentGapWide && (
+          <Insight tone="warn">
+            <b>Parent-engagement capture looks like a data gap, not real attendance.</b> Reported parent presence swings from {fmtPct(Math.min(...parentVals))} to {fmtPct(Math.max(...parentVals))} across weeks — standardising the Friday capture would turn this into a metric the team can actually manage.
+          </Insight>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -3599,12 +3758,12 @@ const GUIDE_PAGES = [
   { group: "Implementation", page: "Trainer Quality", tone: "real", navGroup: "impl", navTab: "train",
     summary: "Per-lesson scores, banded Exceeds / Meets / Below.",
     what: "Per-lesson classroom observation scores, banded Exceeds / Meets / Below expectations. Trainer names are staff-only (PII)." },
-  { group: "Implementation", page: "Milestones", tone: "sample", navGroup: "impl", navTab: "milestones",
-    summary: "Weekly pitch quality, below/meets/exceeds.",
-    what: "Weekly business-pitch milestone distribution (below / meets / exceeds expectations), completion rate, and parental-attendance rate. Still placeholder data." },
   { group: "Implementation", page: "Youth Experience", tone: "sample", navGroup: "impl", navTab: "nps",
     summary: "Weekly NPS trend (Programme / Venue / Meals).",
     what: "Programme / Venue / Meals NPS weekly trend. Still placeholder data." },
+  { group: "Product Design", page: "Milestones", tone: "sample", navGroup: "product", navTab: "milestones",
+    summary: "Weekly pitch quality, below/meets/exceeds, by venue.",
+    what: "Weekly business-pitch milestone distribution (below / meets / exceeds expectations), completion rate, parental-attendance rate, and a per-venue top/bottom-5 ranking by cumulative % exceeding. Still placeholder data — the underlying table isn't confirmed against live BigQuery yet." },
   { group: "Field Operations", page: "Venue", tone: "sample", navGroup: "fops", navTab: "venue",
     summary: "Compliance rate by venue.",
     what: "Compliance rate by venue. Still placeholder data." },
@@ -3687,7 +3846,8 @@ function GuideTab({ navigate }) {
         <KpiTile label="Guide" value="You are here" sub="No live data — a reference page." tone="pii" />
         <KpiTile label="Executive Summary" value="1 page" sub="The whole funnel at a glance, plus gender split and recommendations." onClick={navigate ? () => navigate("es", "es-main") : undefined} />
         <KpiTile label="Recruitment" value="5 pages" sub="Awareness, Mobilisation, Acquisition, Mobilisers, TAM Analysis." onClick={navigate ? () => navigate("rec") : undefined} />
-        <KpiTile label="Implementation" value="6 pages" sub="Retention, Attendance, Retention Calls, Trainer Quality, Milestones, Youth Experience." onClick={navigate ? () => navigate("impl") : undefined} />
+        <KpiTile label="Implementation" value="5 pages" sub="Retention, Attendance, Retention Calls, Trainer Quality, Youth Experience." onClick={navigate ? () => navigate("impl") : undefined} />
+        <KpiTile label="Product Design" value="1 page" sub="Milestones." onClick={navigate ? () => navigate("product") : undefined} />
         <KpiTile label="Field Operations" value="2 pages" sub="Venue, Transport." onClick={navigate ? () => navigate("fops") : undefined} />
       </Grid>
 
@@ -3725,7 +3885,8 @@ function GuideTab({ navigate }) {
       <div style={{ marginBottom: 20 }}>
         <Insight tone="neutral">
           Navigation has two levels. The <b>bold tabs</b> along the top (Executive Summary,
-          Recruitment, Implementation, Field Operations, Guide) switch between groups. Below them, a
+          Recruitment, Implementation, Product Design, Field Operations, Guide) switch between
+          groups. Below them, a
           second row switches between the pages inside that group. Awareness, Mobilisation and
           Acquisition have a third level — a row of pill-shaped buttons just under the page title —
           click those to switch sub-pages without leaving the tab.
@@ -3784,8 +3945,10 @@ const NAV = [
     { key: "attendance", label: "Attendance", render: (f) => <AttendanceTab filters={f} /> },
     { key: "retcalls", label: "Retention Calls", render: (f) => <RetentionCallsTab filters={f} /> },
     { key: "train", label: "Trainer Quality", render: (f) => <TrainersTab filters={f} /> },
-    { key: "milestones", label: "Milestones", render: (f) => <MilestonesTab filters={f} /> },
     { key: "nps", label: "Youth Experience", render: (f) => <NpsTab filters={f} /> },
+  ]},
+  { key: "product", group: "Product Design", tabs: [
+    { key: "milestones", label: "Milestones", render: (f) => <MilestonesTab filters={f} /> },
   ]},
   { key: "fops", group: "Field Operations", tabs: [
     { key: "venue", label: "Venue", render: (f) => <VenueTab filters={f} /> },
