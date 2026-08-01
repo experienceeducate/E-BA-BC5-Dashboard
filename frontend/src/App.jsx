@@ -3764,16 +3764,16 @@ const GUIDE_PAGES = [
     what: "Parish-level predicted vs. actual market coverage. Still placeholder data." },
   { group: "Implementation", page: "Retention", tone: "real", navGroup: "impl", navTab: "ret",
     summary: "Acquired → activated → retained by venue vs targets.",
-    what: "Acquired → activated → retained by venue, against activation/retention targets." },
+    what: "Acquired → activated → retained by venue, against activation/retention targets, plus the female share of retained youth. Venues below target are surfaced lowest-first." },
   { group: "Implementation", page: "Attendance", tone: "real", navGroup: "impl", navTab: "attendance",
-    summary: "Daily present & net churn, programme-wide.",
-    what: "Daily attendance and net churn (present minus newly absent). Programme-wide only — no per-venue breakdown or per-lesson attendance-% yet; those need a table that isn't confirmed against live BigQuery." },
-  { group: "Implementation", page: "Retention Calls", tone: "sample", navGroup: "impl", navTab: "retcalls",
-    summary: "Follow-up funnel for absent youth.",
-    what: "Daily follow-up funnel for absent youth: called → reached → promised to return → returned. Still placeholder data." },
+    summary: "Daily present & net churn, plus per-venue attendance rate.",
+    what: "Daily attendance and net churn (present minus newly absent), plus per-venue attendance rate (present ÷ activated, joined against the Retention tab's activation counts) with a district roll-up, a bottom-5-venues table, and district→venue drills. Per-lesson attendance-% still isn't available — that needs a table that isn't confirmed against live BigQuery." },
+  { group: "Implementation", page: "Retention Calls", tone: "real", navGroup: "impl", navTab: "retcalls",
+    summary: "Follow-up funnel for absent youth, searchable by venue.",
+    what: "Daily follow-up funnel for absent youth: called → reached → promised to return → returned. Search by venue to filter every component on the page; click a legend item to hide/show that line; a 'sites with absences but no follow-up calls' scorecard flags call-center coverage gaps; every score card drills district → site. Reasons for absence aren't broken out yet — that column hasn't been confirmed against live BigQuery." },
   { group: "Implementation", page: "Trainer Quality", tone: "real", navGroup: "impl", navTab: "train",
-    summary: "Per-lesson scores, banded Exceeds / Meets / Below.",
-    what: "Per-lesson classroom observation scores, banded Exceeds / Meets / Below expectations. Trainer names are staff-only (PII)." },
+    summary: "Per-lesson scores by teaching domain; BC5 TOT vs BOOTCAMP_5.",
+    what: "Per-lesson classroom observation scores across the seven E! teaching domains, banded Exceeds / Meets / Below expectations. Two sub-pages — Overview (both cohort phases combined) and BC5 TOT (certification phase only, 2026-07-29–2026-08-16) — each with a district→venue drill. Trainer names are staff-only (PII)." },
   { group: "Implementation", page: "Youth Experience", tone: "sample", navGroup: "impl", navTab: "nps",
     summary: "Weekly NPS trend (Programme / Venue / Meals).",
     what: "Programme / Venue / Meals NPS weekly trend. Still placeholder data." },
@@ -3903,9 +3903,9 @@ function GuideTab({ navigate }) {
           Navigation has two levels. The <b>bold tabs</b> along the top (Executive Summary,
           Recruitment, Implementation, Product Design, Field Operations, Guide) switch between
           groups. Below them, a
-          second row switches between the pages inside that group. Awareness, Mobilisation and
-          Acquisition have a third level — a row of pill-shaped buttons just under the page title —
-          click those to switch sub-pages without leaving the tab.
+          second row switches between the pages inside that group. Awareness, Mobilisation,
+          Acquisition and Trainer Quality have a third level — a row of pill-shaped buttons just
+          under the page title — click those to switch sub-pages without leaving the tab.
         </Insight>
       </div>
 
