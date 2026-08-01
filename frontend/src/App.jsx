@@ -783,36 +783,48 @@ function ExecutiveSummaryPage({ filters }) {
   const insights = buildExecInsights(rates, stages, genderStages);
   const recommendations = buildExecRecommendations(insights);
 
+  // Each conversion rate's "to" stage is also the one stage per sub-funnel
+  // worth tracking against target (Registered/Interested share Eligible's
+  // target, so showing all three separately just measures the same
+  // goalpost three times) — blending them here removes 5 near-duplicate
+  // scorecards instead of running a second grid for the same 5 stages.
+  const stageProgressByName = Object.fromEntries((stageProgress.data?.stages || []).map((s) => [s.stage, s]));
+  function progressLine(stageName) {
+    const sp = stageProgressByName[stageName];
+    if (!sp) return null;
+    return (
+      <>
+        <br />
+        <span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(sp.pct_of_target)] }}>
+          {sp.target
+            ? <>{fmtNum(sp.count)} of {fmtNum(sp.target)} target{sp.target_is_implied ? " (implied)" : ""} — {fmtPct(sp.pct_of_target)}</>
+            : "no target set"}
+        </span>
+      </>
+    );
+  }
+  function progressTag(stageName) {
+    return stageProgressByName[stageName]?.target_is_implied ? "IMPLIED" : undefined;
+  }
+
   return (
     <div>
-      <ExecBand num={1} title="Executive conversion metrics" />
-      <State loading={kpis.loading} error={kpis.error} empty={!kpis.loading && !kpis.error && Object.keys(rates).length === 0}>
+      <ExecBand num={1} title="Executive conversion & target metrics" />
+      <State
+        loading={kpis.loading || stageProgress.loading}
+        error={kpis.error || stageProgress.error}
+        empty={!kpis.loading && !kpis.error && Object.keys(rates).length === 0}
+      >
         <Grid cols={4}>
-          <KpiTile label="Eligibility" value={<span style={{ color: rateColor(rates.eligibility_rate, "eligibility_rate") }}>{fmtPct(rates.eligibility_rate)}</span>} sub="Eligible / Interested" onClick={() => openRateDrill("eligibility_rate", "Eligibility")} />
-          <KpiTile label="Mobilisation" value={<span style={{ color: rateColor(rates.mobilisation_rate, "mobilisation_rate") }}>{fmtPct(rates.mobilisation_rate)}</span>} sub="Confirmed / Reached" onClick={() => openRateDrill("mobilisation_rate", "Mobilisation")} />
-          <KpiTile label="Acquisition" value={<span style={{ color: rateColor(rates.acquisition_rate, "acquisition_rate") }}>{fmtPct(rates.acquisition_rate)}</span>} sub="Acquired / Confirmed" onClick={() => openRateDrill("acquisition_rate", "Acquisition")} />
-          <KpiTile label="Activation" value={<span style={{ color: rateColor(rates.activation_rate, "activation_rate") }}>{fmtPct(rates.activation_rate)}</span>} sub="Activated / Acquired" onClick={() => openRateDrill("activation_rate", "Activation")} />
-          <KpiTile label="Retention" value={<span style={{ color: rateColor(rates.retention_rate, "retention_rate") }}>{fmtPct(rates.retention_rate)}</span>} sub="Retained / Activated" onClick={() => openRateDrill("retention_rate", "Retention")} />
+          <KpiTile label="Eligibility" value={<span style={{ color: rateColor(rates.eligibility_rate, "eligibility_rate") }}>{fmtPct(rates.eligibility_rate)}</span>} sub={<>Eligible / Interested{progressLine("Eligible")}</>} tag={progressTag("Eligible")} onClick={() => openRateDrill("eligibility_rate", "Eligibility")} />
+          <KpiTile label="Mobilisation" value={<span style={{ color: rateColor(rates.mobilisation_rate, "mobilisation_rate") }}>{fmtPct(rates.mobilisation_rate)}</span>} sub={<>Confirmed / Reached{progressLine("Confirmed")}</>} tag={progressTag("Confirmed")} onClick={() => openRateDrill("mobilisation_rate", "Mobilisation")} />
+          <KpiTile label="Acquisition" value={<span style={{ color: rateColor(rates.acquisition_rate, "acquisition_rate") }}>{fmtPct(rates.acquisition_rate)}</span>} sub={<>Acquired / Confirmed{progressLine("Acquired")}</>} tag={progressTag("Acquired")} onClick={() => openRateDrill("acquisition_rate", "Acquisition")} />
+          <KpiTile label="Activation" value={<span style={{ color: rateColor(rates.activation_rate, "activation_rate") }}>{fmtPct(rates.activation_rate)}</span>} sub={<>Activated / Acquired{progressLine("Activated")}</>} tag={progressTag("Activated")} onClick={() => openRateDrill("activation_rate", "Activation")} />
+          <KpiTile label="Retention" value={<span style={{ color: rateColor(rates.retention_rate, "retention_rate") }}>{fmtPct(rates.retention_rate)}</span>} sub={<>Retained / Activated{progressLine("Retained")}</>} tag={progressTag("Retained")} onClick={() => openRateDrill("retention_rate", "Retention")} />
         </Grid>
       </State>
 
-      <ExecBand num={2} title="Progress on target — by stage" />
-      <State loading={stageProgress.loading} error={stageProgress.error} empty={!stageProgress.loading && (stageProgress.data?.stages || []).length === 0}>
-        <Grid cols={3}>
-          {(stageProgress.data?.stages || []).map((s) => (
-            <KpiTile
-              key={s.stage}
-              label={s.stage}
-              value={fmtNum(s.count)}
-              sub={s.target ? `${fmtPct(s.pct_of_target)} of ${fmtNum(s.target)} target${s.target_is_implied ? " (implied)" : ""}` : "no target set"}
-              tone={s.target_is_implied ? "sim" : "real"}
-              tag={s.target_is_implied ? "IMPLIED" : "REAL"}
-            />
-          ))}
-        </Grid>
-      </State>
-
-      <ExecBand num={3} title="What is locking youth out — eligibility barriers" />
+      <ExecBand num={2} title="What is locking youth out — eligibility barriers" />
       <Card title="Why reached youth do not qualify" subtitle="Among youth who did not meet the eligibility rule, which criteria they failed (a youth can fail more than one)" chip="REAL">
         <State loading={barriers.loading} error={barriers.error} empty={!barriers.loading && (barriers.data?.barriers || []).length === 0}>
           <ResponsiveContainer width="100%" height={240}>
@@ -827,14 +839,14 @@ function ExecutiveSummaryPage({ filters }) {
         </State>
       </Card>
 
-      <ExecBand num={4} title="Overall recruitment funnel" />
+      <ExecBand num={3} title="Overall recruitment funnel" />
       <Card title="Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired" subtitle="Each stage shows count and % of the previous stage. The largest single drop-off is outlined. Click a stage to drill by district." chip="REAL">
         <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
           <FunnelViz stages={headlineStages} onStageClick={openStageDrill} />
         </State>
       </Card>
 
-      <ExecBand num="4b" title="Attrition through the funnel" />
+      <ExecBand num={4} title="Attrition through the funnel" />
       <Card title="Retention against Registered" subtitle="Every stage measured against the same denominator — total Registered — so cumulative attrition reads at a glance" chip="DERIVED">
         <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
           <DataTable
