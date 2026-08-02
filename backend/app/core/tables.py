@@ -259,9 +259,9 @@ def retention_calls_detail_sql():
 # more than one. Note the source column is spelled "elligible" (sic).
 AWARENESS_KYC = f"{_SILVER}.eba_bootcamp_awareness"
 
-# Note: current_activty / registration_reasons are JSON-array-as-string columns
-# (e.g. '["Staying home"]') — query with JSON_EXTRACT_STRING_ARRAY(...), not as
-# plain strings.
+# Note: current_activty / registration_reasons / decision_consultation /
+# open_questions are JSON-array-as-string columns (e.g. '["Staying home"]') —
+# query with JSON_EXTRACT_STRING_ARRAY(...), not as plain strings.
 
 # Randomised control/comparison arm — eligible youth tracked (status +
 # reachability only, no mobilisation pitch) but not actively mobilised, so the

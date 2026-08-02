@@ -332,6 +332,26 @@ def awareness_kyc(
     """
     reasons = database.run_query(reasons_sql, base_params, role=user.role)
 
+    consultation_sql = f"""
+    SELECT consultant, COUNT(*) AS count
+    FROM {AWARENESS_KYC}, UNNEST(JSON_EXTRACT_STRING_ARRAY(decision_consultation)) AS consultant
+    WHERE {elig_where}
+    GROUP BY consultant ORDER BY count DESC
+    """
+    consultation = database.run_query(consultation_sql, base_params, role=user.role)
+
+    # Free-text, unlike activity/reasons/consultation's small fixed category
+    # sets — grouped so repeated questions surface first, capped at the top
+    # 20 so a long tail of one-off phrasing doesn't flood the Q&A section.
+    questions_sql = f"""
+    SELECT question, COUNT(*) AS count
+    FROM {AWARENESS_KYC}, UNNEST(JSON_EXTRACT_STRING_ARRAY(open_questions)) AS question
+    WHERE {elig_where} AND question IS NOT NULL AND TRIM(question) != ''
+    GROUP BY question ORDER BY count DESC
+    LIMIT 20
+    """
+    questions = database.run_query(questions_sql, base_params, role=user.role)
+
     biz_sql = f"""
     SELECT UPPER(youth_district) AS district, youth_gender AS gender,
            COUNTIF(owns_business) AS owners, COUNT(*) AS total
@@ -370,6 +390,8 @@ def awareness_kyc(
         },
         "activity": activity,
         "reasons": reasons,
+        "consultation": consultation,
+        "questions": questions,
         "business": {"by_gender_district": biz_rows},
         "channels": channels,
     }
