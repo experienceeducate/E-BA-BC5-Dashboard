@@ -165,7 +165,12 @@ def awareness_parish(
     exist on this table (same total_*_female/male columns _stage_counts uses
     at district grain in overview.py) — so the Funnel Overview page's gender
     chart/gauges can be genuinely parish-precise when a search narrows to one
-    parish, not just fall back to its containing district."""
+    parish, not just fall back to its containing district.
+
+    `target` prefers the hardcoded AWARENESS_ELIGIBLE_TARGET_BC5 sheet over
+    the live registration_target where the sheet has data for that parish
+    (see the note at that constant) — `target_source` on each row says which
+    one it came from."""
     where, params = build_where(
         districts=district,
         extra=[active_cohort_clause("awp", requested=cohort)], prefix="awp",
@@ -199,9 +204,40 @@ def awareness_parish(
         (r["district"], r["parish"]): r["target"]
         for r in database.run_query(target_sql, params, role=user.role)
     }
+
+    # Prefer the recruitment team's hardcoded BC5 sheet (AWARENESS_ELIGIBLE_TARGET_BC5)
+    # over the live registration_target where it has data — it's the team's most
+    # current planning number. It only covers MAYUGE/IGANGA today, so every other
+    # district/parish still falls back to the live target. Also adds a row (zeroed
+    # actuals) for any hardcoded parish with no awareness activity recorded yet, so
+    # its target isn't silently dropped from the district total before any actuals
+    # land.
+    requested_districts = {d.upper() for d in district} if district else None
+    hardcoded_by_parish = {}
+    for row in AWARENESS_ELIGIBLE_TARGET_BC5:
+        if requested_districts and row["district"] not in requested_districts:
+            continue
+        key = (row["district"], row["parish"])
+        hardcoded_by_parish[key] = hardcoded_by_parish.get(key, 0) + row["target"]
+
     rows = database.run_query(actual_sql, params, role=user.role)
+    seen_keys = set()
     for r in rows:
-        r["target"] = target_by_key.get((r["district"], r["parish"]))
+        key = (r["district"], r["parish"])
+        seen_keys.add(key)
+        r["target"] = hardcoded_by_parish.get(key, target_by_key.get(key))
+        r["target_source"] = "hardcoded" if key in hardcoded_by_parish else ("live" if target_by_key.get(key) is not None else None)
+    for (d, p), t in hardcoded_by_parish.items():
+        if (d, p) in seen_keys:
+            continue
+        rows.append({
+            "district": d, "parish": p,
+            "reached": 0, "reached_female": 0, "reached_male": 0,
+            "interested": 0, "interested_female": 0, "interested_male": 0,
+            "eligible": 0, "eligible_female": 0, "eligible_male": 0,
+            "pct_female": None,
+            "target": t, "target_source": "hardcoded",
+        })
     rows.sort(key=lambda r: (r["district"], r["parish"]))
     return {"parishes": rows}
 
@@ -547,30 +583,22 @@ def awareness_forecast(
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
     """
-    target_sql = f"""
-    SELECT SUM(registration_target) AS target
-    FROM {AWARENESS_SUMMARY}
-    WHERE {where} AND data_measure = '{AWARENESS_MEASURE_TARGET}'
-    """
     totals = (database.run_query(registered_sql, params, role=user.role) or [{}])[0]
     registered = totals.get("registered") or 0
     interested = totals.get("interested") or 0
     eligible = totals.get("eligible") or 0
-    target = (database.run_query(target_sql, params, role=user.role) or [{}])[0].get("target") or 0
-
-    n_days = len(daily)
-    avg_daily_rate = (registered / n_days) if n_days else None
-    remaining = max(target - registered, 0)
-    days_to_target = (
-        round(remaining / avg_daily_rate) if avg_daily_rate else None
-    )
-    eligibility_rate = round(100 * eligible / interested, 1) if interested else None
 
     # District breakdown for the "days to target, by district" panel — pace
     # per district uses the SAME n_days (dates with any data in this filtered
     # window) as the denominator above, so every district's rate is "average
     # per day over the same observed reporting window", not each district's
     # own (possibly sparser) active-day count.
+    #
+    # `target` (both here and the page-level total below) prefers the
+    # hardcoded AWARENESS_ELIGIBLE_TARGET_BC5 sheet over the live
+    # registration_target where it has data for that district — see the note
+    # at that constant and at awareness_parish() above, which does the same
+    # thing at parish grain.
     district_registered_sql = f"""
     SELECT UPPER(youth_district) AS district, SUM(total_registered_youth) AS registered
     FROM {AWARENESS_SUMMARY}
@@ -583,18 +611,41 @@ def awareness_forecast(
     WHERE {where} AND data_measure = '{AWARENESS_MEASURE_TARGET}'
     GROUP BY district
     """
-    district_target = {r["district"]: r.get("target") or 0 for r in database.run_query(district_target_sql, params, role=user.role)}
-    district_rows = database.run_query(district_registered_sql, params, role=user.role)
+    live_district_target = {r["district"]: r.get("target") or 0 for r in database.run_query(district_target_sql, params, role=user.role)}
+
+    requested_districts = {d.upper() for d in district} if district else None
+    hardcoded_district_target = {}
+    for row in AWARENESS_ELIGIBLE_TARGET_BC5:
+        if requested_districts and row["district"] not in requested_districts:
+            continue
+        hardcoded_district_target[row["district"]] = hardcoded_district_target.get(row["district"], 0) + row["target"]
+
+    district_target = {
+        d: hardcoded_district_target.get(d, live_district_target.get(d, 0))
+        for d in set(live_district_target) | set(hardcoded_district_target)
+    }
+    target = sum(district_target.values())
+
+    n_days = len(daily)
+    avg_daily_rate = (registered / n_days) if n_days else None
+    remaining = max(target - registered, 0)
+    days_to_target = (
+        round(remaining / avg_daily_rate) if avg_daily_rate else None
+    )
+    eligibility_rate = round(100 * eligible / interested, 1) if interested else None
+
+    district_registered = {r["district"]: r.get("registered") or 0 for r in database.run_query(district_registered_sql, params, role=user.role)}
     by_district = []
-    for r in district_rows:
-        d_registered = r.get("registered") or 0
-        d_target = district_target.get(r["district"], 0)
+    for d in set(district_registered) | set(district_target):
+        d_registered = district_registered.get(d, 0)
+        d_target = district_target.get(d, 0)
         d_rate = (d_registered / n_days) if n_days else None
         d_gap = max(d_target - d_registered, 0)
         by_district.append({
-            "district": r["district"],
+            "district": d,
             "registered": d_registered,
             "target": d_target,
+            "target_source": "hardcoded" if d in hardcoded_district_target else ("live" if d_target else None),
             "gap": d_gap,
             "pct_of_target": round(100 * d_registered / d_target, 1) if d_target else None,
             "avg_daily_rate": round(d_rate, 1) if d_rate is not None else None,
