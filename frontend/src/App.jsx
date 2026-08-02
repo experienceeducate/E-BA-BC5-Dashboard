@@ -1716,6 +1716,8 @@ function AwarenessKycPage({ filters }) {
   const channels = data?.channels || [];
   const totalChannelEligible = sumBy(channels, "eligible");
   const totalChannelIneligible = sumBy(channels, "ineligible");
+  const consultation = data?.consultation || [];
+  const questions = data?.questions || [];
   const kycInsights = buildKycInsights(demo, channels, bizByGenderDistrict, data?.reasons);
 
   function openPersonaDrill(metricKey, label, sub) {
@@ -1732,8 +1734,9 @@ function AwarenessKycPage({ filters }) {
     <div>
       <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
         Who the eligible youth are and what locks others out — persona of the eligible pool,
-        current activity, why they enrol, and how they heard about us. Eligibility rule:
-        interested AND age 18–30 AND education P5–S3 AND income ≤ UGX 30,000.
+        current activity, why they enrol, who they consult before deciding, how they heard about
+        us, and what they're still asking. Eligibility rule: interested AND age 18–30 AND
+        education P5–S3 AND income ≤ UGX 30,000.
       </p>
 
       <Card title="Eligible youth profile" subtitle="Persona snapshot of the eligible pool — click a card to drill by district" chip="REAL">
@@ -1797,6 +1800,22 @@ function AwarenessKycPage({ filters }) {
         </Card>
       </div>
 
+      <Card title="Who youth consult for decisions" subtitle="Who eligible youth say they turn to before deciding to join" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && consultation.length === 0}>
+          <DataTable
+            columns={[
+              { key: "consultant", label: "Consulted" },
+              { key: "count", label: "Youth", align: "right", render: (v) => fmtNum(v) },
+              {
+                key: "pct_of_eligible", label: "% of eligible", align: "right",
+                render: (v) => fmtPct(v),
+              },
+            ]}
+            rows={consultation.map((c) => ({ ...c, pct_of_eligible: demo.eligible_count ? Math.round((1000 * c.count) / demo.eligible_count) / 10 : null }))}
+          />
+        </State>
+      </Card>
+
       <Card title="Who already owns a business" subtitle="Share of eligible youth, by gender and district" chip="REAL">
         <State loading={loading} error={error} empty={!loading && bizByGenderDistrict.length === 0}>
           <DataTable
@@ -1840,6 +1859,21 @@ function AwarenessKycPage({ filters }) {
               };
             })}
           />
+        </State>
+      </Card>
+
+      <ExecBand num="?" title="Q&A — what youth are asking" />
+      <Card title="Open questions raised before joining" subtitle="Free text, grouped by exact wording — repeated questions surface first. Showing the top 20." chip="REAL">
+        <State loading={loading} error={error} empty={!loading && questions.length === 0}>
+          <div style={{ maxHeight: 280, overflowY: "auto" }}>
+            <DataTable
+              columns={[
+                { key: "question", label: "Question" },
+                { key: "count", label: "Times raised", align: "right", render: (v) => fmtNum(v) },
+              ]}
+              rows={questions}
+            />
+          </div>
         </State>
       </Card>
     </div>
