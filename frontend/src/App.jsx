@@ -2360,7 +2360,7 @@ function MobilisationTab({ filters }) {
         pages={[
           { key: "funnel", label: "Mobilisation Overview" },
           { key: "forecast", label: "Mobilisation Forecasts" },
-          { key: "mobilisers", label: "Mobiliser Performance" },
+          { key: "mobilisers", label: "Mobiliser/Telemarketer Performance" },
           { key: "control", label: "Control Mobilisation Calls" },
           { key: "insights", label: "Call Centre Insights" },
         ]}
@@ -3942,7 +3942,7 @@ const GUIDE_PAGES = [
     what: "4 sub-pages — Awareness Overview, Mobilisers, KYC / Youth Profile, Forecast. Registered → interested → eligible by district, parish and mobiliser; youth demographics; registration-pace forecast." },
   { group: "Recruitment", page: "Mobilisation", tone: "real", navGroup: "rec", navTab: "mob",
     summary: "Assigned → reached → confirmed, 4-week vs 2.5-week cycles.",
-    what: "5 sub-pages — Mobilisation Overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
+    what: "5 sub-pages — Mobilisation Overview, Mobilisation Forecasts, Mobiliser/Telemarketer Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
   { group: "Recruitment", page: "Acquisition", tone: "real", navGroup: "rec", navTab: "acq",
     summary: "Verified → acquired by district; venue risk categories.",
     what: "2 sub-pages — Overview, Arrival & Verification. Verified → acquired by district; venue risk categories (Target Achieved / On Track / Low Risk / High Risk)." },
