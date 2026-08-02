@@ -1047,6 +1047,7 @@ function AwarenessOverviewPage({ filters }) {
   const drill = useDrill();
   const [search, setSearch] = useState("");
   const [parishCat, setParishCat] = useState("All");
+  const [districtCat, setDistrictCat] = useState("All");
   const [parishPage, setParishPage] = useState(0);
   const parish = useApi(`/api/recruitment/awareness-parish${buildParams(filters)}`);
 
@@ -1074,19 +1075,32 @@ function AwarenessOverviewPage({ filters }) {
   function groupParishRowsByDistrict(parishRows) {
     const byDistrict = {};
     parishRows.forEach((r) => {
-      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, registered: 0, interested: 0, eligible: 0, eligible_female: 0, target: 0 };
+      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, registered: 0, interested: 0, eligible: 0, eligible_female: 0, target: 0, usesHardcodedTarget: false };
       const d = byDistrict[r.district];
       d.registered += r.reached || 0;
       d.interested += r.interested || 0;
       d.eligible += r.eligible || 0;
       d.eligible_female += r.eligible_female || 0;
       d.target += r.target || 0;
+      if (r.target_source === "hardcoded") d.usesHardcodedTarget = true;
     });
     return Object.values(byDistrict)
       .map((d) => ({ ...d, pct_female: d.eligible ? Math.round((1000 * d.eligible_female) / d.eligible) / 10 : null }))
       .sort((a, b) => a.district.localeCompare(b.district));
   }
   const filteredRows = groupParishRowsByDistrict(matchedParishRowsForSearch);
+
+  // Same rate-vs-target bands as the parish-level "Category detail" section
+  // below (eligible ÷ registration target, aggregated up from the same
+  // per-parish targets) — districts get the identical score-card + status
+  // treatment parishes already have, not just a bare Target column.
+  const districtRowsWithCat = filteredRows.map((d) => {
+    const rate = d.target ? Math.round((1000 * d.eligible) / d.target) / 10 : null;
+    return { ...d, rate, category: categorizeRate(rate) };
+  });
+  const districtCatCounts = { All: districtRowsWithCat.length };
+  RATE_CATEGORY_ORDER.forEach((c) => { districtCatCounts[c] = districtRowsWithCat.filter((r) => r.category === c).length; });
+  const filteredDistrictRows = districtCat === "All" ? districtRowsWithCat : districtRowsWithCat.filter((r) => r.category === districtCat);
 
   const reached = sumBy(matchedParishRowsForSearch, "reached");
   const interested = sumBy(matchedParishRowsForSearch, "interested");
@@ -1323,19 +1337,30 @@ function AwarenessOverviewPage({ filters }) {
         </Card>
       </div>
 
-      <Card title="District comparison" subtitle="Reached, interested, eligible, target and female share by district — narrows to the exact parish you search for, rolled up by district." chip="REAL">
-        <State loading={parish.loading} error={parish.error} empty={!parish.loading && filteredRows.length === 0}>
+      <Card title="District comparison — vs. registration target" subtitle="Reached, interested, eligible, target and female share by district — narrows to the exact parish you search for, rolled up by district. Click a score card to filter by category — color shows status throughout." chip="REAL">
+        <State loading={parish.loading} error={parish.error} empty={!parish.loading && districtRowsWithCat.length === 0}>
+          <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
           <DataTable
             columns={[
               { key: "district", label: "District" },
               { key: "registered", label: "Reached", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("registered", "Reached") },
               { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("interested", "Interested") },
               { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("eligible", "Eligible") },
-              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("target", "Registration target") },
+              {
+                key: "target", label: "Target", align: "right",
+                render: (v, r) => <span title={r.usesHardcodedTarget ? "Includes the hardcoded BC5 planning target for at least one parish in this district" : "Live registration_target"}>{fmtNum(v)}{r.usesHardcodedTarget ? " *" : ""}</span>,
+                onHeaderClick: () => openMetricDrill("target", "Registration target"),
+              },
               { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell, onHeaderClick: () => openMetricDrill("pct_female", "% Female", fmtPct) },
+              { key: "rate", label: "Progress", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+              { key: "category", label: "Status", render: (v) => <span style={{ background: `${RATE_CATEGORY_COLOR[v]}22`, color: RATE_CATEGORY_COLOR[v], fontWeight: 700, fontSize: 11, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>{v}</span> },
             ]}
-            rows={filteredRows}
+            rows={filteredDistrictRows}
           />
+          {filteredDistrictRows.length === 0 && (
+            <div style={{ padding: 24, textAlign: "center", color: C.muted, fontSize: 12.5 }}>No districts match this filter.</div>
+          )}
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>* Target includes the hardcoded BC5 planning sheet for at least one parish — see Category detail below for the exact per-parish source.</p>
         </State>
       </Card>
 
@@ -1353,7 +1378,10 @@ function AwarenessOverviewPage({ filters }) {
                   { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
                   { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
                   { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
-                  { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+                  {
+                    key: "target", label: "Target", align: "right",
+                    render: (v, r) => <span title={r.target_source === "hardcoded" ? "Hardcoded BC5 planning target" : r.target_source === "live" ? "Live registration_target" : undefined}>{fmtNum(v)}{r.target_source === "hardcoded" ? " *" : ""}</span>,
+                  },
                   { key: "pct_female", label: "% Female", align: "right", render: (v) => <span style={{ color: v == null ? C.muted : v >= 60 ? C.green : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
                   { key: "rate", label: "Progress", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
                   { key: "category", label: "Status", render: (v) => <span style={{ background: `${RATE_CATEGORY_COLOR[v]}22`, color: RATE_CATEGORY_COLOR[v], fontWeight: 700, fontSize: 11, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>{v}</span> },
@@ -1367,6 +1395,7 @@ function AwarenessOverviewPage({ filters }) {
                   <button onClick={() => setParishPage(Math.min(parishMaxPage, parishPageClamped + 1))} disabled={parishPageClamped === parishMaxPage} style={{ ...PAGER_BTN, opacity: parishPageClamped === parishMaxPage ? 0.5 : 1 }}>Next ›</button>
                 </span>
               </div>
+              <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>* Hardcoded BC5 planning target (currently MAYUGE/IGANGA only) — every other parish falls back to the live registration_target.</p>
             </>
           )}
         </State>
@@ -2084,6 +2113,7 @@ function AwarenessForecastPage({ filters }) {
       parish: p.parish,
       registered,
       target,
+      target_source: p.target_source,
       gap,
       pct_of_target: target ? Math.round(1000 * registered / target) / 10 : null,
       days_to_target: rate ? Math.round(gap / rate) : null,
@@ -2092,7 +2122,10 @@ function AwarenessForecastPage({ filters }) {
 
   const forecastColumns = [
     { key: "registered", label: "Registered", align: "right", render: (v) => fmtNum(v) },
-    { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+    {
+      key: "target", label: "Target", align: "right",
+      render: (v, r) => <span title={r.target_source === "hardcoded" ? "Hardcoded BC5 planning target" : r.target_source === "live" ? "Live registration_target" : undefined}>{fmtNum(v)}{r.target_source === "hardcoded" ? " *" : ""}</span>,
+    },
     { key: "gap", label: "Gap", align: "right", render: (v) => fmtNum(v) },
     { key: "days_to_target", label: "Days to target", align: "right", render: (v) => (v == null ? "—" : v <= 0 ? "Met" : `${fmtNum(v)} d`) },
     { key: "pct_of_target", label: "% of target", align: "right", render: (v) => fmtPct(v) },
@@ -2114,8 +2147,10 @@ function AwarenessForecastPage({ filters }) {
   return (
     <div>
       <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
-        Registration pace against the live registration target — daily trend, progress by district, and
-        days-to-target at the current pace. Click a district row to drill into its parishes.
+        Registration pace against target — daily trend, progress by district, and days-to-target at the
+        current pace. Target prefers the hardcoded BC5 planning sheet where it has data for a district/
+        parish (marked *), falling back to the live registration_target elsewhere. Click a district row
+        to drill into its parishes.
       </p>
 
       <Grid cols={4}>
@@ -2134,7 +2169,7 @@ function AwarenessForecastPage({ filters }) {
         </div>
       </State>
 
-      <Card title="Daily trend — eligible youth vs target (cumulative)" subtitle="Running total of eligible youth against the registration target — the live registration_target field is the only real target BigQuery carries, so it stands in for the reference design's eligible-youth target line" chip="REAL">
+      <Card title="Daily trend — eligible youth vs target (cumulative)" subtitle="Running total of eligible youth against the registration target (hardcoded BC5 sheet where available, live registration_target elsewhere) — stands in for the reference design's eligible-youth target line" chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
           <ResponsiveContainer width="100%" height={280}>
             <AreaChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
@@ -2163,6 +2198,7 @@ function AwarenessForecastPage({ filters }) {
             rows={districtRows}
             onRowClick={openParishDrill}
           />
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>* Hardcoded BC5 planning target (currently MAYUGE/IGANGA only) — every other district/parish falls back to the live registration_target.</p>
         </State>
       </Card>
     </div>
