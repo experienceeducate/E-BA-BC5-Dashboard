@@ -39,6 +39,7 @@ from app.core.tables import (
     active_cohort_clause,
     resolve_active_cohorts,
     venue_mobilisation_target,
+    AWARENESS_ELIGIBLE_TARGET_BC5,
 )
 
 router = APIRouter()
@@ -418,6 +419,68 @@ def awareness_kyc(
         "business": {"by_gender_district": biz_rows},
         "channels": channels,
     }
+
+
+@router.get("/api/recruitment/awareness-eligible-target")
+def awareness_eligible_target(
+    user: User = Depends(current_user),
+    cohort: List[str] = Query(default=[]),
+):
+    """New Recruits - Awareness Eligible Target: real eligible-youth counts
+    at district/parish grain (AWARENESS_KYC) against the hardcoded BC5
+    district/parish/venue target sheet (AWARENESS_ELIGIBLE_TARGET_BC5).
+
+    The venue level is target-only — there is no live per-venue actual to
+    compare it against, since venue assignment only happens once a youth
+    reaches Mobilisation, after the Awareness/eligibility stage this endpoint
+    reports on. See the comment on AWARENESS_ELIGIBLE_TARGET_BC5.
+    """
+    where, params = build_where(
+        extra=[active_cohort_clause("aet", requested=cohort)], prefix="aet",
+        district_col="youth_district",
+    )
+    actual_sql = f"""
+    SELECT UPPER(youth_district) AS district, youth_parish AS parish, COUNT(*) AS actual
+    FROM {AWARENESS_KYC}
+    WHERE {where} AND elligible = TRUE AND youth_parish IS NOT NULL
+    GROUP BY district, parish
+    """
+    actual_rows = database.run_query(actual_sql, params, role=user.role)
+    actual_by_parish = {(r["district"], r["parish"]): r["actual"] for r in actual_rows}
+
+    district_target = {}
+    parish_target = {}
+    for row in AWARENESS_ELIGIBLE_TARGET_BC5:
+        d, p, t = row["district"], row["parish"], row["target"]
+        district_target[d] = district_target.get(d, 0) + t
+        parish_target[(d, p)] = parish_target.get((d, p), 0) + t
+
+    all_districts = {d for d, _ in actual_by_parish} | set(district_target)
+    by_district = []
+    for d in sorted(all_districts):
+        actual = sum(v for (dd, _), v in actual_by_parish.items() if dd == d)
+        target = district_target.get(d) or None
+        by_district.append({
+            "district": d, "actual": actual, "target": target,
+            "pct_of_target": round(100 * actual / target, 1) if target else None,
+        })
+
+    all_parishes = set(actual_by_parish) | set(parish_target)
+    by_parish = []
+    for d, p in sorted(all_parishes):
+        actual = actual_by_parish.get((d, p), 0)
+        target = parish_target.get((d, p)) or None
+        by_parish.append({
+            "district": d, "parish": p, "actual": actual, "target": target,
+            "pct_of_target": round(100 * actual / target, 1) if target else None,
+        })
+
+    by_venue = [
+        {"district": r["district"], "parish": r["parish"], "venue": r["venue"], "target": r["target"]}
+        for r in AWARENESS_ELIGIBLE_TARGET_BC5
+    ]
+
+    return {"by_district": by_district, "by_parish": by_parish, "by_venue": by_venue}
 
 
 @router.get("/api/recruitment/duplicate-summary")
