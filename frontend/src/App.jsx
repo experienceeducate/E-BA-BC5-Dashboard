@@ -1717,6 +1717,8 @@ function AwarenessKycPage({ filters }) {
   const totalChannelEligible = sumBy(channels, "eligible");
   const totalChannelIneligible = sumBy(channels, "ineligible");
   const consultation = data?.consultation || [];
+  const supportRequired = data?.support_required || [];
+  const parentalRelationship = data?.parental_relationship || [];
   const questions = data?.questions || [];
   const kycInsights = buildKycInsights(demo, channels, bizByGenderDistrict, data?.reasons);
 
@@ -1734,9 +1736,10 @@ function AwarenessKycPage({ filters }) {
     <div>
       <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
         Who the eligible youth are and what locks others out — persona of the eligible pool,
-        current activity, why they enrol, who they consult before deciding, how they heard about
-        us, and what they're still asking. Eligibility rule: interested AND age 18–30 AND
-        education P5–S3 AND income ≤ UGX 30,000.
+        current activity, why they enrol, who they consult and what support they need before
+        deciding, their household situation, how they heard about us, and what they're still
+        asking. Eligibility rule: interested AND age 18–30 AND education P5–S3 AND income
+        ≤ UGX 30,000.
       </p>
 
       <Card title="Eligible youth profile" subtitle="Persona snapshot of the eligible pool — click a card to drill by district" chip="REAL">
@@ -1800,19 +1803,51 @@ function AwarenessKycPage({ filters }) {
         </Card>
       </div>
 
-      <Card title="Who youth consult for decisions" subtitle="Who eligible youth say they turn to before deciding to join" chip="REAL">
-        <State loading={loading} error={error} empty={!loading && consultation.length === 0}>
-          <DataTable
-            columns={[
-              { key: "consultant", label: "Consulted" },
-              { key: "count", label: "Youth", align: "right", render: (v) => fmtNum(v) },
-              {
-                key: "pct_of_eligible", label: "% of eligible", align: "right",
-                render: (v) => fmtPct(v),
-              },
-            ]}
-            rows={consultation.map((c) => ({ ...c, pct_of_eligible: demo.eligible_count ? Math.round((1000 * c.count) / demo.eligible_count) / 10 : null }))}
-          />
+      <ExecBand num="◆" title="Decision-making & support needs" />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title="Who youth consult for decisions" subtitle="Who eligible youth say they turn to before deciding to join" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && consultation.length === 0}>
+            <DataTable
+              columns={[
+                { key: "consultant", label: "Consulted" },
+                { key: "count", label: "Youth", align: "right", render: (v) => fmtNum(v) },
+                {
+                  key: "pct_of_eligible", label: "% of eligible", align: "right",
+                  render: (v) => fmtPct(v),
+                },
+              ]}
+              rows={consultation.map((c) => ({ ...c, pct_of_eligible: demo.eligible_count ? Math.round((1000 * c.count) / demo.eligible_count) / 10 : null }))}
+            />
+          </State>
+        </Card>
+        <Card title="Support youth say they need" subtitle="Self-reported support needs, ahead of the bootcamp" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && supportRequired.length === 0}>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={supportRequired} layout="vertical" margin={{ left: 40, right: 50 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="support" tick={{ fontSize: 10 }} width={110} />
+                <Tooltip />
+                <Bar dataKey="count" fill={C.teal} radius={[0, 4, 4, 0]}
+                  label={hBarPctLabel(supportRequired, (row) => demo.eligible_count ? Math.round(1000 * row.count / demo.eligible_count) / 10 : null)} />
+              </BarChart>
+            </ResponsiveContainer>
+          </State>
+        </Card>
+      </div>
+
+      <Card title="Parental relationship" subtitle="Household situation of the eligible pool" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && parentalRelationship.length === 0}>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={parentalRelationship} layout="vertical" margin={{ left: 40, right: 50 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis type="number" tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey="relationship" tick={{ fontSize: 10 }} width={150} />
+              <Tooltip />
+              <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]}
+                label={hBarPctLabel(parentalRelationship, (row) => demo.eligible_count ? Math.round(1000 * row.count / demo.eligible_count) / 10 : null)} />
+            </BarChart>
+          </ResponsiveContainer>
         </State>
       </Card>
 

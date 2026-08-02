@@ -340,6 +340,27 @@ def awareness_kyc(
     """
     consultation = database.run_query(consultation_sql, base_params, role=user.role)
 
+    support_sql = f"""
+    SELECT support, COUNT(*) AS count
+    FROM {AWARENESS_KYC}, UNNEST(JSON_EXTRACT_STRING_ARRAY(bc5_support_required)) AS support
+    WHERE {elig_where}
+    GROUP BY support ORDER BY count DESC
+    """
+    support_required = database.run_query(support_sql, base_params, role=user.role)
+
+    # Unlike current_activty/decision_consultation/bc5_support_required (all
+    # multi-select JSON arrays), bc5_parental_relationship reads as a
+    # single-answer categorical field (a youth has one parental situation, not
+    # several) — plain GROUP BY, no UNNEST. Flagging this as an assumption
+    # since it hasn't been confirmed against the live column type.
+    parental_sql = f"""
+    SELECT bc5_parental_relationship AS relationship, COUNT(*) AS count
+    FROM {AWARENESS_KYC}
+    WHERE {elig_where} AND bc5_parental_relationship IS NOT NULL
+    GROUP BY relationship ORDER BY count DESC
+    """
+    parental_relationship = database.run_query(parental_sql, base_params, role=user.role)
+
     # Free-text, unlike activity/reasons/consultation's small fixed category
     # sets — grouped so repeated questions surface first, capped at the top
     # 20 so a long tail of one-off phrasing doesn't flood the Q&A section.
@@ -391,6 +412,8 @@ def awareness_kyc(
         "activity": activity,
         "reasons": reasons,
         "consultation": consultation,
+        "support_required": support_required,
+        "parental_relationship": parental_relationship,
         "questions": questions,
         "business": {"by_gender_district": biz_rows},
         "channels": channels,
