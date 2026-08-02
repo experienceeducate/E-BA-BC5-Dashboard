@@ -65,9 +65,13 @@ DAILY_ACQUISITION_SUMMARY = f"{_GOLD}.eba_bootcamp_daily_acquisition_summary"
 # Per-venue mobilisation targets — DAILY_ACQUISITION_SUMMARY's 'venue_targets'
 # measure was confirmed above to be an exact duplicate of the district-grain
 # 'targets' rows, not real per-venue values, so there's no live BigQuery
-# source for this yet. Hardcoded from the recruitment team's BC3 Control List
-# pending a real upstream fix — keyed by venue_name, matched case/whitespace-
-# insensitively in mobilisation_heatmap() since live venue_name casing varies.
+# source for this yet. Hardcoded from the recruitment team's BOOTCAMP_5
+# Control List pending a real upstream fix — keyed by venue_name, matched
+# case/whitespace-insensitively in mobilisation_heatmap() since live
+# venue_name casing varies. Mobilisation-stage targets ONLY — do not use for
+# Awareness (see AWARENESS_ELIGIBLE_TARGET_BC5 below for that stage's
+# targets; the two tables are for different funnel stages and must not be
+# cross-wired, even though some venue names appear in both).
 # "Busenda Primary School" appeared twice in that list (targets 39 and 17);
 # summed here (56) pending confirmation of whether that's two distinct venues.
 VENUE_MOBILISATION_TARGET = {
