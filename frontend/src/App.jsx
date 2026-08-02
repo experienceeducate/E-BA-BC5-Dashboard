@@ -1213,6 +1213,28 @@ function AwarenessOverviewPage({ filters }) {
   const parishPageClamped = Math.min(parishPage, parishMaxPage);
   const pagedParishRows = filteredParishRows.slice(parishPageClamped * parishPageSize, parishPageClamped * parishPageSize + parishPageSize);
 
+  const femaleEligible = stageStats[2].female;
+
+  function openFemaleEligibleDrill() {
+    const byDistrict = {};
+    matchedParishRowsForSearch.forEach((r) => {
+      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, interested: 0, eligible: 0 };
+      byDistrict[r.district].interested += r.interested_female || 0;
+      byDistrict[r.district].eligible += r.eligible_female || 0;
+    });
+    const rootRows = Object.values(byDistrict).map(withEligibilityRate).sort((a, b) => (b.eligible || 0) - (a.eligible || 0));
+    drill.open({
+      title: "Female eligible — by district",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [
+        { key: "eligible", label: "Female eligible", align: "right", render: fmtNum },
+        { key: "eligibility_rate", label: "Eligibility rate", align: "right", render: fmtPct },
+      ],
+      rootRows,
+    });
+  }
+
   return (
     <div>
       <input
@@ -1248,7 +1270,24 @@ function AwarenessOverviewPage({ filters }) {
           sub={eligStatus ? <span style={{ color: eligStatus.color, fontWeight: 700 }}>{eligStatus.label}</span> : "Eligible / Interested"}
           onClick={() => openMetricDrill("eligibility_rate", "Eligibility rate", fmtPct)}
         />
+        <KpiTile
+          label="Female eligibles"
+          value={fmtNum(femaleEligible)}
+          sub={eligibleFemalePct != null ? `${fmtPct(eligibleFemalePct)} of eligible · target 60%` : "% of eligible · target 60%"}
+          onClick={() => openFemaleEligibleDrill()}
+        />
       </Grid>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+        {eligibleFemalePct != null && (
+          <Insight tone={eligibleFemalePct >= 60 ? "pos" : eligibleFemalePct >= 55 ? "warn" : "risk"}>
+            <b>{fmtPct(eligibleFemalePct)} of eligible youth are female</b> ({fmtNum(femaleEligible)} of {fmtNum(eligible)}) —{" "}
+            {eligibleFemalePct >= 60
+              ? "at or above the 60% target."
+              : `${Math.round((60 - eligibleFemalePct) * 10) / 10}pp below the 60% target.`}
+          </Insight>
+        )}
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <Card title="Awareness funnel — Reached → Interested → Eligible" subtitle="Female vs male at each stage (value and % of that stage) — click a bar to drill by district" chip="REAL">
