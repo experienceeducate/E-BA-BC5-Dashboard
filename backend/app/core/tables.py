@@ -260,8 +260,11 @@ def retention_calls_detail_sql():
 AWARENESS_KYC = f"{_SILVER}.eba_bootcamp_awareness"
 
 # Note: current_activty / registration_reasons / decision_consultation /
-# open_questions are JSON-array-as-string columns (e.g. '["Staying home"]') —
-# query with JSON_EXTRACT_STRING_ARRAY(...), not as plain strings.
+# open_questions / bc5_support_required are JSON-array-as-string columns
+# (e.g. '["Staying home"]') — query with JSON_EXTRACT_STRING_ARRAY(...), not
+# as plain strings. bc5_parental_relationship, by contrast, reads as a plain
+# single-answer categorical column — see the assumption noted at its query
+# in recruitment.py.
 
 # Randomised control/comparison arm — eligible youth tracked (status +
 # reachability only, no mobilisation pitch) but not actively mobilised, so the
