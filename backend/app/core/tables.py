@@ -113,6 +113,50 @@ def venue_mobilisation_target(venue_name: str):
             return target
     return None
 
+
+# "New Recruits - Awareness Eligible Target" — district/parish/venue planning
+# quota for BC5, hardcoded from the recruitment team's target sheet (not a
+# live BigQuery column). Distinct from VENUE_MOBILISATION_TARGET: this is an
+# earlier-funnel target (eligible youth, at Awareness) keyed to a *planned*
+# venue, whereas the eligible-youth record itself (AWARENESS_KYC) carries no
+# venue at all — venue assignment only happens once someone reaches
+# Mobilisation. So the venue level of this target can't be checked against a
+# live per-venue actual; only district/parish grain has a real actual to
+# compare against (see awareness_eligible_target() in recruitment.py).
+# "Busenda Primary School" appears twice below with two different parishes —
+# kept as two separate rows (same venue can draw recruits from more than one
+# parish), unlike VENUE_MOBILISATION_TARGET's same-name duplicate, which was
+# summed because there it was ambiguous whether that was one venue or two.
+AWARENESS_ELIGIBLE_TARGET_BC5 = [
+    {"district": "MAYUGE", "parish": "BUYUGU", "venue": "Kinawambuzi Primary School", "target": 29},
+    {"district": "MAYUGE", "parish": "MAIRINYA", "venue": "Family Church Of God", "target": 31},
+    {"district": "MAYUGE", "parish": "BUGONDO", "venue": "Walukuba Primary School", "target": 49},
+    {"district": "MAYUGE", "parish": "KIGANDALO", "venue": "Nakazigo Primary School", "target": 88},
+    {"district": "MAYUGE", "parish": "BUGADE WARD", "venue": "Bugadde Primary School", "target": 50},
+    {"district": "MAYUGE", "parish": "KITYERERA WARD", "venue": "Busenda Primary School", "target": 31},
+    {"district": "MAYUGE", "parish": "NAKIBENGO WARD", "venue": "Busenda Primary School", "target": 0},
+    {"district": "MAYUGE", "parish": "BUKUNJA", "venue": "Busaala Primary School", "target": 34},
+    {"district": "MAYUGE", "parish": "KALUUBA", "venue": "Kaluuba Primary School", "target": 29},
+    {"district": "MAYUGE", "parish": "BWONDHA CENTRAL WARD", "venue": "Bwondha Secondary School", "target": 45},
+    {"district": "MAYUGE", "parish": "NALUBABWE WARD", "venue": "Bwondha Primary School", "target": 38},
+    {"district": "MAYUGE", "parish": "BUBINGE", "venue": "Busimo Primary School", "target": 35},
+    {"district": "MAYUGE", "parish": "BUKALENZI", "venue": "Lutale 'A' Primary School", "target": 73},
+    {"district": "MAYUGE", "parish": "KITOVU", "venue": "Mitimito St. Philip'S Primary School", "target": 31},
+    {"district": "MAYUGE", "parish": "NDAIGA", "venue": "Ndaiga Nasur Islamic Primary School", "target": 34},
+    {"district": "MAYUGE", "parish": "WANDEGEYA", "venue": "Wandgeya Primary School", "target": 35},
+    {"district": "MAYUGE", "parish": "BUKATABIRA", "venue": "Bukatabira Primary School", "target": 29},
+    {"district": "MAYUGE", "parish": "BULUTA", "venue": "Buluta Parents Primary School", "target": 29},
+    {"district": "MAYUGE", "parish": "BUMWENA", "venue": "Golden Junior Primary School", "target": 88},
+    {"district": "MAYUGE", "parish": "MALONGO", "venue": "St. Jude Nango Primary School", "target": 69},
+    {"district": "IGANGA", "parish": "NAMUNGALWE WARD", "venue": "Namungalwe Primary School", "target": 80},
+    {"district": "IGANGA", "parish": "BUKAYE", "venue": "Seven Stars Junior School", "target": 86},
+    {"district": "IGANGA", "parish": "BUKOONA", "venue": "Prayer Centre Baptist Church", "target": 40},
+    {"district": "IGANGA", "parish": "BUSEYI", "venue": "Buseyi Primary School", "target": 85},
+    {"district": "IGANGA", "parish": "NAKALAMA", "venue": "Nabirye Primary School", "target": 99},
+    {"district": "IGANGA", "parish": "BULUBANDI", "venue": "Bugabwe Primary School", "target": 100},
+    {"district": "IGANGA", "parish": "MAGOGO", "venue": "Abu Hurairah Islamic Nus & Primary School", "target": 91},
+]
+
 # Some subcounties run a shorter pilot ("2.5 Recruitment Cycle") instead of the
 # standard "4-Week Recruitment Cycle" the rest of the cohort follows. Any
 # eligible + treatment-assigned youth from these subcounties is auto-confirmed

@@ -408,7 +408,11 @@ function DrillTable({ nameKey, nameLabel, columns, rows, onRowClick }) {
   );
 }
 
-function DrillPanelUI({ open, spec, rootRows, rootLoading, rootError, child, onClose, onDrillInto, onBack }) {
+// Third level is optional — a spec without getGrandchildRows renders exactly
+// as a normal 2-level drill (child rows get no onRowClick, so no cursor
+// pointer / no-op). Specs that DO set it (e.g. district -> parish -> venue,
+// where the venue grain is target-only) get a further "‹ Back" hop.
+function DrillPanelUI({ open, spec, rootRows, rootLoading, rootError, child, grandchild, onClose, onDrillInto, onDrillIntoGrandchild, onBack, onBackToChild }) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -436,9 +440,18 @@ function DrillPanelUI({ open, spec, rootRows, rootLoading, rootError, child, onC
                 <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", fontSize: 22, color: C.muted, cursor: "pointer", padding: "0 6px", lineHeight: 1 }}>&times;</button>
               </div>
               <div style={{ fontSize: 17, fontWeight: 700, marginTop: 6, color: C.ink }}>
-                {child ? `${spec.title} — ${child.rootRow[spec.rootKey]}` : spec.title}
+                {grandchild
+                  ? `${spec.title} — ${child.rootRow[spec.rootKey]} — ${grandchild.childRow[spec.childKey]}`
+                  : child
+                    ? `${spec.title} — ${child.rootRow[spec.rootKey]}`
+                    : spec.title}
               </div>
-              {child && (
+              {grandchild && (
+                <div onClick={onBackToChild} style={{ marginTop: 6, fontSize: 12, color: C.teal, fontWeight: 600, cursor: "pointer" }}>
+                  ‹ Back to {spec.childLabel.toLowerCase()}s
+                </div>
+              )}
+              {child && !grandchild && (
                 <div onClick={onBack} style={{ marginTop: 6, fontSize: 12, color: C.teal, fontWeight: 600, cursor: "pointer" }}>
                   ‹ Back to {spec.rootLabel.toLowerCase()}s
                 </div>
@@ -451,9 +464,15 @@ function DrillPanelUI({ open, spec, rootRows, rootLoading, rootError, child, onC
                     onRowClick={spec.getChildRows ? onDrillInto : undefined} />
                 </State>
               )}
-              {child && (
+              {child && !grandchild && (
                 <State loading={child.loading} error={child.error} empty={!child.loading && !child.error && (child.rows || []).length === 0}>
-                  <DrillTable nameKey={spec.childKey} nameLabel={spec.childLabel} columns={spec.columns} rows={child.rows || []} />
+                  <DrillTable nameKey={spec.childKey} nameLabel={spec.childLabel} columns={spec.columns} rows={child.rows || []}
+                    onRowClick={spec.getGrandchildRows ? onDrillIntoGrandchild : undefined} />
+                </State>
+              )}
+              {grandchild && (
+                <State loading={grandchild.loading} error={grandchild.error} empty={!grandchild.loading && !grandchild.error && (grandchild.rows || []).length === 0}>
+                  <DrillTable nameKey={spec.grandchildKey} nameLabel={spec.grandchildLabel} columns={spec.grandchildColumns || spec.columns} rows={grandchild.rows || []} />
                 </State>
               )}
             </div>
@@ -471,12 +490,14 @@ function DrillProvider({ children }) {
   const [rootLoading, setRootLoading] = useState(false);
   const [rootError, setRootError] = useState(null);
   const [child, setChild] = useState(null);
+  const [grandchild, setGrandchild] = useState(null);
 
   // Opens showing the root (e.g. district) table.
   const openDrill = useCallback((newSpec) => {
     setSpec(newSpec);
     setOpen(true);
     setChild(null);
+    setGrandchild(null);
     setRootRows(null);
     setRootError(null);
   }, []);
@@ -489,6 +510,7 @@ function DrillProvider({ children }) {
     setOpen(true);
     setRootRows(null);
     setRootError(null);
+    setGrandchild(null);
     setChild({ rootRow, rows: null, loading: true, error: null });
     Promise.resolve(newSpec.getChildRows(rootRow))
       .then((rows) => setChild({ rootRow, rows, loading: false, error: null }))
@@ -499,13 +521,24 @@ function DrillProvider({ children }) {
 
   const drillInto = useCallback((row) => {
     if (!spec?.getChildRows) return;
+    setGrandchild(null);
     setChild({ rootRow: row, rows: null, loading: true, error: null });
     Promise.resolve(spec.getChildRows(row))
       .then((rows) => setChild({ rootRow: row, rows, loading: false, error: null }))
       .catch((e) => setChild({ rootRow: row, rows: null, loading: false, error: e.message || "Failed to load" }));
   }, [spec]);
 
-  const backToRoot = useCallback(() => setChild(null), []);
+  // Child -> grandchild — the optional third level (e.g. parish -> venue).
+  const drillIntoGrandchild = useCallback((row) => {
+    if (!spec?.getGrandchildRows) return;
+    setGrandchild({ childRow: row, rows: null, loading: true, error: null });
+    Promise.resolve(spec.getGrandchildRows(row))
+      .then((rows) => setGrandchild({ childRow: row, rows, loading: false, error: null }))
+      .catch((e) => setGrandchild({ childRow: row, rows: null, loading: false, error: e.message || "Failed to load" }));
+  }, [spec]);
+
+  const backToRoot = useCallback(() => { setChild(null); setGrandchild(null); }, []);
+  const backToChild = useCallback(() => setGrandchild(null), []);
 
   // Lazy-load the root table whenever it's needed and not yet loaded —
   // covers both a fresh openDrill() and "‹ Back" from an openAt() launch.
@@ -522,7 +555,8 @@ function DrillProvider({ children }) {
     <DrillContext.Provider value={{ open: openDrill, openAt }}>
       {children}
       <DrillPanelUI open={open} spec={spec} rootRows={rootRows} rootLoading={rootLoading} rootError={rootError}
-        child={child} onClose={close} onDrillInto={drillInto} onBack={backToRoot} />
+        child={child} grandchild={grandchild} onClose={close} onDrillInto={drillInto}
+        onDrillIntoGrandchild={drillIntoGrandchild} onBack={backToRoot} onBackToChild={backToChild} />
     </DrillContext.Provider>
   );
 }
@@ -1724,6 +1758,19 @@ function AwarenessKycPage({ filters }) {
   const questions = data?.questions || [];
   const kycInsights = buildKycInsights(demo, channels, bizByGenderDistrict, reasons);
 
+  // "New Recruits - Awareness Eligible Target" — real eligible counts at
+  // district/parish grain vs. the hardcoded BC5 district/parish/venue target
+  // sheet. Venue is target-only (see AWARENESS_ELIGIBLE_TARGET_BC5): there's
+  // no live per-venue actual at the eligibility stage, since venue assignment
+  // only happens once a youth reaches Mobilisation.
+  const eligTarget = useApi(`/api/recruitment/awareness-eligible-target${buildParams(filters)}`);
+  const byDistrict = eligTarget.data?.by_district || [];
+  const byParish = eligTarget.data?.by_parish || [];
+  const byVenue = eligTarget.data?.by_venue || [];
+  const totalEligActual = sumBy(byDistrict, "actual");
+  const totalEligTarget = sumBy(byDistrict, "target");
+  const eligTargetPct = totalEligTarget ? Math.round((1000 * totalEligActual) / totalEligTarget) / 10 : null;
+
   function openPersonaDrill(metricKey, label, sub) {
     drill.open({
       title: `${label} — by district`,
@@ -1731,6 +1778,27 @@ function AwarenessKycPage({ filters }) {
       rootKey: "district", rootLabel: "District",
       columns: [{ key: "value", label: sub || label, align: "right", render: fmtPct }],
       rootRows: () => fetchPerDistrict("/api/recruitment/awareness-kyc", filters, allDistricts, (json) => json?.demographics?.[metricKey] ?? null),
+    });
+  }
+
+  function openEligibleTargetDrill() {
+    drill.open({
+      title: "New recruits — Awareness eligible target",
+      tone: "sim", tagLabel: "TARGET: HARDCODED",
+      rootKey: "district", rootLabel: "District",
+      columns: [
+        { key: "actual", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+        { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
+        { key: "pct_of_target", label: "% of target", align: "right", render: renderProgressPctCell },
+      ],
+      rootRows: byDistrict,
+      childKey: "parish", childLabel: "Parish",
+      getChildRows: (root) => byParish.filter((p) => p.district === root.district),
+      grandchildKey: "venue", grandchildLabel: "Venue",
+      getGrandchildRows: (parishRow) => byVenue.filter((v) => v.district === parishRow.district && v.parish === parishRow.parish),
+      grandchildColumns: [
+        { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
+      ],
     });
   }
 
@@ -1764,6 +1832,25 @@ function AwarenessKycPage({ filters }) {
           <p style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>
             {fmtNum(demo.eligible_count)} eligible youth in this cohort · average age {demo.avg_age ?? "—"}.
           </p>
+        </State>
+      </Card>
+
+      <Card
+        title="New recruits — Awareness eligible target"
+        subtitle="Real eligible-youth counts vs. a hardcoded BC5 district/parish/venue target sheet — click to drill District → Parish → Venue. The venue level is target-only (no live per-venue actual at this stage)."
+        chip="DERIVED" chipTone="sim"
+      >
+        <State loading={eligTarget.loading} error={eligTarget.error} empty={!eligTarget.loading && byDistrict.length === 0}>
+          <Grid cols={4}>
+            <KpiTile
+              label="Eligible vs BC5 target"
+              value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(eligTargetPct)] }}>{fmtPct(eligTargetPct)}</span>}
+              sub={`${fmtNum(totalEligActual)} eligible of ${fmtNum(totalEligTarget)} target`}
+              tag="DERIVED" tone="sim"
+              hint="District → Parish → Venue"
+              onClick={openEligibleTargetDrill}
+            />
+          </Grid>
         </State>
       </Card>
 
