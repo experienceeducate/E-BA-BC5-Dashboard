@@ -222,7 +222,7 @@ function State({ loading, error, empty, children }) {
 }
 
 // Second-level page nav inside a tab that has multiple sub-pages (e.g.
-// Awareness's Funnel Overview / Mobilisers / KYC / Forecast) — matches the
+// Awareness's Awareness Overview / Mobilisers / KYC / Forecast) — matches the
 // reference design's .pbtn pill buttons.
 function PageNav({ pages, active, onChange }) {
   return (
@@ -1006,8 +1006,8 @@ function CohortComparisonPage() {
 
 // ─── Recruitment tabs ──────────────────────────────────────────────────────────
 
-// Awareness — the top of the funnel: 4 sub-pages (Funnel Overview, Mobilisers,
-// KYC/Youth Profile, Forecast), matching the design's multi-page layout.
+// Awareness — the top of the funnel: 4 sub-pages (Awareness Overview,
+// Mobilisers, KYC/Youth Profile, Forecast), matching the design's multi-page layout.
 function AwarenessTab({ filters }) {
   const [page, setPage] = useState("overview");
   return (
@@ -1022,7 +1022,7 @@ function AwarenessTab({ filters }) {
         active={page}
         onChange={setPage}
         pages={[
-          { key: "overview", label: "Funnel Overview" },
+          { key: "overview", label: "Awareness Overview" },
           { key: "mobilisers", label: "Mobilisers" },
           { key: "kyc", label: "KYC / Youth Profile" },
           { key: "forecast", label: "Forecast" },
@@ -1090,7 +1090,7 @@ function AwarenessOverviewPage({ filters }) {
   }
   const filteredRows = groupParishRowsByDistrict(matchedParishRowsForSearch);
 
-  // Same rate-vs-target bands as the parish-level "Category detail" section
+  // Same rate-vs-target bands as the parish-level "Parish Performance" section
   // below (eligible ÷ registration target, aggregated up from the same
   // per-parish targets) — districts get the identical score-card + status
   // treatment parishes already have, not just a bare Target column.
@@ -1360,11 +1360,11 @@ function AwarenessOverviewPage({ filters }) {
           {filteredDistrictRows.length === 0 && (
             <div style={{ padding: 24, textAlign: "center", color: C.muted, fontSize: 12.5 }}>No districts match this filter.</div>
           )}
-          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>* Target includes the hardcoded BC5 planning sheet for at least one parish — see Category detail below for the exact per-parish source.</p>
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>* Target includes the hardcoded BC5 planning sheet for at least one parish — see Parish Performance below for the exact per-parish source.</p>
         </State>
       </Card>
 
-      <Card title="Category detail — by parish" subtitle="Reached, interested, target, eligible and % female per parish. Click a score card to filter by category — color shows status throughout." chip="REAL">
+      <Card title="Parish Performance" subtitle="Reached, interested, target, eligible and % female per parish. Click a score card to filter by category — color shows status throughout." chip="REAL">
         <State loading={parish.loading} error={parish.error} empty={!parish.loading && parishRowsWithCat.length === 0}>
           <CategoryFilterTiles counts={parishCatCounts} active={parishCat} onChange={(c) => { setParishCat(c); setParishPage(0); }} entityLabelPlural="parishes" />
           {filteredParishRows.length === 0 ? (
@@ -1470,8 +1470,8 @@ function AwarenessMobilisersPage({ filters }) {
   const pagedRows = displayRows.slice(clampedPage * pageSize, clampedPage * pageSize + pageSize);
 
   // Top KPI tiles -> district-then-parish drill for that metric, sourced
-  // from the same awareness-parish data the Funnel Overview page uses (real
-  // eligible_female counts at parish grain, not a re-derived percentage).
+  // from the same awareness-parish data the Awareness Overview page uses
+  // (real eligible_female counts at parish grain, not a re-derived percentage).
   function openMetricDrill(metricKey, label, formatter = fmtNum) {
     const parishRows = parish.data?.parishes || [];
     const byDistrict = {};
@@ -2358,7 +2358,7 @@ function MobilisationTab({ filters }) {
         active={page}
         onChange={setPage}
         pages={[
-          { key: "funnel", label: "Recruitment Funnel" },
+          { key: "funnel", label: "Mobilisation Overview" },
           { key: "forecast", label: "Mobilisation Forecasts" },
           { key: "mobilisers", label: "Mobiliser Performance" },
           { key: "control", label: "Control Mobilisation Calls" },
@@ -3285,7 +3285,7 @@ function RetentionCallsTab({ filters }) {
 
   // Search by venue — narrows every component on this page (score cards,
   // chart, story, by-venue table), same "search filters everything" pattern
-  // as the Awareness Funnel Overview page.
+  // as the Awareness Overview page.
   const [venueSearch, setVenueSearch] = useState("");
   const q = venueSearch.trim().toLowerCase();
   const matchedVenueRows = q ? venueRows.filter((v) => (v.venue || "").toLowerCase().includes(q)) : venueRows;
@@ -3939,10 +3939,10 @@ const GUIDE_PAGES = [
     what: "Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired funnel; gender split vs the 60% female target; eligibility-barrier breakdown; cohort comparison (BC2–BC4); an editable OKR tracker (saved in your browser only)." },
   { group: "Recruitment", page: "Awareness", tone: "real", navGroup: "rec", navTab: "aware",
     summary: "Registered → interested → eligible by district/parish/mobiliser.",
-    what: "4 sub-pages — Funnel Overview, Mobilisers, KYC / Youth Profile, Forecast. Registered → interested → eligible by district, parish and mobiliser; youth demographics; registration-pace forecast." },
+    what: "4 sub-pages — Awareness Overview, Mobilisers, KYC / Youth Profile, Forecast. Registered → interested → eligible by district, parish and mobiliser; youth demographics; registration-pace forecast." },
   { group: "Recruitment", page: "Mobilisation", tone: "real", navGroup: "rec", navTab: "mob",
     summary: "Assigned → reached → confirmed, 4-week vs 2.5-week cycles.",
-    what: "5 sub-pages — Mobilisation overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
+    what: "5 sub-pages — Mobilisation Overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
   { group: "Recruitment", page: "Acquisition", tone: "real", navGroup: "rec", navTab: "acq",
     summary: "Verified → acquired by district; venue risk categories.",
     what: "2 sub-pages — Overview, Arrival & Verification. Verified → acquired by district; venue risk categories (Target Achieved / On Track / Low Risk / High Risk)." },
