@@ -1716,11 +1716,13 @@ function AwarenessKycPage({ filters }) {
   const channels = data?.channels || [];
   const totalChannelEligible = sumBy(channels, "eligible");
   const totalChannelIneligible = sumBy(channels, "ineligible");
+  const activity = data?.activity || [];
+  const reasons = data?.reasons || [];
   const consultation = data?.consultation || [];
   const supportRequired = data?.support_required || [];
   const parentalRelationship = data?.parental_relationship || [];
   const questions = data?.questions || [];
-  const kycInsights = buildKycInsights(demo, channels, bizByGenderDistrict, data?.reasons);
+  const kycInsights = buildKycInsights(demo, channels, bizByGenderDistrict, reasons);
 
   function openPersonaDrill(metricKey, label, sub) {
     drill.open({
@@ -1773,32 +1775,28 @@ function AwarenessKycPage({ filters }) {
       </State>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="What youth are currently doing" chip="REAL">
-          <State loading={loading} error={error} empty={!loading && (data?.activity || []).length === 0}>
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={data?.activity || []} layout="vertical" margin={{ left: 40, right: 50 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-                <XAxis type="number" tick={{ fontSize: 11 }} />
-                <YAxis type="category" dataKey="activity" tick={{ fontSize: 10 }} width={110} />
-                <Tooltip />
-                <Bar dataKey="count" fill={C.teal} radius={[0, 4, 4, 0]}
-                  label={hBarPctLabel(data?.activity || [], (row) => demo.eligible_count ? Math.round(1000 * row.count / demo.eligible_count) / 10 : null)} />
-              </BarChart>
-            </ResponsiveContainer>
+        <Card title="What youth are currently doing" subtitle="Multiselect, so youth can appear under more than one activity" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && activity.length === 0}>
+            <DataTable
+              columns={[
+                { key: "activity", label: "Activity" },
+                { key: "count", label: "Youth", align: "right", render: (v) => fmtNum(v) },
+                { key: "pct_of_eligible", label: "% of eligible", align: "right", render: (v) => fmtPct(v) },
+              ]}
+              rows={activity.map((a) => ({ ...a, pct_of_eligible: demo.eligible_count ? Math.round((1000 * a.count) / demo.eligible_count) / 10 : null }))}
+            />
           </State>
         </Card>
-        <Card title="Why youth are enrolling" subtitle="Value-proposition alignment" chip="REAL">
-          <State loading={loading} error={error} empty={!loading && (data?.reasons || []).length === 0}>
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={data?.reasons || []} layout="vertical" margin={{ left: 40, right: 50 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-                <XAxis type="number" tick={{ fontSize: 11 }} />
-                <YAxis type="category" dataKey="reason" tick={{ fontSize: 9.5 }} width={150} />
-                <Tooltip />
-                <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]}
-                  label={hBarPctLabel(data?.reasons || [], (row) => demo.eligible_count ? Math.round(1000 * row.count / demo.eligible_count) / 10 : null)} />
-              </BarChart>
-            </ResponsiveContainer>
+        <Card title="Why youth are enrolling" subtitle="Value-proposition alignment — multiselect, so youth can appear under more than one reason" chip="REAL">
+          <State loading={loading} error={error} empty={!loading && reasons.length === 0}>
+            <DataTable
+              columns={[
+                { key: "reason", label: "Reason" },
+                { key: "count", label: "Youth", align: "right", render: (v) => fmtNum(v) },
+                { key: "pct_of_eligible", label: "% of eligible", align: "right", render: (v) => fmtPct(v) },
+              ]}
+              rows={reasons.map((r) => ({ ...r, pct_of_eligible: demo.eligible_count ? Math.round((1000 * r.count) / demo.eligible_count) / 10 : null }))}
+            />
           </State>
         </Card>
       </div>
