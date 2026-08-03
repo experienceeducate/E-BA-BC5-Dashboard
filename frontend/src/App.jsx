@@ -771,6 +771,31 @@ function fetchPerDistrict(endpoint, filters, districts, extract) {
   ).then((rows) => rows.sort((a, b) => (b.value || 0) - (a.value || 0)));
 }
 
+// Export-only variant of fetchPerDistrict: the interactive drills above only
+// ever need one field at a time (whichever metric was clicked), so N+1 per
+// district is fine. The export report wants every field a page's drills can
+// show, for every district, in one pass — firing one request per FIELD per
+// district would multiply out fast (e.g. Executive Summary's 5 rates), so this
+// fires exactly one request per district and pulls every field in `extractMap`
+// (key -> extractor(json)) out of that single response.
+function fetchPerDistrictFields(endpoint, filters, districts, extractMap) {
+  return Promise.all(
+    districts.map((d) =>
+      apiGet(`${endpoint}${buildParamsOverride(filters, { district: d })}`)
+        .then((json) => {
+          const row = { district: d };
+          Object.entries(extractMap).forEach(([key, extract]) => { row[key] = extract(json); });
+          return row;
+        })
+        .catch(() => {
+          const row = { district: d };
+          Object.keys(extractMap).forEach((key) => { row[key] = null; });
+          return row;
+        })
+    )
+  );
+}
+
 function ExecutiveSummaryPage({ filters }) {
   const drill = useDrill();
   const q = buildParams(filters);
@@ -1043,6 +1068,43 @@ function withEligibilityRate(r) {
   return { ...r, eligibility_rate: r.interested ? Math.round((1000 * r.eligible) / r.interested) / 10 : null };
 }
 
+// District comparison table + its drills: matched parishes rolled up by
+// district — hoisted to module scope (no closure over component state, only
+// its own parishRows argument) so the export builder can reuse it too.
+function groupParishRowsByDistrict(parishRows) {
+  const byDistrict = {};
+  parishRows.forEach((r) => {
+    if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, registered: 0, interested: 0, eligible: 0, eligible_female: 0, target: 0, usesHardcodedTarget: false };
+    const d = byDistrict[r.district];
+    d.registered += r.reached || 0;
+    d.interested += r.interested || 0;
+    d.eligible += r.eligible || 0;
+    d.eligible_female += r.eligible_female || 0;
+    d.target += r.target || 0;
+    if (r.target_source === "hardcoded") d.usesHardcodedTarget = true;
+  });
+  return Object.values(byDistrict)
+    .map((d) => ({ ...d, pct_female: d.eligible ? Math.round((1000 * d.eligible_female) / d.eligible) / 10 : null }))
+    .sort((a, b) => a.district.localeCompare(b.district));
+}
+
+// Maps a stage's district-grain field name (used e.g. by openMetricDrill) to
+// the parish endpoint's per-gender column prefix — "registered" everywhere
+// else, "reached" on parish rows. Hoisted alongside groupParishRowsByDistrict
+// for the same reason.
+const GENDER_FIELD_PREFIX = { registered: "reached", interested: "interested", eligible: "eligible" };
+
+function sumGenderByDistrict(parishRows, metricKey) {
+  const prefix = GENDER_FIELD_PREFIX[metricKey];
+  const byDistrict = {};
+  parishRows.forEach((r) => {
+    if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, female: 0, male: 0 };
+    byDistrict[r.district].female += r[`${prefix}_female`] || 0;
+    byDistrict[r.district].male += r[`${prefix}_male`] || 0;
+  });
+  return Object.values(byDistrict);
+}
+
 function AwarenessOverviewPage({ filters }) {
   const drill = useDrill();
   const [search, setSearch] = useState("");
@@ -1069,25 +1131,10 @@ function AwarenessOverviewPage({ filters }) {
     : parishRowsRaw;
 
   // District comparison table + its drills: matched parishes rolled up by
-  // district — narrows in row COUNT (fewer districts) for a district-wide
-  // search, and in VALUE (smaller totals) for a specific-parish search,
-  // since only the matched parishes are summed into each district's row.
-  function groupParishRowsByDistrict(parishRows) {
-    const byDistrict = {};
-    parishRows.forEach((r) => {
-      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, registered: 0, interested: 0, eligible: 0, eligible_female: 0, target: 0, usesHardcodedTarget: false };
-      const d = byDistrict[r.district];
-      d.registered += r.reached || 0;
-      d.interested += r.interested || 0;
-      d.eligible += r.eligible || 0;
-      d.eligible_female += r.eligible_female || 0;
-      d.target += r.target || 0;
-      if (r.target_source === "hardcoded") d.usesHardcodedTarget = true;
-    });
-    return Object.values(byDistrict)
-      .map((d) => ({ ...d, pct_female: d.eligible ? Math.round((1000 * d.eligible_female) / d.eligible) / 10 : null }))
-      .sort((a, b) => a.district.localeCompare(b.district));
-  }
+  // district (groupParishRowsByDistrict, module-scope above) — narrows in
+  // row COUNT (fewer districts) for a district-wide search, and in VALUE
+  // (smaller totals) for a specific-parish search, since only the matched
+  // parishes are summed into each district's row.
   const filteredRows = groupParishRowsByDistrict(matchedParishRowsForSearch);
 
   // Same rate-vs-target bands as the parish-level "Parish Performance" section
@@ -1134,22 +1181,6 @@ function AwarenessOverviewPage({ filters }) {
         .map((p) => withEligibilityRate({ ...p, registered: p.reached }))
         .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
     });
-  }
-
-  // Maps a stage's district-grain field name (used elsewhere on this page,
-  // e.g. by openMetricDrill) to the parish endpoint's per-gender column
-  // prefix — "registered" everywhere else, "reached" on parish rows.
-  const GENDER_FIELD_PREFIX = { registered: "reached", interested: "interested", eligible: "eligible" };
-
-  function sumGenderByDistrict(parishRows, metricKey) {
-    const prefix = GENDER_FIELD_PREFIX[metricKey];
-    const byDistrict = {};
-    parishRows.forEach((r) => {
-      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, female: 0, male: 0 };
-      byDistrict[r.district].female += r[`${prefix}_female`] || 0;
-      byDistrict[r.district].male += r[`${prefix}_male`] || 0;
-    });
-    return Object.values(byDistrict);
   }
 
   const stageStats = [
@@ -4278,6 +4309,675 @@ const NAV = [
   ]},
 ];
 
+// ─── Export report ────────────────────────────────────────────────────────────
+// Builds a printable HTML report for whichever NAV tabs the user selects,
+// with every district/parish/venue breakdown each tab exposes interactively —
+// not just whatever happens to be clicked open — so the export always matches
+// what a user could see by clicking all the way through the live dashboard.
+// Runs entirely outside the React tree via apiGet()/fetchPerDistrict(Fields)(),
+// reusing the exact same pure transforms (groupParishRowsByDistrict,
+// groupByDistrict, categorizeRate, daysToTargetFor, ...) the interactive tabs
+// use, so export numbers never drift from the live UI. No new npm dependency:
+// the "PDF" is produced by opening a new tab and calling the browser's own
+// print dialog (Save as PDF), per this project's inline-styles-only,
+// minimal-dependency frontend convention.
+
+function xCol(key, label, opts = {}) {
+  return { key, label, align: opts.align ?? "right", format: opts.format ?? fmtNum };
+}
+function xTextCol(key, label) {
+  return { key, label, align: "left", format: (v) => (v == null || v === "" ? "—" : String(v)) };
+}
+function xSection(heading, nameKey, nameLabel, columns, rows, note) {
+  return { heading, nameKey, nameLabel, columns, rows: rows || [], note };
+}
+
+async function buildExecutiveSummaryExport(filters) {
+  const q = buildParams(filters);
+  const [funnel, stageProgress, gender, barriers, cohortComparison, filterMeta] = await Promise.all([
+    apiGet(`/api/overview/funnel${q}`),
+    apiGet(`/api/overview/stage-progress${q}`),
+    apiGet(`/api/overview/gender${q}`),
+    apiGet(`/api/overview/eligibility-barriers${q}`),
+    apiGet(`/api/overview/cohort-comparison`),
+    apiGet(`/api/filters`),
+  ]);
+  const stages = funnel.stages || [];
+  const allDistricts = filterMeta.districts || [];
+  const rateKeys = Object.keys(RATE_TARGETS);
+  const registeredBase = stages[0]?.count || 0;
+
+  const [byDistrictRates, byDistrictStages] = await Promise.all([
+    fetchPerDistrictFields("/api/overview/kpis", filters, allDistricts,
+      Object.fromEntries(rateKeys.map((k) => [k, (json) => json?.rates?.[k] ?? null]))),
+    stages.length
+      ? fetchPerDistrictFields("/api/overview/funnel", filters, allDistricts,
+          Object.fromEntries(stages.map((s) => [s.stage, (json) => (json?.stages || []).find((x) => x.stage === s.stage)?.count ?? null])))
+      : Promise.resolve([]),
+  ]);
+
+  return {
+    label: "Executive Summary",
+    sections: [
+      xSection("Conversion rates, by district", "district", "District",
+        rateKeys.map((k) => xCol(k, `${RATE_TARGETS[k].label} rate`, { format: fmtPct })),
+        byDistrictRates),
+      xSection("Funnel stage counts, by district", "district", "District",
+        stages.map((s) => xCol(s.stage, s.stage)),
+        byDistrictStages),
+      xSection("Progress on target, by stage", "stage", "Stage", [
+        xCol("count", "Count"), xCol("target", "Target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
+      ], stageProgress.stages || []),
+      xSection("Attrition through the funnel", "stage", "Stage", [
+        xCol("count", "Count"), xCol("pct_of_base", "% of Registered", { format: fmtPct }),
+      ], stages.map((s) => ({ stage: s.stage, count: s.count, pct_of_base: registeredBase ? Math.round((1000 * s.count) / registeredBase) / 10 : null }))),
+      xSection("Eligibility barriers", "barrier", "Barrier", [xCol("count", "Count")], barriers.barriers || []),
+      xSection("Gender performance, by stage", "stage", "Stage", [
+        xCol("female", "Female"), xCol("male", "Male"), xCol("pct_female", "% Female", { format: fmtPct }), xCol("target_female", "Target", { format: fmtPct }),
+      ], gender.stages || []),
+      xSection("Cohort comparison — Awareness", "cohort", "Cohort", [
+        xCol("eligible", "Eligible"), xCol("eligibility_rate", "Eligibility rate", { format: fmtPct }),
+        xCol("pct_female", "% Female", { format: fmtPct }), xCol("progress_pct", "Progress on target", { format: fmtPct }), xCol("parishes", "# Parishes"),
+      ], cohortComparison.awareness || []),
+      xSection("Cohort comparison — Mobilisation", "cohort", "Cohort", [
+        xCol("assigned", "# Assigned"), xCol("reach_rate", "Reach rate", { format: fmtPct }),
+        xCol("mobilisation_rate", "Mobilisation rate", { format: fmtPct }), xCol("progress_pct", "Progress on target", { format: fmtPct }), xCol("pct_female", "% Female", { format: fmtPct }),
+      ], cohortComparison.mobilisation || []),
+      xSection("Cohort comparison — Acquisition", "cohort", "Cohort", [
+        xCol("acquired", "# Acquired"), xCol("acquisition_rate", "Acquisition rate", { format: fmtPct }),
+        xCol("overall_conversion", "Overall conversion", { format: fmtPct }), xCol("progress_pct", "Progress on target", { format: fmtPct }), xCol("pct_female", "% Female", { format: fmtPct }),
+      ], cohortComparison.acquisition || []),
+    ],
+  };
+}
+
+async function buildAwarenessExport(filters) {
+  const q = buildParams(filters);
+  const [parish, mobilisers, mobiliserDetail, kyc, eligTarget, forecast, filterMeta] = await Promise.all([
+    apiGet(`/api/recruitment/awareness-parish${q}`),
+    apiGet(`/api/recruitment/awareness-mobilisers${q}`),
+    apiGet(`/api/recruitment/awareness-mobiliser-detail${q}`),
+    apiGet(`/api/recruitment/awareness-kyc${q}`),
+    apiGet(`/api/recruitment/awareness-eligible-target${q}`),
+    apiGet(`/api/recruitment/awareness-forecast${q}`),
+    apiGet(`/api/filters`),
+  ]);
+  const parishRows = parish.parishes || [];
+  const districtRows = groupParishRowsByDistrict(parishRows);
+  const demo = kyc.demographics || {};
+  const allDistricts = filterMeta.districts || [];
+
+  const personaKeys = ["pct_p5_p7", "pct_age_18_25", "pct_owns_phone", "pct_owns_business", "pct_female", "duplicate_rate"];
+  const byDistrictPersona = await fetchPerDistrictFields("/api/recruitment/awareness-kyc", filters, allDistricts,
+    Object.fromEntries(personaKeys.map((k) => [k, (json) => json?.demographics?.[k] ?? null])));
+
+  const stageStats = [
+    { key: "registered", label: "Reached" }, { key: "interested", label: "Interested" }, { key: "eligible", label: "Eligible" },
+  ].map(({ key, label }) => {
+    const prefix = GENDER_FIELD_PREFIX[key];
+    const f = sumBy(parishRows, `${prefix}_female`);
+    const m = sumBy(parishRows, `${prefix}_male`);
+    const t = f + m;
+    return { stage: label, female: f, male: m, pct_female: t ? Math.round((1000 * f) / t) / 10 : null };
+  });
+
+  const nDays = forecast.n_days;
+  const forecastByDistrict = (forecast.by_district || []);
+  const forecastByParish = parishRows.map((p) => {
+    const registered = p.reached || 0, target = p.target || 0, gap = Math.max(target - registered, 0);
+    const rate = nDays ? registered / nDays : null;
+    return {
+      district: p.district, parish: p.parish, registered, target, gap,
+      pct_of_target: target ? Math.round((1000 * registered) / target) / 10 : null,
+      days_to_target: rate ? Math.round(gap / rate) : null,
+    };
+  });
+
+  return {
+    label: "Awareness",
+    sections: [
+      xSection("District comparison", "district", "District", [
+        xCol("registered", "Reached"), xCol("interested", "Interested"), xCol("eligible", "Eligible"),
+        xCol("target", "Target"), xCol("pct_female", "% Female", { format: fmtPct }),
+      ], districtRows),
+      xSection("Parish detail", "parish", "Parish", [
+        xTextCol("district", "District"), xCol("reached", "Reached"), xCol("interested", "Interested"),
+        xCol("eligible", "Eligible"), xCol("eligible_female", "Eligible (F)"), xCol("target", "Target"), xCol("pct_female", "% Female", { format: fmtPct }),
+      ], parishRows),
+      xSection("Gender by funnel stage", "stage", "Stage", [
+        xCol("female", "Female"), xCol("male", "Male"), xCol("pct_female", "% Female", { format: fmtPct }),
+      ], stageStats),
+      xSection("Eligible youth profile — program summary", "label", "Metric", [
+        xCol("value", "Value", { format: (v) => (typeof v === "number" ? fmtPct(v) : (v ?? "—")) }),
+      ], KYC_PERSONA_CARDS.map((c) => ({ label: c.label, value: demo[c.key] }))),
+      xSection("Eligible youth profile, by district", "district", "District",
+        personaKeys.map((k) => xCol(k, k, { format: fmtPct })), byDistrictPersona),
+      xSection("New recruits — eligible vs target, by district", "district", "District", [
+        xCol("actual", "Eligible"), xCol("target", "Target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
+      ], eligTarget.by_district || []),
+      xSection("New recruits — eligible vs target, by parish", "parish", "Parish", [
+        xTextCol("district", "District"), xCol("actual", "Eligible"), xCol("target", "Target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
+      ], eligTarget.by_parish || []),
+      xSection("New recruits — target, by venue", "venue", "Venue", [
+        xTextCol("district", "District"), xTextCol("parish", "Parish"), xCol("target", "Target"),
+      ], eligTarget.by_venue || [], "Venue grain is target-only — no live per-venue actual exists at the eligibility stage."),
+      xSection("What youth are currently doing", "activity", "Activity", [xCol("count", "Youth")], kyc.activity || []),
+      xSection("Why youth are enrolling", "reason", "Reason", [xCol("count", "Youth")], kyc.reasons || []),
+      xSection("Who youth consult for decisions", "consultant", "Consulted", [xCol("count", "Youth")], kyc.consultation || []),
+      xSection("Support youth say they need", "support", "Support", [xCol("count", "Youth")], kyc.support_required || []),
+      xSection("Parental relationship", "relationship", "Relationship", [xCol("count", "Youth")], kyc.parental_relationship || []),
+      xSection("Business ownership, by gender & district", "district", "District", [
+        xTextCol("gender", "Gender"), xCol("owners", "Owners"), xCol("total", "Eligible"), xCol("pct_owns_business", "% Owning", { format: fmtPct }),
+      ], kyc.business?.by_gender_district || []),
+      xSection("Recruitment channels", "channel", "Channel", [xCol("eligible", "Eligible"), xCol("ineligible", "Ineligible")], kyc.channels || []),
+      xSection("Open questions raised before joining", "question", "Question", [xCol("count", "Times raised")], kyc.questions || []),
+      xSection("Mobiliser performance", "mobiliser_name", "Mobiliser", [
+        xTextCol("district", "District"), xCol("reached", "Reached"), xCol("eligible", "Eligible"), xCol("eligible_female", "Eligible (F)"),
+      ], mobilisers.mobilisers || []),
+      xSection("Mobiliser detail, by district", "mobiliser_name", "Mobiliser", [
+        xTextCol("district", "District"), xCol("reached", "Reached"), xCol("eligible", "Eligible"), xCol("eligible_female", "Eligible (F)"),
+      ], mobiliserDetail.detail || []),
+      xSection("Daily registration trend", "event_date", "Date", [xCol("eligible", "Eligible")], forecast.daily || []),
+      xSection("Days to target, by district", "district", "District", [
+        xCol("registered", "Registered"), xCol("target", "Target"), xCol("gap", "Gap"), xCol("days_to_target", "Days to target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
+      ], forecastByDistrict),
+      xSection("Days to target, by parish", "parish", "Parish", [
+        xTextCol("district", "District"), xCol("registered", "Registered"), xCol("target", "Target"), xCol("gap", "Gap"), xCol("days_to_target", "Days to target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
+      ], forecastByParish),
+    ],
+  };
+}
+
+async function buildMobilisationExport(filters) {
+  const q = buildParams(filters);
+  const [mob, heatmap, forecast, controlCalls, callCentre, filterMeta] = await Promise.all([
+    apiGet(`/api/recruitment/mobilisation${q}`),
+    apiGet(`/api/recruitment/mobilisation-heatmap${q}`),
+    apiGet(`/api/recruitment/mobilisation-forecast${q}`),
+    apiGet(`/api/recruitment/control-calls`),
+    apiGet(`/api/recruitment/call-centre-insights${q}`),
+    apiGet(`/api/filters`),
+  ]);
+  const allDistricts = filterMeta.districts || [];
+  const mobMetricKeys = ["assigned", "reached", "reach_rate", "confirmed", "confirmed_female", "mobilisation_rate", "progress_pct"];
+  const byDistrictMob = await fetchPerDistrictFields("/api/recruitment/mobilisation", filters, allDistricts,
+    Object.fromEntries(mobMetricKeys.map((k) => [k, (json) => json?.[k] ?? null])));
+
+  const nDays = (forecast.daily || []).length;
+  const byDistrict = (heatmap.by_district || []).map((d) => {
+    const assigned = d.assigned || 0, target = d.target || 0, reached = d.reached || 0, confirmed = d.confirmed || 0;
+    return {
+      district: d.district, assigned, target, reached, confirmed,
+      reachRate: assigned ? Math.round((1000 * reached) / assigned) / 10 : null,
+      mobilisationRate: assigned ? Math.round((1000 * confirmed) / assigned) / 10 : null,
+      pctFemale: confirmed ? Math.round((1000 * (d.confirmed_female || 0)) / confirmed) / 10 : null,
+      progressPct: target ? Math.round((1000 * confirmed) / target) / 10 : null,
+      daysToTarget: daysToTargetFor(confirmed, target, nDays),
+    };
+  });
+  const byVenue = (heatmap.by_venue || []).map((v) => {
+    const reached = v.reached || 0, confirmed = v.confirmed || 0, target = v.target ?? null;
+    return {
+      district: v.district, venue: v.venue, reached, confirmed, target,
+      rate: reached ? Math.round((1000 * confirmed) / reached) / 10 : null,
+      pctFemale: confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null,
+      progressPct: target ? Math.round((1000 * confirmed) / target) / 10 : null,
+      daysToTarget: daysToTargetFor(confirmed, target, nDays),
+    };
+  }).sort((a, b) => b.confirmed - a.confirmed);
+
+  return {
+    label: "Mobilisation",
+    sections: [
+      xSection("Mobilisation KPIs, by district", "district", "District",
+        mobMetricKeys.map((k) => xCol(k, k, { format: k.includes("rate") || k === "progress_pct" ? fmtPct : fmtNum })), byDistrictMob),
+      xSection("4-week vs 2.5-week cycle", "label", "Cycle", [
+        xCol("assigned", "Assigned"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
+        xCol("reach_rate", "Reach rate", { format: fmtPct }), xCol("mobilisation_rate", "Mobilisation rate", { format: fmtPct }), xCol("pct_female", "% Female", { format: fmtPct }),
+      ], [
+        { label: "4-week cycle", ...mob.four_week },
+        { label: "2.5-week cycle (auto-confirm)", ...mob.two_half_week },
+        { label: "Overall (blended)", assigned: mob.assigned, reached: mob.reached, confirmed: mob.confirmed, reach_rate: mob.reach_rate, mobilisation_rate: mob.mobilisation_rate, pct_female: mob.confirmed_female_pct },
+      ]),
+      xSection("District performance vs target", "district", "District", [
+        xCol("assigned", "Assigned"), xCol("target", "Target"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
+        xCol("reachRate", "Reach rate", { format: fmtPct }), xCol("mobilisationRate", "Mobilisation rate", { format: fmtPct }),
+        xCol("pctFemale", "% Female", { format: fmtPct }), xCol("progressPct", "Progress on target", { format: fmtPct }), xCol("daysToTarget", "Days to target"),
+      ], byDistrict),
+      xSection("Venue performance", "venue", "Venue", [
+        xTextCol("district", "District"), xCol("target", "Target"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
+        xCol("rate", "Confirmed ÷ reached", { format: fmtPct }), xCol("pctFemale", "% Female", { format: fmtPct }),
+        xCol("progressPct", "Progress on target", { format: fmtPct }), xCol("daysToTarget", "Days to target"),
+      ], byVenue),
+      xSection("Daily trend — reached vs confirmed", "event_date", "Date", [xCol("reached", "Reached"), xCol("confirmed", "Confirmed")], forecast.daily || []),
+      xSection("Control arm — call status", "status", "Status", [xCol("n", "# Youth")], controlCalls.by_status || []),
+      xSection("Control arm — district composition", "district", "District", [xCol("n", "# Youth")], controlCalls.by_district || []),
+      xSection("Call centre barriers", "barrier", "Barrier", [xCol("count", "# Youth"), xCol("pct", "% of barriers", { format: fmtPct })], callCentre.barriers || []),
+    ],
+  };
+}
+
+async function buildAcquisitionExport(filters) {
+  const q = buildParams(filters);
+  const [acq, arrival] = await Promise.all([
+    apiGet(`/api/recruitment/acquisition${q}`),
+    apiGet(`/api/recruitment/acquisition-arrival${q}`),
+  ]);
+  const totals = acq.totals || {};
+  const venueRows = (arrival.by_venue || []).map((r) => ({
+    venue: r.venue, district: r.district, verified: r.verified, acquired: r.acquired,
+    acquired_female: r.acquired_female, rate: r.acquisition_rate, category: categorizeRate(r.acquisition_rate),
+  }));
+  return {
+    label: "Acquisition",
+    sections: [
+      xSection("Totals", "metric", "Metric", [xCol("value", "Value", { format: (v) => (typeof v === "number" ? String(v) : (v ?? "—")) })],
+        Object.entries(totals).map(([k, v]) => ({ metric: k, value: v }))),
+      xSection("Acquisition by district", "district", "District", [xCol("verified", "Verified"), xCol("acquired", "Acquired")], acq.by_district || []),
+      xSection("Arrival & verification, by venue", "venue", "Venue", [
+        xTextCol("district", "District"), xCol("verified", "Verified"), xCol("acquired", "Acquired"),
+        xCol("acquired_female", "Acquired (F)"), xCol("rate", "Acquisition rate", { format: fmtPct }), xTextCol("category", "Status"),
+      ], venueRows),
+    ],
+  };
+}
+
+async function buildMobilisersExport(filters) {
+  const data = await apiGet(`/api/recruitment/mobilisers${buildParams(filters)}`);
+  return {
+    label: "Mobilisers",
+    sections: [
+      xSection("Mobiliser leaderboard", "mobiliser_name", "Mobiliser", [
+        xTextCol("district", "District"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
+      ], data.mobilisers || []),
+    ],
+  };
+}
+
+async function buildTamExport(filters) {
+  const data = await apiGet(`/api/recruitment/tam${buildParams(filters)}`);
+  return {
+    label: "TAM Analysis",
+    sections: [
+      xSection("TAM / market share, by parish", "parish", "Parish", [
+        xTextCol("district", "District"), xCol("predicted", "Predicted"), xCol("actual", "Actual"),
+        xCol("validation_rate", "Validation %", { format: fmtPct }), xTextCol("status", "Status"),
+      ], data.parishes || []),
+    ],
+  };
+}
+
+async function buildRetentionExport(filters) {
+  const data = await apiGet(`/api/implementation/retention${buildParams(filters)}`);
+  const rows = data.by_venue || [];
+  const rateFns = {
+    activation_rate: (d) => (d.acquired ? Math.round((1000 * d.activated) / d.acquired) / 10 : null),
+    retention_rate: (d) => (d.activated ? Math.round((1000 * d.retained) / d.activated) / 10 : null),
+  };
+  const districtRows = groupByDistrict(rows, ["acquired", "activated", "retained"], rateFns);
+  return {
+    label: "Retention",
+    sections: [
+      xSection("Retention by district", "district", "District", [
+        xCol("acquired", "Acquired"), xCol("activated", "Activated"), xCol("retained", "Retained"),
+        xCol("activation_rate", "Activation rate", { format: fmtPct }), xCol("retention_rate", "Retention rate", { format: fmtPct }),
+      ], districtRows),
+      xSection("Retention by venue", "venue", "Venue", [
+        xTextCol("district", "District"), xCol("acquired", "Acquired"), xCol("activated", "Activated"),
+        xCol("retained", "Retained"), xCol("retention_rate", "Retention rate", { format: fmtPct }),
+      ], rows),
+    ],
+  };
+}
+
+async function buildAttendanceExport(filters) {
+  const data = await apiGet(`/api/implementation/attendance${buildParams(filters)}`);
+  const venueRows = data.by_venue || [];
+  const rateFns = { attendance_rate: (d) => (d.activated ? Math.round((1000 * d.present) / d.activated) / 10 : null) };
+  const districtRows = groupByDistrict(venueRows, ["activated", "present"], rateFns);
+  return {
+    label: "Attendance",
+    sections: [
+      xSection("Attendance by district", "district", "District", [
+        xCol("activated", "Activated"), xCol("present", "Present (avg)"), xCol("attendance_rate", "Attendance rate", { format: fmtPct }),
+      ], districtRows),
+      xSection("Attendance by venue", "venue", "Venue", [
+        xTextCol("district", "District"), xCol("activated", "Activated"), xCol("present", "Present (avg)"), xCol("attendance_rate", "Attendance rate", { format: fmtPct }),
+      ], venueRows),
+      xSection("Daily attendance & churn", "event_date", "Date", [xCol("present", "Present"), xCol("net_churn", "Net churn")], data.daily || []),
+    ],
+  };
+}
+
+async function buildRetentionCallsExport(filters) {
+  const data = await apiGet(`/api/implementation/retention-calls${buildParams(filters)}`);
+  const venueRows = data.by_venue || [];
+  const districtRows = groupByDistrict(venueRows, ["called", "reached", "promised", "returned"], {});
+  return {
+    label: "Retention Calls",
+    sections: [
+      xSection("Retention calls by district", "district", "District", [
+        xCol("called", "Called"), xCol("reached", "Reached"), xCol("promised", "Promised"), xCol("returned", "Returned"),
+      ], districtRows),
+      xSection("Retention calls by venue", "venue", "Venue", [
+        xTextCol("district", "District"), xCol("absent", "Absent"), xCol("called", "Called"), xCol("reached", "Reached"),
+        xCol("returned", "Returned"), xCol("reach_rate", "Reach %", { format: fmtPct }),
+      ], venueRows),
+      xSection("Daily follow-up funnel", "event_date", "Date", [
+        xCol("called", "Called"), xCol("reached", "Reached"), xCol("promised", "Promised"), xCol("returned", "Returned"),
+      ], data.daily || []),
+    ],
+  };
+}
+
+// Adapted to the current /api/implementation/trainers shape (three cohorts —
+// BOOTCAMP_4, BC5 TOT, BOOTCAMP_5 — each register row carries its own
+// `cohort`, and every score is the raw 1-5 average via avg_<domain>/score,
+// not a percentage). One fetch with no phase param returns every cohort at
+// once, so this groups client-side by `cohort` instead of firing one request
+// per phase the way the old two-cohort version did.
+async function buildTrainerQualityExport(filters) {
+  const data = await apiGet(`/api/implementation/trainers${buildParams(filters)}`);
+  const rows = data.trainers || [];
+  const domainDefs = data.domains || [];
+  const byPhase = data.by_phase || [];
+  const cohorts = data.cohorts || [];
+
+  function domainAveragesFor(rowsSubset) {
+    return domainDefs.map((d) => {
+      const key = `avg_${d.key}`;
+      const vals = rowsSubset.map((r) => r[key]).filter((v) => v != null);
+      return { domain: d.label, avg: vals.length ? Math.round((vals.reduce((a, v) => a + v, 0) / vals.length) * 100) / 100 : null };
+    });
+  }
+  function avgScoreByDistrict(rowsSubset) {
+    const byDistrict = {};
+    rowsSubset.forEach((r) => {
+      const d = byDistrict[r.district] || (byDistrict[r.district] = { district: r.district, _sum: 0, _n: 0 });
+      if (r.score != null) { d._sum += Number(r.score) || 0; d._n += 1; }
+    });
+    return Object.values(byDistrict).map((d) => ({ district: d.district, score: d._n ? Math.round((d._sum / d._n) * 100) / 100 : null }));
+  }
+
+  const scoreCol = xCol("score", "Overall score", { format: fmtScore });
+  const cohortSections = cohorts.flatMap((cohort) => {
+    const cohortRows = rows.filter((r) => r.cohort === cohort);
+    if (!cohortRows.length) return [];
+    return [
+      xSection(`Trainer observation register — ${cohort}`, "trainer_name", "Trainer", [
+        xTextCol("venue", "Venue"), xTextCol("district", "District"), scoreCol, xTextCol("rating", "Rating"),
+      ], cohortRows),
+      xSection(`Domain summary — ${cohort}`, "domain", "Domain", [xCol("avg", "Avg score", { format: fmtScore })], domainAveragesFor(cohortRows)),
+    ];
+  });
+
+  return {
+    label: "Trainer Quality",
+    sections: [
+      xSection("Cohort comparison", "phase", "Cohort", [
+        xCol("trainers_observed", "Trainers observed"), xCol("score", "Avg score", { format: fmtScore }),
+      ], byPhase),
+      xSection("Trainer observation register — all cohorts", "trainer_name", "Trainer", [
+        xTextCol("venue", "Venue"), xTextCol("district", "District"), xTextCol("cohort", "Cohort"), scoreCol, xTextCol("rating", "Rating"),
+      ], rows),
+      xSection("Domain summary — all cohorts", "domain", "Domain", [xCol("avg", "Avg score", { format: fmtScore })], domainAveragesFor(rows)),
+      xSection("Avg observation score, by district — all cohorts", "district", "District", [xCol("score", "Avg score", { format: fmtScore })], avgScoreByDistrict(rows)),
+      ...cohortSections,
+    ],
+  };
+}
+
+async function buildMilestonesExport(filters) {
+  const data = await apiGet(`/api/implementation/milestones${buildParams(filters)}`);
+  const byVenue = data.by_venue || [];
+  const districtRows = groupByDistrict(byVenue, ["below", "meet", "exceed"], {
+    exceed_pct: (d) => { const t = (d.below || 0) + (d.meet || 0) + (d.exceed || 0); return t ? Math.round((1000 * d.exceed) / t) / 10 : null; },
+  });
+  return {
+    label: "Milestones",
+    sections: [
+      xSection("Pitch quality by week", "week_number", "Week", [
+        xCol("completion_pct", "Completion %", { format: fmtPct }), xCol("below_pct", "Below %", { format: fmtPct }),
+        xCol("meet_pct", "Meets %", { format: fmtPct }), xCol("exceed_pct", "Exceeds %", { format: fmtPct }), xCol("parent_present_pct", "Parent present %", { format: fmtPct }),
+      ], data.weekly || []),
+      xSection("Milestone quality, by district", "district", "District", [xCol("exceed_pct", "% exceeding", { format: fmtPct })], districtRows),
+      xSection("Venue milestone performance", "venue", "Venue", [
+        xTextCol("district", "District"), xCol("avg_youth_per_week", "Youth/wk"), xCol("completion_pct", "Completion %", { format: fmtPct }), xCol("exceed_pct", "% Exceeds", { format: fmtPct }),
+      ], byVenue),
+    ],
+  };
+}
+
+async function buildNpsExport(filters) {
+  const data = await apiGet(`/api/implementation/youth-experience${buildParams(filters)}`);
+  return {
+    label: "Youth Experience",
+    sections: [
+      xSection("NPS by week", "week_number", "Week", [xTextCol("dimension", "Dimension"), xCol("nps", "NPS")], data.weekly || []),
+    ],
+  };
+}
+
+async function buildVenueExport(filters) {
+  const data = await apiGet(`/api/operations/venue${buildParams(filters)}`);
+  return {
+    label: "Venue",
+    sections: [
+      xSection("Venue compliance", "venue", "Venue", [
+        xTextCol("district", "District"), xCol("reports", "Reports"), xCol("compliant", "Compliant"), xCol("compliance_rate", "Rate", { format: fmtPct }),
+      ], data.by_venue || []),
+    ],
+  };
+}
+
+async function buildTransportExport(filters) {
+  const data = await apiGet(`/api/operations/transport${buildParams(filters)}`);
+  return {
+    label: "Transport",
+    sections: [
+      xSection("Transport timeliness, by site", "venue", "Site", [xCol("timeliness_score", "Timeliness score")], data.by_site || []),
+    ],
+  };
+}
+
+// One builder per non-Guide NAV tab key — Guide is static content, not data,
+// so it's excluded from the export dialog entirely.
+const EXPORT_BUILDERS = {
+  "es-main": buildExecutiveSummaryExport,
+  aware: buildAwarenessExport,
+  mob: buildMobilisationExport,
+  acq: buildAcquisitionExport,
+  mobs: buildMobilisersExport,
+  tam: buildTamExport,
+  ret: buildRetentionExport,
+  attendance: buildAttendanceExport,
+  retcalls: buildRetentionCallsExport,
+  train: buildTrainerQualityExport,
+  nps: buildNpsExport,
+  milestones: buildMilestonesExport,
+  venue: buildVenueExport,
+  transport: buildTransportExport,
+};
+
+function escHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderExportSectionHtml(section) {
+  const cols = [{ key: section.nameKey, label: section.nameLabel, align: "left", format: (v) => (v == null ? "—" : String(v)) }, ...section.columns];
+  const rowsHtml = section.rows.length
+    ? section.rows.map((r) => `<tr>${cols.map((c) => `<td style="text-align:${c.align}">${escHtml(c.format(r[c.key], r))}</td>`).join("")}</tr>`).join("")
+    : `<tr><td colspan="${cols.length}" style="text-align:center;color:#888;padding:10px">No data</td></tr>`;
+  return `
+    <h3>${escHtml(section.heading)}</h3>
+    ${section.note ? `<p class="note">${escHtml(section.note)}</p>` : ""}
+    <table>
+      <thead><tr>${cols.map((c) => `<th style="text-align:${c.align}">${escHtml(c.label)}</th>`).join("")}</tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
+}
+
+function buildExportReportHtml(tabResults, filters) {
+  const filterBits = [];
+  if (filters.cohort) filterBits.push(`Cohort: ${filters.cohort}`);
+  if (filters.district) filterBits.push(`District: ${filters.district}`);
+  if (filters.gender) filterBits.push(`Gender: ${filters.gender}`);
+  const filterLabel = filterBits.length ? filterBits.join(" · ") : "All cohorts, districts, genders";
+
+  const body = tabResults.map((t) => `
+    <h2 class="tab-heading">${escHtml(t.label)}</h2>
+    ${t.note ? `<p class="note">${escHtml(t.note)}</p>` : ""}
+    ${t.sections.map(renderExportSectionHtml).join("")}
+  `).join("");
+
+  return `<!doctype html><html><head><meta charset="utf-8"><title>E!BA Dashboard — Export Report</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; color: #241F18; margin: 24px; }
+    h1 { font-size: 20px; margin-bottom: 2px; }
+    .subtitle { font-size: 12px; color: #6B6358; margin-bottom: 20px; }
+    h2.tab-heading { font-size: 17px; margin-top: 30px; border-bottom: 2px solid #D9A441; padding-bottom: 4px; }
+    h3 { font-size: 13px; margin: 16px 0 6px; color: #2E6E73; }
+    .note { font-size: 11px; color: #6B6358; margin: -4px 0 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin-bottom: 6px; }
+    th, td { border: 1px solid #E3DDCC; padding: 4px 7px; }
+    th { background: #F7F4ED; text-transform: uppercase; font-size: 10px; color: #6B6358; }
+    @media print {
+      h2.tab-heading { page-break-before: always; }
+      h2.tab-heading:first-of-type { page-break-before: avoid; }
+      tr { page-break-inside: avoid; }
+    }
+  </style></head>
+  <body>
+    <h1>E!BA Dashboard — Export Report</h1>
+    <div class="subtitle">Generated ${escHtml(new Date().toLocaleString())} · ${escHtml(filterLabel)}</div>
+    ${body}
+  </body></html>`;
+}
+
+function ExportDialog({ open, onClose, filters }) {
+  const exportableGroups = NAV.filter((g) => g.key !== "guide");
+  const allKeys = useMemo(() => exportableGroups.flatMap((g) => g.tabs.map((t) => t.key)), [exportableGroups]);
+  const [selected, setSelected] = useState(() => new Set(allKeys));
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [error, setError] = useState(null);
+
+  if (!open) return null;
+
+  function toggle(key) {
+    setSelected((s) => { const n = new Set(s); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  }
+  function toggleAll() {
+    setSelected((s) => (s.size === allKeys.length ? new Set() : new Set(allKeys)));
+  }
+
+  async function generate() {
+    setError(null);
+    // Open the tab synchronously, in direct response to the click, so
+    // popup blockers see it as a user-initiated navigation.
+    const win = window.open("", "_blank");
+    if (!win) { setError("Popups are blocked — please allow popups for this site and try again."); return; }
+    win.document.write("<title>Generating report…</title><body style=\"font-family:sans-serif;padding:40px;color:#333\">Generating your E!BA Dashboard export…</body>");
+    setBusy(true);
+    try {
+      const tabs = exportableGroups.flatMap((g) => g.tabs).filter((t) => selected.has(t.key));
+      const inFlight = new Set();
+      const done = new Set();
+      const describeProgress = () => {
+        const bits = [];
+        if (inFlight.size) bits.push(`Fetching ${[...inFlight].join(", ")}…`);
+        bits.push(`${done.size}/${tabs.length} tabs done`);
+        setProgress(bits.join(" — "));
+      };
+
+      // One tab's data being unavailable (a 503, a table that isn't live
+      // yet, etc.) shouldn't abort the whole report — every tab runs
+      // independently and a failure becomes a visible note in ITS section
+      // of the PDF rather than killing the other 13 tabs' worth of work.
+      // Tabs run with limited concurrency (not fully sequential, not all at
+      // once) — sequential was the slow path the user hit; unlimited
+      // parallel would fire 100+ requests at the backend simultaneously.
+      const CONCURRENCY = 4;
+      const results = new Array(tabs.length);
+      let nextIndex = 0;
+      async function worker() {
+        while (nextIndex < tabs.length) {
+          const i = nextIndex++;
+          const t = tabs[i];
+          inFlight.add(t.label);
+          describeProgress();
+          const builder = EXPORT_BUILDERS[t.key];
+          try {
+            results[i] = builder
+              ? await builder(filters)
+              : { label: t.label, sections: [], note: "Export not available for this tab yet." };
+          } catch (e) {
+            results[i] = { label: t.label, sections: [], note: `Couldn't load this tab's data: ${e.message || "unknown error"}. It may not be connected to live data yet — try again, or check the tab directly.` };
+          }
+          inFlight.delete(t.label);
+          done.add(t.label);
+          describeProgress();
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, tabs.length) }, worker));
+
+      const html = buildExportReportHtml(results, filters);
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
+      win.focus();
+      win.print();
+      onClose();
+    } catch (e) {
+      const message = e.message || "Export failed";
+      setError(message);
+      win.document.open();
+      win.document.write(`<title>Export failed</title><body style="font-family:sans-serif;padding:40px;color:#900">Export failed: ${escHtml(message)}</body>`);
+      win.document.close();
+    } finally {
+      setBusy(false);
+      setProgress("");
+    }
+  }
+
+  return (
+    <>
+      <div onClick={busy ? undefined : onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,34,56,.45)", zIndex: 100 }} />
+      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 101, background: C.cream, borderRadius: 10, width: 480, maxWidth: "92vw", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 12px 40px rgba(0,0,0,.25)" }}>
+        <div style={{ padding: "18px 22px 12px", borderBottom: `1px solid ${C.line}`, background: C.white, borderRadius: "10px 10px 0 0" }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.ink }}>Export report</div>
+          <div style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>Pick which tabs to include — every district/parish/venue breakdown for each is fetched fresh, not just what's currently open.</div>
+        </div>
+        <div style={{ padding: "14px 22px", overflowY: "auto", flex: 1 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 700, marginBottom: 10, cursor: "pointer" }}>
+            <input type="checkbox" checked={selected.size === allKeys.length} onChange={toggleAll} />
+            Select all
+          </label>
+          {exportableGroups.map((g) => (
+            <div key={g.key} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.teal, textTransform: "uppercase", marginBottom: 4 }}>{g.group}</div>
+              {g.tabs.map((t) => (
+                <label key={t.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "3px 0", cursor: "pointer" }}>
+                  <input type="checkbox" checked={selected.has(t.key)} onChange={() => toggle(t.key)} />
+                  {t.label}
+                </label>
+              ))}
+            </div>
+          ))}
+        </div>
+        {error && <div style={{ padding: "0 22px 10px", color: C.coral, fontSize: 12 }}>{error}</div>}
+        {busy && <div style={{ padding: "0 22px 10px", color: C.muted, fontSize: 12 }}>{progress || "Generating…"}</div>}
+        <div style={{ padding: "12px 22px 18px", borderTop: `1px solid ${C.line}`, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+          <button onClick={onClose} disabled={busy} style={{ fontSize: 12, fontWeight: 700, padding: "8px 16px", border: `1px solid ${C.line}`, borderRadius: 5, background: C.white, color: C.inkSoft, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>Cancel</button>
+          <button onClick={generate} disabled={busy || selected.size === 0} style={{ fontSize: 12, fontWeight: 700, padding: "8px 16px", border: "none", borderRadius: 5, background: C.gold, color: C.ink, cursor: busy || selected.size === 0 ? "default" : "pointer", opacity: busy || selected.size === 0 ? 0.6 : 1 }}>
+            {busy ? "Generating…" : "Generate PDF"}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ─── Filter bar ───────────────────────────────────────────────────────────────
 function FilterBar({ filters, setFilters, options }) {
   const sel = { fontSize: 12, padding: "6px 8px", border: `1px solid #33526e`, borderRadius: 4, background: C.white, color: C.text };
@@ -4362,6 +5062,7 @@ export default function App() {
   const [filters, setFilters] = useState({ district: "", gender: "", cohort: "BOOTCAMP_5" });
   const [options, setOptions] = useState({});
   const [demoMode, setDemoMode] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
 
   // Fetch current user whenever the token changes.
   useEffect(() => {
@@ -4435,6 +5136,7 @@ export default function App() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ fontSize: 12, color: "#B9C4D0" }}>{user.email || "Guest view"}</span>
+            <button onClick={() => setExportOpen(true)} style={{ fontSize: 11, fontWeight: 700, padding: "5px 10px", border: `1px solid ${C.gold}`, borderRadius: 4, background: "transparent", color: C.gold, cursor: "pointer" }}>Export</button>
             <button onClick={logout} style={{ fontSize: 11, fontWeight: 700, padding: "5px 10px", border: `1px solid ${C.gold}`, borderRadius: 4, background: "transparent", color: C.gold, cursor: "pointer" }}>Sign out</button>
           </div>
         </div>
@@ -4460,6 +5162,8 @@ export default function App() {
           {activeTab.render(filters, navigateTo)}
         </div>
       </DemoContext.Provider>
+
+      <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} filters={filters} />
     </div>
     </DrillProvider>
   );
