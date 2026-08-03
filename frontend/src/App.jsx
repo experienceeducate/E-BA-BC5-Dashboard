@@ -3532,6 +3532,11 @@ function DomainBar({ label, score }) {
 // `phase` as a Literal over exactly these values and 422s on anything else.
 const TRAINER_COHORTS = ["BOOTCAMP_4", "BC5 TOT", "BOOTCAMP_5"];
 
+// Register columns the page search matches against. Cohort is deliberately not
+// one of them — it already has its own selector above, and including it would
+// make a stray "b" quietly narrow by cohort as well as by name.
+const TRAINER_SEARCH_FIELDS = ["trainer_name", "venue", "district"];
+
 function withPhaseParam(baseQuery, phase) {
   if (!phase) return baseQuery;
   return `${baseQuery}${baseQuery ? "&" : "?"}phase=${encodeURIComponent(phase)}`;
@@ -3555,10 +3560,24 @@ function TrainersTab({ filters }) {
 
 function TrainerQualityPage({ filters, phase }) {
   const drill = useDrill();
+  const [search, setSearch] = useState("");
   const { data, loading, error } = useApi(withPhaseParam(`/api/implementation/trainers${buildParams(filters)}`, phase));
-  const rows = data?.trainers || [];
+  const allRows = data?.trainers || [];
   const byPhase = data?.by_phase || [];
   const domainDefs = data?.domains || [];
+
+  // Universal filter, the same approach as Awareness Overview: match once here
+  // and every metric below is computed from the matched rows, so the tiles, the
+  // register, the domain bars, the insights and the district drill all narrow
+  // together instead of the table disagreeing with the totals above it.
+  //
+  // Trainer names arrive already masked for the guest role (initials), so a
+  // guest searches exactly the text they can see — matching happens on what was
+  // served, never on an unmasked value.
+  const q = search.trim().toLowerCase();
+  const rows = q
+    ? allRows.filter((r) => TRAINER_SEARCH_FIELDS.some((k) => (r[k] || "").toLowerCase().includes(q)))
+    : allRows;
 
   // Register rows are one per trainer x venue x district x cohort, so on a
   // single-cohort view rows == distinct trainers (verified: 79 rows / 79
@@ -3611,7 +3630,7 @@ function TrainerQualityPage({ filters, phase }) {
       // Districts don't overlap between cohorts in the live data (BOOTCAMP_4 is
       // BUGIRI/BUGWERI, BC5 TOT is JINJA), but the title names the scope anyway
       // so an All-cohorts drill is never mistaken for a single cohort's.
-      title: `Avg observation score (0–${TRAINER_SCORE_MAX}) — by district${phase ? ` · ${phase}` : " · all cohorts"}`,
+      title: `Avg observation score (0–${TRAINER_SCORE_MAX}) — by district${phase ? ` · ${phase}` : " · all cohorts"}${q ? ` · "${search.trim()}"` : ""}`,
       tone: "real", tagLabel: "REAL",
       rootKey: "district", rootLabel: "District",
       columns: [{ key: "score", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> }],
@@ -3623,6 +3642,19 @@ function TrainerQualityPage({ filters, phase }) {
 
   return (
     <div>
+      <input
+        type="text"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search trainer, venue or district…"
+        style={{ width: "100%", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5, marginBottom: 4 }}
+      />
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
+        {q
+          ? <>Matched <b>{fmtNum(nObs)}</b> of {fmtNum(allRows.length)} {allRows.length === 1 ? "record" : "records"} — score cards, the register, the domain summary and the insights below all reflect this filter. The cohort comparison always spans every cohort.{nObs === 0 ? " Nothing matched — check the spelling, or clear the box." : ""}</>
+          : "Filters every metric on this page to the trainers, venues or districts you search for — score cards, the register, the domain summary and the insights below."}
+      </div>
+
       <Grid cols={4}>
         <KpiTile
           label={phase ? "Trainers observed" : "Trainer records"}
@@ -3642,7 +3674,7 @@ function TrainerQualityPage({ filters, phase }) {
           count in the tile above. */}
       <Card
         title="Cohort comparison"
-        subtitle={`Distinct trainers observed and mean observation score per cohort. Always spans every cohort with data, regardless of the selection above${phase ? ` — the register below is narrowed to ${phase}` : ""}.`}
+        subtitle={`Distinct trainers observed and mean observation score per cohort. Rolled up server-side, so this always spans every cohort with data regardless of the cohort selected or the search above${phase ? ` — the register below is narrowed to ${phase}` : ""}.`}
         chip="REAL"
       >
         <State loading={loading} error={error} empty={!loading && byPhase.length === 0}>
@@ -3664,7 +3696,7 @@ function TrainerQualityPage({ filters, phase }) {
 
       <Card
         title="Trainer observation register — who was observed & how they rated"
-        subtitle={`Mean observation score on the 0–${TRAINER_SCORE_MAX} scale, sorted lowest-first — trainers to prioritise for support appear at the top. Click Overall for a district breakdown.${phase ? ` Showing ${phase} only.` : ""}`}
+        subtitle={`Mean observation score on the 0–${TRAINER_SCORE_MAX} scale, sorted lowest-first — trainers to prioritise for support appear at the top. Click Overall for a district breakdown.${phase ? ` Showing ${phase} only.` : ""}${q ? ` Filtered to "${search.trim()}".` : ""}`}
         chip="PII" chipTone="pii"
       >
         <State loading={loading} error={error} empty={!loading && rows.length === 0}>
