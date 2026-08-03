@@ -3521,31 +3521,34 @@ function DomainBar({ label, score }) {
   );
 }
 
-// `phase` isn't one of the global filter bar's dimensions (district/gender/
-// cohort) — it's page-local to Trainer Quality, since TRAINER_OBSERVATIONS
-// has no bootcamp_cycle column at all and no other live table has a
-// "BC5 TOT" value to filter on. Appends it to whatever buildParams(filters)
-// already produced instead of threading it through the shared global-filter
-// helpers.
+// Cohort isn't one of the global filter bar's dimensions (district/gender/
+// cohort) — it's page-local to Trainer Quality, since TRAINER_OBSERVATIONS has
+// no bootcamp_cycle column at all (a cohort IS a submission-date window) and no
+// other live table has a "BC5 TOT" value to filter on. Appends it to whatever
+// buildParams(filters) already produced instead of threading it through the
+// shared global-filter helpers.
+//
+// Must stay in lockstep with the backend's TRAINER_COHORTS — the endpoint types
+// `phase` as a Literal over exactly these values and 422s on anything else.
+const TRAINER_COHORTS = ["BOOTCAMP_4", "BC5 TOT", "BOOTCAMP_5"];
+
 function withPhaseParam(baseQuery, phase) {
   if (!phase) return baseQuery;
   return `${baseQuery}${baseQuery ? "&" : "?"}phase=${encodeURIComponent(phase)}`;
 }
 
 function TrainersTab({ filters }) {
-  const [page, setPage] = useState("overview");
+  const [page, setPage] = useState("all");
   return (
     <div>
       <PageNav
         active={page}
         onChange={setPage}
-        pages={[
-          { key: "overview", label: "Overview" },
-          { key: "tot", label: "BC5 TOT" },
-        ]}
+        pages={[{ key: "all", label: "All cohorts" }, ...TRAINER_COHORTS.map((c) => ({ key: c, label: c }))]}
       />
-      {page === "overview" && <TrainerQualityPage filters={filters} />}
-      {page === "tot" && <TrainerQualityPage filters={filters} phase="BC5 TOT" />}
+      {/* key forces a remount per cohort so the page's own state (drills) doesn't
+          carry across a cohort switch. */}
+      <TrainerQualityPage key={page} filters={filters} phase={page === "all" ? undefined : page} />
     </div>
   );
 }
@@ -3557,10 +3560,25 @@ function TrainerQualityPage({ filters, phase }) {
   const byPhase = data?.by_phase || [];
   const domainDefs = data?.domains || [];
 
+  // Register rows are one per trainer x venue x district x cohort, so on a
+  // single-cohort view rows == distinct trainers (verified: 79 rows / 79
+  // trainers for BOOTCAMP_4), but "All cohorts" sums cohorts and a trainer
+  // observed in two of them contributes a row to each. The tile labels below
+  // say "records" rather than "trainers" in that case instead of overstating a
+  // headcount; the exact per-cohort distinct counts live in the rollup card.
   const nObs = rows.length;
   const nExceeds = rows.filter((r) => r.rating === "EXCEEDS").length;
   const nMeets = rows.filter((r) => r.rating === "MEETS").length;
   const nBelow = rows.filter((r) => r.rating === "BELOW").length;
+  const recordNoun = phase ? "trainers" : "records";
+
+  // Cohorts are listed by the backend but only appear in the rollup once they
+  // have observations — BOOTCAMP_5's window opens after BOOTCAMP_4's and BC5
+  // TOT's, so it is legitimately absent rather than broken. Naming the empty
+  // ones is more useful than silently showing a shorter table.
+  const cohortList = data?.cohorts || TRAINER_COHORTS;
+  const cohortsWithData = byPhase.length;
+  const missingCohorts = cohortList.filter((c) => !byPhase.some((p) => p.phase === c));
 
   // Lowest-first — same read as the reference design: trainers needing
   // support surface at the top of the register, not buried under the stars.
@@ -3590,7 +3608,10 @@ function TrainerQualityPage({ filters, phase }) {
       .map((d) => ({ district: d.district, score: d._n ? Math.round((d._sum / d._n) * 100) / 100 : null }))
       .sort((a, b) => (b.score || 0) - (a.score || 0));
     drill.open({
-      title: `Avg observation score (0–${TRAINER_SCORE_MAX}) — by district`,
+      // Districts don't overlap between cohorts in the live data (BOOTCAMP_4 is
+      // BUGIRI/BUGWERI, BC5 TOT is JINJA), but the title names the scope anyway
+      // so an All-cohorts drill is never mistaken for a single cohort's.
+      title: `Avg observation score (0–${TRAINER_SCORE_MAX}) — by district${phase ? ` · ${phase}` : " · all cohorts"}`,
       tone: "real", tagLabel: "REAL",
       rootKey: "district", rootLabel: "District",
       columns: [{ key: "score", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> }],
@@ -3603,26 +3624,43 @@ function TrainerQualityPage({ filters, phase }) {
   return (
     <div>
       <Grid cols={4}>
-        <KpiTile label="Trainers observed" value={String(nObs)} sub={phase ? phase : "BC5 TOT + BOOTCAMP_5, cumulative"} tag="REAL" />
-        <KpiTile label="Exceeds expectations" value={String(nExceeds)} sub={nObs ? `${Math.round((nExceeds / nObs) * 100)}% of trainers` : undefined} tag="REAL" />
-        <KpiTile label="Meets expectations" value={String(nMeets)} sub={nObs ? `${Math.round((nMeets / nObs) * 100)}% of trainers` : undefined} tag="REAL" />
-        <KpiTile label="Below expectations" value={String(nBelow)} sub={nObs ? (nBelow === 0 ? "none flagged" : `${Math.round((nBelow / nObs) * 100)}% of trainers`) : undefined} tone={nBelow > 0 ? "sim" : "real"} tag="REAL" />
+        <KpiTile
+          label={phase ? "Trainers observed" : "Trainer records"}
+          value={String(nObs)}
+          sub={phase || `across ${cohortsWithData || TRAINER_COHORTS.length} cohorts — a trainer observed in two counts once per cohort`}
+          tag="REAL"
+        />
+        <KpiTile label="Exceeds expectations" value={String(nExceeds)} sub={nObs ? `${Math.round((nExceeds / nObs) * 100)}% of ${recordNoun}` : undefined} tag="REAL" />
+        <KpiTile label="Meets expectations" value={String(nMeets)} sub={nObs ? `${Math.round((nMeets / nObs) * 100)}% of ${recordNoun}` : undefined} tag="REAL" />
+        <KpiTile label="Below expectations" value={String(nBelow)} sub={nObs ? (nBelow === 0 ? "none flagged" : `${Math.round((nBelow / nObs) * 100)}% of ${recordNoun}`) : undefined} tone={nBelow > 0 ? "sim" : "real"} tag="REAL" />
       </Grid>
 
-      {!phase && (
-        <Card title="BC5 TOT vs BOOTCAMP_5" subtitle="Trainer certification (TOT, before teaching youth) vs in-classroom delivery (BOOTCAMP_5) — same observation-score formula, different phase of the cohort. See the BC5 TOT tab for a TOT-only breakdown." chip="REAL">
-          <State loading={loading} error={error} empty={!loading && byPhase.length === 0}>
-            <DataTable
-              columns={[
-                { key: "phase", label: "Phase" },
-                { key: "trainers_observed", label: "Trainers observed", align: "right", render: (v) => fmtNum(v) },
-                { key: "score", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
-              ]}
-              rows={byPhase}
-            />
-          </State>
-        </Card>
-      )}
+      {/* Always shown, even on a single-cohort view: the rollup deliberately
+          spans every cohort server-side, so this stays the one place to compare
+          the selected cohort against the others. Distinct-trainer counts here
+          are exact (COUNT(DISTINCT trainer_name)), unlike the register-row
+          count in the tile above. */}
+      <Card
+        title="Cohort comparison"
+        subtitle={`Distinct trainers observed and mean observation score per cohort. Always spans every cohort with data, regardless of the selection above${phase ? ` — the register below is narrowed to ${phase}` : ""}.`}
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && byPhase.length === 0}>
+          <DataTable
+            columns={[
+              { key: "phase", label: "Cohort", render: (v) => <span style={{ fontWeight: v === phase ? 800 : 400 }}>{v}{v === phase ? " ·" : ""}</span> },
+              { key: "trainers_observed", label: "Trainers observed", align: "right", render: (v) => fmtNum(v) },
+              { key: "score", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
+            ]}
+            rows={byPhase}
+          />
+          {missingCohorts.length > 0 && (
+            <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+              No observations yet for {missingCohorts.join(", ")} — {missingCohorts.length === 1 ? "its window" : "their windows"} either hasn&apos;t opened or hasn&apos;t reported. {missingCohorts.length === 1 ? "It" : "They"} will appear here automatically once data lands.
+            </p>
+          )}
+        </State>
+      </Card>
 
       <Card
         title="Trainer observation register — who was observed & how they rated"
@@ -3636,6 +3674,9 @@ function TrainerQualityPage({ filters, phase }) {
                 { key: "trainer_name", label: "Trainer" },
                 { key: "venue", label: "Venue" },
                 { key: "district", label: "District" },
+                // Redundant when a single cohort is selected — every row would
+                // carry the same value — so it only earns a column on All cohorts.
+                ...(phase ? [] : [{ key: "cohort", label: "Cohort" }]),
                 { key: "score", label: "Overall", align: "right", onHeaderClick: openScoreDrill, render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
                 { key: "rating", label: "Rating", render: (v) => <TrainerRatingBadge rating={v} /> },
               ]}
@@ -3670,15 +3711,27 @@ function TrainerQualityPage({ filters, phase }) {
             <b>{strongestDomain.label}</b> is the strongest domain cohort-wide at <b>{fmtScore(strongestDomain.avg)}</b> out of {TRAINER_SCORE_MAX}.
           </Insight>
         )}
-        {/* 0.2 on the 4-point scale — a gap worth remarking on now that the
-            comparison is a score, not the percentage this once threshold-ed
-            at 3 points. */}
-        {byPhase.length === 2 && byPhase[0].score != null && byPhase[1].score != null && Math.abs(byPhase[0].score - byPhase[1].score) >= 0.2 && (() => {
-          const [a, b] = byPhase;
-          const higher = a.score >= b.score ? a : b, lower = a.score >= b.score ? b : a;
+        {/* Best vs worst across however many cohorts have reported, rather than
+            assuming exactly two — BOOTCAMP_5 has no observations yet, and a
+            hardcoded pair would have silently stopped comparing once it lands
+            and made three. 0.2 on the 5-point scale is the gap worth remarking
+            on; below that the cohorts are effectively level. */}
+        {(() => {
+          const scored = byPhase.filter((p) => p.score != null);
+          if (scored.length < 2) return null;
+          const higher = scored.reduce((a, b) => (b.score > a.score ? b : a));
+          const lower = scored.reduce((a, b) => (b.score < a.score ? b : a));
+          const gap = Math.round((higher.score - lower.score) * 100) / 100;
+          if (gap < 0.2) {
+            return (
+              <Insight tone="pos">
+                All {scored.length} reporting cohorts score within <b>{gap}</b> of each other ({scored.map((p) => `${p.phase} ${fmtScore(p.score)}`).join(", ")}) — observation quality is holding steady across cohorts.
+              </Insight>
+            );
+          }
           return (
             <Insight tone="neutral">
-              <b>{higher.phase}</b> scores higher on average ({fmtScore(higher.score)}) than <b>{lower.phase}</b> ({fmtScore(lower.score)}) — worth checking whether that's a genuine delivery difference or just which trainers have been observed so far in each phase.
+              <b>{higher.phase}</b> scores higher on average ({fmtScore(higher.score)}) than <b>{lower.phase}</b> ({fmtScore(lower.score)}) — a {gap}-point gap. Worth checking whether that's a genuine delivery difference or just which trainers have been observed so far in each cohort.
             </Insight>
           );
         })()}
@@ -3993,8 +4046,8 @@ const GUIDE_PAGES = [
     summary: "Follow-up funnel for absent youth, searchable by venue.",
     what: "Daily follow-up funnel for absent youth: called → reached → promised to return → returned. Search by venue to filter every component on the page; click a legend item to hide/show that line; a 'sites with absences but no follow-up calls' scorecard flags call-center coverage gaps; every score card drills district → site. Reasons for absence aren't broken out yet — that column hasn't been confirmed against live BigQuery." },
   { group: "Implementation", page: "Trainer Quality", tone: "real", navGroup: "impl", navTab: "train",
-    summary: "Per-lesson scores by teaching domain; BC5 TOT vs BOOTCAMP_5.",
-    what: "Per-lesson classroom observation scores across the seven E! teaching domains, banded Exceeds / Meets / Below expectations. Two sub-pages — Overview (both cohort phases combined) and BC5 TOT (certification phase only, 2026-07-29–2026-08-16) — each with a district→venue drill. Trainer names are staff-only (PII)." },
+    summary: "Per-lesson scores by teaching domain, filterable by cohort.",
+    what: "Per-lesson classroom observation scores across the seven E! teaching domains, banded Exceeds / Meets / Below expectations on the 0–5 observation scale. Filter by cohort: All cohorts, BOOTCAMP_4 (2026-05-04–2026-05-29), BC5 TOT (certification phase, 2026-07-29–2026-08-16) or BOOTCAMP_5 (in-classroom delivery, 2026-08-17–2026-09-11). The cohort comparison card always spans every cohort with data; each view has a district→trainer drill. Trainer names are staff-only (PII)." },
   { group: "Implementation", page: "Youth Experience", tone: "sample", navGroup: "impl", navTab: "nps",
     summary: "Weekly NPS trend (Programme / Venue / Meals).",
     what: "Programme / Venue / Meals NPS weekly trend. Still placeholder data." },

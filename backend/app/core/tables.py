@@ -212,15 +212,26 @@ ATTENDANCE_SUMMARY = f"{_GOLD}.eba_bootcamp_attendance_summary"
 # submission-date window instead (per the recruitment team's reference query,
 # trainer_quality_summary_sql.sql). Backs /api/implementation/trainers.
 #
-# BC5 observations span two distinct phases (per instruction, 2026-07-30):
+# Observations span three cohort windows. BOOTCAMP_4 is the prior cohort (per
+# instruction, 2026-08-03) and carries the same v2 scoring columns, so it gets
+# the identical treatment: 310 rows / 79 trainers across BUGIRI + BUGWERI.
+# BC5 then splits into two distinct phases (per instruction, 2026-07-30):
 # TOT ("Training of Trainers" — trainers being certified, before they teach
 # youth) and the BOOTCAMP_5 delivery window itself (trainers observed while
-# actually teaching). These are contiguous but conceptually different
-# populations — a trainer's TOT score isn't the same signal as their in-
-# classroom BOOTCAMP_5 score — so the endpoint reports both the full-window
-# register and a per-phase breakdown. Update these four dates alongside
-# ACTIVE_COHORTS once BC6 trainer-quality data lands.
+# actually teaching). TOT and BOOTCAMP_5 are contiguous but conceptually
+# different populations — a trainer's TOT score isn't the same signal as their
+# in-classroom BOOTCAMP_5 score — so the endpoint reports a per-cohort
+# breakdown alongside the register.
+#
+# BOOTCAMP_4 is NOT contiguous with BC5: 2026-05-30..2026-07-28 belongs to no
+# cohort. The endpoint therefore filters on an OR of the three windows rather
+# than one wide span, so every row it returns maps to exactly one cohort and
+# the two-month gap can never leak in un-labelled.
+#
+# Update these dates alongside ACTIVE_COHORTS once BC6 trainer data lands.
 TRAINER_OBSERVATIONS         = f"{_SILVER}.raw_eba_2025_monitoring_tool_v2_ug"
+TRAINER_BC4_START_DATE       = "2026-05-04"
+TRAINER_BC4_END_DATE         = "2026-05-29"
 TRAINER_TOT_START_DATE       = "2026-07-29"
 TRAINER_TOT_END_DATE         = "2026-08-16"
 TRAINER_BOOTCAMP_START_DATE  = "2026-08-17"

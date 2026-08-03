@@ -8,6 +8,7 @@ query.
 """
 
 from app.core.tables import AWARENESS_SUMMARY, FUNNEL_STAGES
+from app.routers.implementation import TRAINER_COHORTS
 
 
 def test_filters_shape(as_staff, mock_run_query):
@@ -71,3 +72,65 @@ def test_run_query_receives_caller_role(as_guest, mock_run_query):
 def test_endpoints_require_auth(client, mock_run_query):
     # Header present (client fixture) but no JWT override -> current_user 401s.
     assert client.get("/api/overview/funnel").status_code == 401
+
+
+# --- Trainer Quality cohort filter -------------------------------------------
+# The observation table has no bootcamp_cycle column, so a cohort IS a
+# submission-date window (see tables.py). These pin the parts of that mapping
+# that are easy to break silently: the allowed values, the un-cohorted gap
+# between BOOTCAMP_4 and BC5 TOT, and the rollup's chronological order.
+
+
+def test_trainers_rejects_unknown_cohort(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    # phase is a Literal, so a bad value is a 422 from FastAPI -- not a silent
+    # fall-through to the all-cohorts window, which is what a bare str did.
+    assert as_staff.get("/api/implementation/trainers?phase=BOOTCAMP_9").status_code == 422
+    assert as_staff.get("/api/implementation/trainers?phase=").status_code == 422
+
+
+def test_trainers_accepts_every_declared_cohort(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    for cohort in TRAINER_COHORTS:
+        r = as_staff.get("/api/implementation/trainers", params={"phase": cohort})
+        assert r.status_code == 200, cohort
+    assert as_staff.get("/api/implementation/trainers").json()["cohorts"] == TRAINER_COHORTS
+
+
+def test_trainers_all_cohorts_excludes_the_gap_between_windows(as_staff, mock_run_query):
+    """No phase must OR the cohort windows, not span one wide range -- otherwise
+    2026-05-30..2026-07-28 (no cohort) would be swept in with a NULL label."""
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/trainers")
+    register_sql = mock_run_query.calls[0]["sql"]
+    assert " OR " in register_sql
+    # One BETWEEN per cohort window, in both the filter and the labelling CASE.
+    assert register_sql.count("BETWEEN") >= 2 * len(TRAINER_COHORTS)
+    # Cohort is part of the register's grain, so a trainer seen in two cohorts
+    # yields a row per cohort rather than one blended score.
+    assert "GROUP BY trainer_name, venue, district, cohort" in register_sql
+
+
+def test_trainers_narrowing_to_one_cohort_drops_the_or(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/trainers", params={"phase": "BOOTCAMP_4"})
+    where = mock_run_query.calls[0]["sql"].split("WHERE", 1)[1].split("GROUP BY")[0]
+    assert " OR " not in where
+    # ... but every window param stays bound, since the labelling CASE uses them.
+    names = {p.name for p in mock_run_query.calls[0]["params"]}
+    assert {"tq_c0s", "tq_c0e", "tq_c1s", "tq_c1e", "tq_c2s", "tq_c2e"} <= names
+
+
+def test_trainers_rollup_is_chronological_not_alphabetical(as_staff, mock_run_query):
+    # "BC5 TOT" sorts before "BOOTCAMP_4" alphabetically; the endpoint must
+    # reorder to the real cohort sequence.
+    def side_effect(sql, params, role):
+        if "COUNT(DISTINCT trainer_name)" in sql:
+            return [
+                {"phase": "BC5 TOT", "trainers_observed": 35, "score": 3.71},
+                {"phase": "BOOTCAMP_4", "trainers_observed": 79, "score": 3.70},
+            ]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    body = as_staff.get("/api/implementation/trainers").json()
+    assert [p["phase"] for p in body["by_phase"]] == ["BOOTCAMP_4", "BC5 TOT"]
