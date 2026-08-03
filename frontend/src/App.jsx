@@ -3461,44 +3461,58 @@ function RetentionCallsTab({ filters }) {
   );
 }
 
-// Matches the reference design's exact bands for the seven E! teaching
-// domains and the register's overall %-score column: green >=80, amber
-// 70-79, red <70 — distinct from RATE_CATEGORY_*'s 95/85/75 bands used
-// elsewhere, and from EXCEEDS/MEETS/BELOW (which bands the raw 0-4-scale
-// score at >=4/>=3, not this 0-100 percentage).
-const TRAINER_BAND_COLOR = { Strong: C.green, Solid: C.gold, Priority: C.coral };
-function trainerBand(pct) {
-  if (pct == null) return null;
-  if (pct >= 80) return "Strong";
-  if (pct >= 70) return "Solid";
-  return "Priority";
-}
-function trainerBandColor(pct) {
-  return TRAINER_BAND_COLOR[trainerBand(pct)] || C.muted;
-}
-
+// One categorisation for every observation score on the page — the overall
+// register column, the phase rollup and all seven teaching domains. Bands and
+// thresholds come straight from the recruitment team's reference query's
+// performance_category CASE (>=4 EXCEEDS, >=3 MEETS, else BELOW). The
+// table's percentage_* columns are deliberately not reported, so nothing here
+// bands a 0-100 value; distinct from RATE_CATEGORY_*'s 95/85/75 percentage
+// bands used elsewhere.
+//
+// The underlying observation scale is 0-5, not 0-4: four domains
+// (facilitation, mindset, gender-responsiveness, language) return an exact
+// 5.00 in the live BC5 TOT data. Only the bar fill depends on this — the
+// >=4/>=3 cutoffs are the reference query's own and land at 80%/60% of the
+// scale. Getting the max wrong flattens every score >=4 to a full bar.
+const TRAINER_SCORE_MAX = 5;
 const TRAINER_RATING_STYLE = {
   EXCEEDS: { bg: "#E4EEE3", color: C.green, label: "Exceeds" },
   MEETS:   { bg: "#FBF3E3", color: "#A87A1E", label: "Meets" },
   BELOW:   { bg: "#F5E2DA", color: C.coral, label: "Below" },
 };
+function trainerRating(score) {
+  if (score == null) return null;
+  if (score >= 4) return "EXCEEDS";
+  if (score >= 3) return "MEETS";
+  return "BELOW";
+}
+function trainerScoreColor(score) {
+  return TRAINER_RATING_STYLE[trainerRating(score)]?.color || C.muted;
+}
+// 0-4 scores print to 2dp — a percentage formatter here would imply the
+// wrong scale, and 1dp hides the gaps that matter between 2.9 and 3.0.
+function fmtScore(v) {
+  return v == null ? "—" : Number(v).toFixed(2);
+}
 function TrainerRatingBadge({ rating }) {
   const s = TRAINER_RATING_STYLE[rating];
   if (!s) return "—";
   return <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 9, background: s.bg, color: s.color }}>{s.label}</span>;
 }
 
-// Same bar-and-percentage look as Gauge, but 3-tier RAG (trainerBandColor)
-// instead of Gauge's binary target/no-target coloring — the domain summary
-// needs Strong/Solid/Priority, not a single pass/fail line.
-function DomainBar({ label, pct }) {
-  const filled = pct == null ? 0 : Math.max(0, Math.min(100, pct));
-  const color = trainerBandColor(pct);
+// Same bar look as Gauge, but the value is a 0-4 observation score, not a
+// percentage — the fill is score/TRAINER_SCORE_MAX, and the band comes from
+// the shared Exceeds/Meets/Below categorisation rather than Gauge's binary
+// target/no-target coloring.
+function DomainBar({ label, score }) {
+  const filled = score == null ? 0 : Math.max(0, Math.min(100, (score / TRAINER_SCORE_MAX) * 100));
+  const color = trainerScoreColor(score);
+  const rating = trainerRating(score);
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
         <span style={{ color: C.text, fontWeight: 600 }}>{label}</span>
-        <span style={{ color, fontWeight: 700 }}>{fmtPct(pct)} · {trainerBand(pct) || "—"}</span>
+        <span style={{ color, fontWeight: 700 }}>{fmtScore(score)} · {rating ? TRAINER_RATING_STYLE[rating].label : "—"}</span>
       </div>
       <div style={{ background: C.line, borderRadius: 6, height: 10 }}>
         <div style={{ width: `${filled}%`, background: color, height: "100%", borderRadius: 6 }} />
@@ -3552,14 +3566,15 @@ function TrainerQualityPage({ filters, phase }) {
   // support surface at the top of the register, not buried under the stars.
   const sortedRows = [...rows].sort((a, b) => (a.score ?? Infinity) - (b.score ?? Infinity));
 
-  // Mean of each trainer's own per-domain average — same aggregation the
-  // backend already does per trainer (see trainer_quality_summary_sql.sql),
-  // just rolled up one more level here instead of in SQL.
+  // Mean of each trainer's own per-domain average score — same aggregation
+  // the backend already does per trainer (see trainer_quality_summary_sql.sql),
+  // just rolled up one more level here instead of in SQL. Stays on the 0-4
+  // scale, so it bands with the same Exceeds/Meets/Below CASE as the overall.
   const domainAverages = domainDefs
     .map((d) => {
-      const key = `pct_${d.key}`;
+      const key = `avg_${d.key}`;
       const vals = rows.map((r) => r[key]).filter((v) => v != null);
-      return { key: d.key, label: d.label, avg: vals.length ? Math.round((vals.reduce((a, v) => a + v, 0) / vals.length) * 10) / 10 : null };
+      return { key: d.key, label: d.label, avg: vals.length ? Math.round((vals.reduce((a, v) => a + Number(v), 0) / vals.length) * 100) / 100 : null };
     })
     .sort((a, b) => (b.avg ?? -1) - (a.avg ?? -1));
   const strongestDomain = domainAverages[0];
@@ -3575,10 +3590,10 @@ function TrainerQualityPage({ filters, phase }) {
       .map((d) => ({ district: d.district, score: d._n ? Math.round((d._sum / d._n) * 100) / 100 : null }))
       .sort((a, b) => (b.score || 0) - (a.score || 0));
     drill.open({
-      title: "Avg observation score — by district",
+      title: `Avg observation score (0–${TRAINER_SCORE_MAX}) — by district`,
       tone: "real", tagLabel: "REAL",
       rootKey: "district", rootLabel: "District",
-      columns: [{ key: "score", label: "Avg score", align: "right", render: (v) => (v == null ? "—" : v.toFixed(2)) }],
+      columns: [{ key: "score", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> }],
       rootRows,
       childKey: "trainer_name", childLabel: "Trainer",
       getChildRows: (root) => rows.filter((r) => r.district === root.district).sort((a, b) => (b.score || 0) - (a.score || 0)),
@@ -3601,7 +3616,7 @@ function TrainerQualityPage({ filters, phase }) {
               columns={[
                 { key: "phase", label: "Phase" },
                 { key: "trainers_observed", label: "Trainers observed", align: "right", render: (v) => fmtNum(v) },
-                { key: "pct_overall", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerBandColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+                { key: "score", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
               ]}
               rows={byPhase}
             />
@@ -3611,7 +3626,7 @@ function TrainerQualityPage({ filters, phase }) {
 
       <Card
         title="Trainer observation register — who was observed & how they rated"
-        subtitle={`Sorted lowest-first — trainers to prioritise for support appear at the top. Click Overall for a district breakdown.${phase ? ` Showing ${phase} only.` : ""}`}
+        subtitle={`Mean observation score on the 0–${TRAINER_SCORE_MAX} scale, sorted lowest-first — trainers to prioritise for support appear at the top. Click Overall for a district breakdown.${phase ? ` Showing ${phase} only.` : ""}`}
         chip="PII" chipTone="pii"
       >
         <State loading={loading} error={error} empty={!loading && rows.length === 0}>
@@ -3621,7 +3636,7 @@ function TrainerQualityPage({ filters, phase }) {
                 { key: "trainer_name", label: "Trainer" },
                 { key: "venue", label: "Venue" },
                 { key: "district", label: "District" },
-                { key: "pct_overall", label: "Overall", align: "right", onHeaderClick: openScoreDrill, render: (v) => <span style={{ color: trainerBandColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+                { key: "score", label: "Overall", align: "right", onHeaderClick: openScoreDrill, render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
                 { key: "rating", label: "Rating", render: (v) => <TrainerRatingBadge rating={v} /> },
               ]}
               rows={sortedRows}
@@ -3630,10 +3645,10 @@ function TrainerQualityPage({ filters, phase }) {
         </State>
       </Card>
 
-      <Card title="Domain summary" subtitle="Mean score across all observed trainers by teaching domain. Green ≥80% · amber 70–79% · red <70%." chip="REAL">
+      <Card title="Domain summary" subtitle={`Mean observation score across all observed trainers by teaching domain, on the 0–${TRAINER_SCORE_MAX} scale. Same bands as the overall rating — green Exceeds ≥4 · amber Meets ≥3 · red Below <3.`} chip="REAL">
         <State loading={loading} error={error} empty={!loading && domainAverages.length === 0}>
           <div style={{ paddingTop: 4 }}>
-            {domainAverages.map((d) => <DomainBar key={d.key} label={d.label} pct={d.avg} />)}
+            {domainAverages.map((d) => <DomainBar key={d.key} label={d.label} score={d.avg} />)}
           </div>
         </State>
       </Card>
@@ -3647,20 +3662,23 @@ function TrainerQualityPage({ filters, phase }) {
         )}
         {weakestDomains.length > 0 && (
           <Insight tone="warn">
-            <b>{weakestDomains.map((d) => d.label).join(" and ")} score{weakestDomains.length === 1 ? "s" : ""} lowest</b> ({weakestDomains.map((d) => `${fmtPct(d.avg)}`).join(", ")}) across the observed cohort — worth targeting trainer support here specifically rather than delivery mechanics generally.
+            <b>{weakestDomains.map((d) => d.label).join(" and ")} score{weakestDomains.length === 1 ? "s" : ""} lowest</b> ({weakestDomains.map((d) => fmtScore(d.avg)).join(", ")} out of {TRAINER_SCORE_MAX}) across the observed cohort — worth targeting trainer support here specifically rather than delivery mechanics generally.
           </Insight>
         )}
         {strongestDomain && (
           <Insight tone="neutral">
-            <b>{strongestDomain.label}</b> is the strongest domain cohort-wide at <b>{fmtPct(strongestDomain.avg)}</b>.
+            <b>{strongestDomain.label}</b> is the strongest domain cohort-wide at <b>{fmtScore(strongestDomain.avg)}</b> out of {TRAINER_SCORE_MAX}.
           </Insight>
         )}
-        {byPhase.length === 2 && byPhase[0].pct_overall != null && byPhase[1].pct_overall != null && Math.abs(byPhase[0].pct_overall - byPhase[1].pct_overall) >= 3 && (() => {
+        {/* 0.2 on the 4-point scale — a gap worth remarking on now that the
+            comparison is a score, not the percentage this once threshold-ed
+            at 3 points. */}
+        {byPhase.length === 2 && byPhase[0].score != null && byPhase[1].score != null && Math.abs(byPhase[0].score - byPhase[1].score) >= 0.2 && (() => {
           const [a, b] = byPhase;
-          const higher = a.pct_overall >= b.pct_overall ? a : b, lower = a.pct_overall >= b.pct_overall ? b : a;
+          const higher = a.score >= b.score ? a : b, lower = a.score >= b.score ? b : a;
           return (
             <Insight tone="neutral">
-              <b>{higher.phase}</b> scores higher on average ({fmtPct(higher.pct_overall)}) than <b>{lower.phase}</b> ({fmtPct(lower.pct_overall)}) — worth checking whether that's a genuine delivery difference or just which trainers have been observed so far in each phase.
+              <b>{higher.phase}</b> scores higher on average ({fmtScore(higher.score)}) than <b>{lower.phase}</b> ({fmtScore(lower.score)}) — worth checking whether that's a genuine delivery difference or just which trainers have been observed so far in each phase.
             </Insight>
           );
         })()}

@@ -285,17 +285,19 @@ def retention_calls(
 # Column names straight from the recruitment team's reference query
 # (trainer_quality_summary_sql.sql) — including the "_scoret_" typo on
 # gender-responsiveness, which is the real BigQuery column name, not ours to
-# fix. percentage_* columns are 0-100; avg_score_*/total_score_* are the
-# underlying 0-4 scale and raw sum respectively (unused here — the domain
-# summary reads percentage, matching the reference design's bands).
+# fix. These are the avg_score_* family: the 0-4 observation scale that the
+# reference query's performance_category CASE bands at >=4 EXCEEDS / >=3
+# MEETS / else BELOW. The table also carries percentage_* (0-100) and
+# total_score_* (raw sum) variants — neither is reported, so the overall
+# score and every domain share one categorisation on one scale.
 _TRAINER_DOMAIN_COLUMNS = [
-    ("pck", "percentage_score_pedagogical_content_knowledge", "Pedagogical content knowledge"),
-    ("fds", "percentage_score_facilitation_and_delivery_skills", "Facilitation & delivery"),
-    ("em", "percentage_score_entrepreneurship_mindset", "Entrepreneurial mindset"),
-    ("gr", "percentage_scoret_gender_responsive", "Gender responsiveness"),
-    ("cm", "percentage_score_coaching_and_mentoring", "Coaching & mentoring"),
-    ("language", "percentage_language", "Language"),
-    ("leadership", "percentage_leadership", "Leadership"),
+    ("pck", "avg_score_pedagogical_content_knowledge", "Pedagogical content knowledge"),
+    ("fds", "avg_score_facilitation_and_delivery_skills", "Facilitation & delivery"),
+    ("em", "avg_score_entrepreneurship_mindset", "Entrepreneurial mindset"),
+    ("gr", "avg_scoret_gender_responsive", "Gender responsiveness"),
+    ("cm", "avg_score_coaching_and_mentoring", "Coaching & mentoring"),
+    ("language", "avg_score_language", "Language"),
+    ("leadership", "avg_score_leadership", "Leadership"),
 ]
 
 
@@ -324,9 +326,9 @@ def trainers(
     district: List[str] = Query(default=[]),
     phase: Optional[str] = Query(None, description="'BC5 TOT' or 'BOOTCAMP_5' — omit for both"),
 ):
-    """Trainer observation scores + the seven E! teaching-domain percentages,
-    plus a BC5 TOT vs BOOTCAMP_5 phase breakdown. Names masked to initials
-    for the guest role.
+    """Trainer observation scores + the seven E! teaching-domain averages, all
+    on the 0-4 observation scale, plus a BC5 TOT vs BOOTCAMP_5 phase
+    breakdown. Names masked to initials for the guest role.
 
     Backed by the live TRAINER_OBSERVATIONS raw lesson-observation export
     (see tables.py — no bootcamp_cycle column, scoped by report_type + a
@@ -338,9 +340,11 @@ def trainers(
     rather than the app-wide cohort filter (no other live table has a
     "BC5 TOT" bootcamp_cycle value). rating is a MEETS/EXCEEDS/BELOW band
     on the average overall_average_class_observation_score, per the
-    recruitment team's reference query (trainer_quality_summary_sql.sql).
+    recruitment team's reference query (trainer_quality_summary_sql.sql) —
+    the same 0-4 bands the client applies to each domain average, so nothing
+    on the page mixes a 0-4 score with a 0-100 percentage.
     """
-    domain_select = ",\n      ".join(f"AVG(CAST({col} AS FLOAT64)) AS pct_{key}" for key, col, _label in _TRAINER_DOMAIN_COLUMNS)
+    domain_select = ",\n      ".join(f"AVG(CAST({col} AS FLOAT64)) AS avg_{key}" for key, col, _label in _TRAINER_DOMAIN_COLUMNS)
 
     where, params = _trainer_where(district, "tq", phase)
     sql = f"""
@@ -349,7 +353,6 @@ def trainers(
       training_site AS venue,
       UPPER(district_name) AS district,
       AVG(CAST(overall_average_class_observation_score AS FLOAT64)) AS score,
-      AVG(CAST(overall_percentage_class_observation_score AS FLOAT64)) AS pct_overall,
       {domain_select},
       CASE
         WHEN AVG(CAST(overall_average_class_observation_score AS FLOAT64)) >= 4 THEN 'EXCEEDS'
@@ -379,8 +382,7 @@ def trainers(
         WHEN DATE(submission_date) BETWEEN @tqp_bc_start AND @tqp_bc_end THEN 'BOOTCAMP_5'
       END AS phase,
       COUNT(DISTINCT trainer_name) AS trainers_observed,
-      AVG(CAST(overall_average_class_observation_score AS FLOAT64)) AS score,
-      AVG(CAST(overall_percentage_class_observation_score AS FLOAT64)) AS pct_overall
+      AVG(CAST(overall_average_class_observation_score AS FLOAT64)) AS score
     FROM {TRAINER_OBSERVATIONS}
     WHERE {phase_where}
       AND report_type = 'rct_lesson_observation'
