@@ -1187,14 +1187,19 @@ function AwarenessOverviewPage({ filters }) {
     });
   }
 
-  // Gauge click -> % female (and the female/male counts behind it) for this
-  // exact stage, by district — same search-matched parish rows as the gauge.
+  // Gauge / "Eligible female" tile click -> % female (and the female/male
+  // counts behind it) for this exact stage, by district then parish — same
+  // search-matched parish rows as the gauge itself. Parish rows carry their
+  // own overall pct_female (used by the Parish Performance table), so the
+  // stage-specific share is written last to override it.
   function openGenderStageDrill(metricKey, stageLabel) {
+    const prefix = GENDER_FIELD_PREFIX[metricKey];
+    const withStageShare = (row, female, male) => {
+      const t = female + male;
+      return { ...row, female, male, pct_female: t ? Math.round((1000 * female) / t) / 10 : null };
+    };
     const rootRows = sumGenderByDistrict(matchedParishRowsForSearch, metricKey)
-      .map((r) => {
-        const t = r.female + r.male;
-        return { district: r.district, female: r.female, male: r.male, pct_female: t ? Math.round((1000 * r.female) / t) / 10 : null };
-      })
+      .map((r) => withStageShare({ district: r.district }, r.female, r.male))
       .sort((a, b) => (b.pct_female ?? -1) - (a.pct_female ?? -1));
     drill.open({
       title: `${stageLabel} — % female by district`,
@@ -1206,6 +1211,11 @@ function AwarenessOverviewPage({ filters }) {
         { key: "pct_female", label: "% Female", align: "right", render: fmtPct },
       ],
       rootRows,
+      childKey: "parish", childLabel: "Parish",
+      getChildRows: (root) => matchedParishRowsForSearch
+        .filter((p) => p.district === root.district)
+        .map((p) => withStageShare(p, p[`${prefix}_female`] || 0, p[`${prefix}_male`] || 0))
+        .sort((a, b) => (b.pct_female ?? -1) - (a.pct_female ?? -1)),
     });
   }
 
@@ -1228,6 +1238,11 @@ function AwarenessOverviewPage({ filters }) {
   // note, computed live from this cohort's real Reached vs Eligible split.
   const reachedFemalePct = stageStats[0]?.pct_female;
   const eligibleFemalePct = stageStats[2]?.pct_female;
+  // Headline female-eligible share for the score-card row. Taken from the
+  // same per-gender parish columns the funnel chart and gauges use, so the
+  // tile, the Eligible gauge and this page's search filter can never
+  // disagree — female / (female + male) at the Eligible stage.
+  const eligibleFemaleStatus = femaleShareStatus(eligibleFemalePct);
   let femaleGapInsight = null;
   if (reachedFemalePct != null && eligibleFemalePct != null) {
     const holds = eligibleFemalePct >= reachedFemalePct - 1;
@@ -1295,6 +1310,13 @@ function AwarenessOverviewPage({ filters }) {
           label="Eligibility rate" value={fmtPct(eligibilityRate)}
           sub={eligStatus ? <span style={{ color: eligStatus.color, fontWeight: 700 }}>{eligStatus.label}</span> : "Eligible / Interested"}
           onClick={() => openMetricDrill("eligibility_rate", "Eligibility rate", fmtPct)}
+        />
+        <KpiTile
+          label="Eligible female" value={fmtPct(eligibleFemalePct)}
+          sub={eligibleFemaleStatus
+            ? <span style={{ color: eligibleFemaleStatus.color, fontWeight: 700 }}>{eligibleFemaleStatus.label} (60% target)</span>
+            : "Female share of eligible youth"}
+          onClick={() => openGenderStageDrill("eligible", "Eligible")}
         />
       </Grid>
 
@@ -1433,10 +1455,7 @@ function AwarenessMobilisersPage({ filters }) {
   const distinctMobilisers = new Set(rows.map((r) => r.mobiliser_name)).size;
   const totalReached = sumBy(rows, "reached");
   const totalEligible = sumBy(rows, "eligible");
-  const totalEligibleFemale = sumBy(rows, "eligible_female");
   const eligibilityRate = totalReached ? Math.round((1000 * totalEligible) / totalReached) / 10 : null;
-  const pctEligibleFemale = totalEligible ? Math.round((1000 * totalEligibleFemale) / totalEligible) / 10 : null;
-  const overallStatus = femaleShareStatus(pctEligibleFemale);
 
   // Data-driven reads on the current (search-filtered) mobiliser set — no
   // fabricated target exists per mobiliser (see below), so insights focus on
@@ -1471,20 +1490,17 @@ function AwarenessMobilisersPage({ filters }) {
 
   // Top KPI tiles -> district-then-parish drill for that metric, sourced
   // from the same awareness-parish data the Awareness Overview page uses
-  // (real eligible_female counts at parish grain, not a re-derived percentage).
+  // (real counts at parish grain, not values re-derived from mobiliser rows).
   function openMetricDrill(metricKey, label, formatter = fmtNum) {
     const parishRows = parish.data?.parishes || [];
     const byDistrict = {};
     parishRows.forEach((r) => {
-      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, reached: 0, eligible: 0, eligible_female: 0 };
+      if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, reached: 0, eligible: 0 };
       const d = byDistrict[r.district];
       d.reached += r.reached || 0;
       d.eligible += r.eligible || 0;
-      d.eligible_female += r.eligible_female || 0;
     });
-    const rootRows = Object.values(byDistrict)
-      .map((d) => ({ ...d, pct_eligible_female: d.eligible ? Math.round((1000 * d.eligible_female) / d.eligible) / 10 : null }))
-      .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
+    const rootRows = Object.values(byDistrict).sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
     drill.open({
       title: `${label} — by district`,
       tone: "real", tagLabel: "REAL",
@@ -1494,7 +1510,6 @@ function AwarenessMobilisersPage({ filters }) {
       childKey: "parish", childLabel: "Parish",
       getChildRows: (root) => parishRows
         .filter((p) => p.district === root.district)
-        .map((p) => ({ ...p, pct_eligible_female: p.pct_female }))
         .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
     });
   }
@@ -1550,18 +1565,16 @@ function AwarenessMobilisersPage({ filters }) {
         Searches the "Performance by mobiliser" table below.
       </div>
 
-      <Grid cols={4}>
+      {/* Overall female-eligible share lives on the Awareness Overview page's
+          score-card row — this page keeps the per-mobiliser female read only
+          (the insights and the table's % Eligible Female / Status columns). */}
+      <Grid cols={3}>
         <KpiTile label="Mobilisers" value={String(distinctMobilisers)} sub="in view" />
         <KpiTile label="Reached" value={fmtNum(totalReached)} onClick={() => openMetricDrill("reached", "Reached")} />
         <KpiTile
           label="Eligible" value={fmtNum(totalEligible)}
           sub={eligibilityRate != null ? `${eligibilityRate}% eligibility rate` : undefined}
           onClick={() => openMetricDrill("eligible", "Eligible")}
-        />
-        <KpiTile
-          label="Eligible female" value={fmtPct(pctEligibleFemale)}
-          sub={overallStatus ? <span style={{ color: overallStatus.color, fontWeight: 700 }}>{overallStatus.label} (60% target)</span> : undefined}
-          onClick={() => openMetricDrill("pct_eligible_female", "Eligible female %", fmtPct)}
         />
       </Grid>
 
