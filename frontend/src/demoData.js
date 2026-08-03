@@ -397,13 +397,31 @@ export const DEMO = {
     ],
   },
 
+  // Scores are on the 0-5 observation scale and ratings use the reference
+  // query's own performance_category values (EXCEEDS >=4 / MEETS >=3 / BELOW),
+  // matching the live endpoint's shape — per-domain averages are avg_<key>,
+  // never percentages. Values sit in the ranges the live BC5 TOT feed
+  // actually returns (overall 3.25-4.75, domains 2.67-5.00).
   "/api/implementation/trainers": {
+    domains: [
+      { key: "pck", label: "Pedagogical content knowledge" },
+      { key: "fds", label: "Facilitation & delivery" },
+      { key: "em", label: "Entrepreneurial mindset" },
+      { key: "gr", label: "Gender responsiveness" },
+      { key: "cm", label: "Coaching & mentoring" },
+      { key: "language", label: "Language" },
+      { key: "leadership", label: "Leadership" },
+    ],
     trainers: [
-      { trainer_name: "T. Wanyama", venue: "Isegero VTC", district: "BUGIRI", rating: "Excellent", score: 92 },
-      { trainer_name: "D. Mukasa", venue: "Kigandalo HS", district: "MAYUGE", rating: "Excellent", score: 90 },
-      { trainer_name: "A. Nabirye", venue: "Nakalama CC", district: "IGANGA", rating: "Good", score: 85 },
-      { trainer_name: "F. Achieng", venue: "Busembatia CC", district: "BUGWERI", rating: "Good", score: 83 },
-      { trainer_name: "S. Opio", venue: "Namwendwa VTC", district: "KAMULI", rating: "Satisfactory", score: 78 },
+      { trainer_name: "T. Wanyama", venue: "Isegero VTC", district: "BUGIRI", rating: "EXCEEDS", score: 4.6, avg_pck: 4.4, avg_fds: 5.0, avg_em: 4.67, avg_gr: 5.0, avg_cm: 4.5, avg_language: 5.0, avg_leadership: 4.25 },
+      { trainer_name: "D. Mukasa", venue: "Kigandalo HS", district: "MAYUGE", rating: "EXCEEDS", score: 4.15, avg_pck: 4.0, avg_fds: 4.33, avg_em: 4.0, avg_gr: 4.33, avg_cm: 4.17, avg_language: 4.5, avg_leadership: 4.0 },
+      { trainer_name: "A. Nabirye", venue: "Nakalama CC", district: "IGANGA", rating: "MEETS", score: 3.78, avg_pck: 3.6, avg_fds: 3.83, avg_em: 3.67, avg_gr: 4.0, avg_cm: 3.83, avg_language: 4.0, avg_leadership: 3.75 },
+      { trainer_name: "F. Achieng", venue: "Busembatia CC", district: "BUGWERI", rating: "MEETS", score: 3.42, avg_pck: 3.3, avg_fds: 3.5, avg_em: 3.33, avg_gr: 3.5, avg_cm: 3.33, avg_language: 3.5, avg_leadership: 3.5 },
+      { trainer_name: "S. Opio", venue: "Namwendwa VTC", district: "KAMULI", rating: "MEETS", score: 3.16, avg_pck: 2.9, avg_fds: 3.17, avg_em: 2.67, avg_gr: 3.0, avg_cm: 3.0, avg_language: 3.5, avg_leadership: 3.25 },
+    ],
+    by_phase: [
+      { phase: "BC5 TOT", trainers_observed: 5, score: 3.82 },
+      { phase: "BOOTCAMP_5", trainers_observed: 4, score: 3.54 },
     ],
   },
 
