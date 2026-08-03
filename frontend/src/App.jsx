@@ -329,6 +329,11 @@ function DuplicateRecordsBanner({ filters }) {
 // Horizontal funnel visualization — bar width proportional to the first
 // stage's count, worst single drop-off outlined.
 function FunnelViz({ stages, onStageClick }) {
+  // Scaled off counts only (not target) — a stage whose target exceeds every
+  // stage's actual count would otherwise shrink the whole funnel to make
+  // room for it. A target beyond the visible track just pins its tick at the
+  // right edge instead; the tooltip and the "% of target" line underneath
+  // still carry the real number.
   const max = Math.max(1, ...stages.map((s) => s.count || 0));
   let worstIdx = -1, worstLost = -1;
   stages.forEach((s, i) => { if (i > 0 && (s.lost || 0) > worstLost) { worstLost = s.lost; worstIdx = i; } });
@@ -337,6 +342,7 @@ function FunnelViz({ stages, onStageClick }) {
       {stages.map((s, i) => {
         const pct = max ? Math.round((100 * (s.count || 0)) / max) : 0;
         const worst = i === worstIdx;
+        const targetPct = s.target ? Math.min(100, (100 * s.target) / max) : null;
         return (
           <div key={s.stage} onClick={onStageClick ? () => onStageClick(s) : undefined} style={{ display: "flex", alignItems: "center", gap: 12, cursor: onStageClick ? "pointer" : undefined }}>
             <div style={{ width: 110, flexShrink: 0, fontSize: 12.5, fontWeight: 700, color: C.ink, textAlign: "right" }}>{s.stage}</div>
@@ -344,9 +350,18 @@ function FunnelViz({ stages, onStageClick }) {
               <div style={{ width: `${pct}%`, height: "100%", display: "flex", alignItems: "center", paddingLeft: 12, color: C.white, fontWeight: 700, fontSize: 13.5, borderRadius: 6, background: worst ? C.coral : C.teal, transition: "width .3s" }}>
                 {fmtNum(s.count)}{onStageClick && <span style={{ marginLeft: 6, opacity: 0.8 }}>›</span>}
               </div>
+              {targetPct != null && (
+                <div title={`Target: ${fmtNum(s.target)}${s.target_is_implied ? " (implied)" : ""}`}
+                  style={{ position: "absolute", left: `${targetPct}%`, top: -3, bottom: -3, width: 2, background: C.ink, zIndex: 2 }} />
+              )}
             </div>
             <div style={{ width: 190, flexShrink: 0, fontSize: 11, color: C.muted }}>
               {i === 0 ? "start" : `${s.pct_of_previous}% of previous · ${fmtNum(s.lost)} lost`}
+              {s.target != null && (
+                <div style={{ color: RATE_CATEGORY_COLOR[categorizeRate(s.pct_of_target)], fontWeight: 700, marginTop: 1 }}>
+                  {fmtPct(s.pct_of_target)} of target{s.target_is_implied ? " (implied)" : ""}
+                </div>
+              )}
             </div>
           </div>
         );
@@ -804,7 +819,15 @@ function ExecutiveSummaryPage({ filters }) {
         (json) => (json?.stages || []).find((s) => s.stage === stage.apiStage)?.count ?? null),
     });
   }
-  const stages = funnel.data?.stages || [];
+  // Merge each stage's target/pct_of_target (already fetched for the
+  // Progress-on-target grid below) into the funnel-viz stages, so the funnel
+  // itself shows a target tick instead of leaving that only in a separate
+  // section further down the page.
+  const stageProgressByName = Object.fromEntries((stageProgress.data?.stages || []).map((s) => [s.stage, s]));
+  const stages = (funnel.data?.stages || []).map((s) => {
+    const sp = stageProgressByName[s.stage];
+    return sp ? { ...s, target: sp.target || null, pct_of_target: sp.pct_of_target, target_is_implied: sp.target_is_implied } : s;
+  });
   const genderStages = gender.data?.stages || [];
   const headlineStages = headlineFunnelStages(stages);
   const registeredBase = stages[0]?.count || 0;
