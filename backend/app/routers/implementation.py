@@ -5,7 +5,7 @@ Trainer Quality, Milestones, Youth Experience (NPS).
 Trainer names are masked for the guest role.
 """
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 
@@ -23,6 +23,8 @@ from app.core.tables import (
     SITE_FUNNEL_MEASURE_ACTUAL,
     ATTENDANCE_SUMMARY,
     TRAINER_OBSERVATIONS,
+    TRAINER_BC4_START_DATE,
+    TRAINER_BC4_END_DATE,
     TRAINER_TOT_START_DATE,
     TRAINER_TOT_END_DATE,
     TRAINER_BOOTCAMP_START_DATE,
@@ -301,22 +303,51 @@ _TRAINER_DOMAIN_COLUMNS = [
 ]
 
 
-_TRAINER_PHASE_WINDOW = {
-    "BC5 TOT": (TRAINER_TOT_START_DATE, TRAINER_TOT_END_DATE),
-    "BOOTCAMP_5": (TRAINER_BOOTCAMP_START_DATE, TRAINER_BOOTCAMP_END_DATE),
-}
+# The cohorts this endpoint reports, oldest first — this list is the single
+# source of the cohort filter's allowed values, the SQL CASE that labels each
+# row, and the date filter itself, so the three can't drift apart. The table
+# has no bootcamp_cycle column (see tables.py), so cohort IS the date window.
+_TRAINER_COHORT_WINDOWS = [
+    ("BOOTCAMP_4", TRAINER_BC4_START_DATE, TRAINER_BC4_END_DATE),
+    ("BC5 TOT", TRAINER_TOT_START_DATE, TRAINER_TOT_END_DATE),
+    ("BOOTCAMP_5", TRAINER_BOOTCAMP_START_DATE, TRAINER_BOOTCAMP_END_DATE),
+]
+TRAINER_COHORTS = [name for name, _start, _end in _TRAINER_COHORT_WINDOWS]
+
+
+def _trainer_window_sql(prefix, index):
+    return f"DATE(submission_date) BETWEEN @{prefix}_c{index}s AND @{prefix}_c{index}e"
+
+
+def _trainer_cohort_case(prefix):
+    """SQL CASE mapping a row's submission_date to its cohort label. Labels are
+    module constants, never user input — nothing is interpolated from a request.
+    Every window's params are referenced here, so they are always bound even
+    when the filter itself narrows to one cohort."""
+    whens = "\n        ".join(
+        f"WHEN {_trainer_window_sql(prefix, i)} THEN '{name}'"
+        for i, (name, _start, _end) in enumerate(_TRAINER_COHORT_WINDOWS)
+    )
+    return f"CASE\n        {whens}\n      END"
 
 
 def _trainer_where(district, prefix, phase=None):
-    """phase=None spans the full TOT+BOOTCAMP_5 window (both phases); a
-    specific phase narrows to just that phase's own date range."""
-    start, end = _TRAINER_PHASE_WINDOW.get(phase, (TRAINER_TOT_START_DATE, TRAINER_BOOTCAMP_END_DATE))
+    """phase=None matches an OR of every cohort window — not one wide span, so
+    the un-cohorted gap between BOOTCAMP_4 and BC5 TOT is excluded and every
+    row maps to exactly one cohort. A specific cohort narrows to its own range.
+    Callers must embed _trainer_cohort_case(prefix), which binds every window
+    param this returns."""
+    if phase is None:
+        clause = "(" + " OR ".join(_trainer_window_sql(prefix, i) for i in range(len(_TRAINER_COHORT_WINDOWS))) + ")"
+    else:
+        clause = _trainer_window_sql(prefix, TRAINER_COHORTS.index(phase))
+    params = []
+    for i, (_name, start, end) in enumerate(_TRAINER_COHORT_WINDOWS):
+        params.append(_scalar(f"{prefix}_c{i}s", "DATE", start))
+        params.append(_scalar(f"{prefix}_c{i}e", "DATE", end))
     return build_where(
         districts=district, prefix=prefix, district_col="district_name",
-        extra=[(
-            f"DATE(submission_date) BETWEEN @{prefix}_start AND @{prefix}_end",
-            [_scalar(f"{prefix}_start", "DATE", start), _scalar(f"{prefix}_end", "DATE", end)],
-        )],
+        extra=[(clause, params)],
     )
 
 
@@ -324,25 +355,33 @@ def _trainer_where(district, prefix, phase=None):
 def trainers(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
-    phase: Optional[str] = Query(None, description="'BC5 TOT' or 'BOOTCAMP_5' — omit for both"),
+    phase: Optional[Literal["BOOTCAMP_4", "BC5 TOT", "BOOTCAMP_5"]] = Query(
+        None, description="Cohort to narrow to — omit for every cohort"
+    ),
 ):
     """Trainer observation scores + the seven E! teaching-domain averages, all
-    on the 0-4 observation scale, plus a BC5 TOT vs BOOTCAMP_5 phase
-    breakdown. Names masked to initials for the guest role.
+    on the same observation scale, plus a per-cohort rollup. Names masked to
+    initials for the guest role.
 
     Backed by the live TRAINER_OBSERVATIONS raw lesson-observation export
-    (see tables.py — no bootcamp_cycle column, scoped by report_type + a
-    date window instead: the full TOT+BOOTCAMP_5 span by default, or just
-    one phase's own range when `phase` narrows it — TOT (trainer
-    certification, before teaching youth) and BOOTCAMP_5 (in-classroom
-    delivery) are conceptually distinct populations, not just a date split,
-    which is why this is a page-level phase selector on Trainer Quality
-    rather than the app-wide cohort filter (no other live table has a
-    "BC5 TOT" bootcamp_cycle value). rating is a MEETS/EXCEEDS/BELOW band
-    on the average overall_average_class_observation_score, per the
-    recruitment team's reference query (trainer_quality_summary_sql.sql) —
-    the same 0-4 bands the client applies to each domain average, so nothing
-    on the page mixes a 0-4 score with a 0-100 percentage.
+    (see tables.py — no bootcamp_cycle column, so a cohort IS a submission-date
+    window). Three cohorts are reported: BOOTCAMP_4 (the prior cohort) and BC5
+    split into TOT (trainer certification, before teaching youth) and
+    BOOTCAMP_5 (in-classroom delivery). Those are conceptually distinct
+    populations, not just a date split, which is why this is a page-level
+    cohort selector on Trainer Quality rather than the app-wide cohort filter
+    (no other live table has a "BC5 TOT" bootcamp_cycle value).
+
+    `phase` omitted matches an OR of all three windows, so the un-cohorted
+    2026-05-30..2026-07-28 gap is excluded rather than swept in unlabelled.
+    Rows carry their cohort and are grouped by it, so a trainer observed in
+    two cohorts gets one row per cohort instead of a single blended score.
+
+    rating is a MEETS/EXCEEDS/BELOW band on the average
+    overall_average_class_observation_score, per the recruitment team's
+    reference query (trainer_quality_summary_sql.sql) — the same bands the
+    client applies to each domain average, so nothing on the page mixes a
+    score with a 0-100 percentage.
     """
     domain_select = ",\n      ".join(f"AVG(CAST({col} AS FLOAT64)) AS avg_{key}" for key, col, _label in _TRAINER_DOMAIN_COLUMNS)
 
@@ -352,6 +391,7 @@ def trainers(
       trainer_name,
       training_site AS venue,
       UPPER(district_name) AS district,
+      {_trainer_cohort_case("tq")} AS cohort,
       AVG(CAST(overall_average_class_observation_score AS FLOAT64)) AS score,
       {domain_select},
       CASE
@@ -363,24 +403,20 @@ def trainers(
     WHERE {where}
       AND report_type = 'rct_lesson_observation'
       AND trainer_name IS NOT NULL
-    GROUP BY trainer_name, venue, district
+    GROUP BY trainer_name, venue, district, cohort
     ORDER BY score DESC
     """
     rows = database.run_query(sql, params, role=user.role)
     for r in rows:
         r["trainer_name"] = mask_name(user.role, r.get("trainer_name"))
 
-    # Phase rollup: same window, same rating bands, but grouped by phase
-    # instead of by trainer — TOT (trainer certification, before they teach
-    # youth) and the BOOTCAMP_5 delivery window are conceptually different
-    # populations, not just a date split.
+    # Cohort rollup: always spans every cohort regardless of the selector, so
+    # the comparison card still has something to compare against when the
+    # register itself is narrowed to one cohort.
     phase_where, phase_params = _trainer_where(district, "tqp")
     phase_sql = f"""
     SELECT
-      CASE
-        WHEN DATE(submission_date) BETWEEN @tqp_tot_start AND @tqp_tot_end THEN 'BC5 TOT'
-        WHEN DATE(submission_date) BETWEEN @tqp_bc_start AND @tqp_bc_end THEN 'BOOTCAMP_5'
-      END AS phase,
+      {_trainer_cohort_case("tqp")} AS phase,
       COUNT(DISTINCT trainer_name) AS trainers_observed,
       AVG(CAST(overall_average_class_observation_score AS FLOAT64)) AS score
     FROM {TRAINER_OBSERVATIONS}
@@ -389,18 +425,17 @@ def trainers(
       AND trainer_name IS NOT NULL
     GROUP BY phase
     """
-    phase_params = phase_params + [
-        _scalar("tqp_tot_start", "DATE", TRAINER_TOT_START_DATE),
-        _scalar("tqp_tot_end", "DATE", TRAINER_TOT_END_DATE),
-        _scalar("tqp_bc_start", "DATE", TRAINER_BOOTCAMP_START_DATE),
-        _scalar("tqp_bc_end", "DATE", TRAINER_BOOTCAMP_END_DATE),
-    ]
     by_phase = database.run_query(phase_sql, phase_params, role=user.role)
+    # Chronological, not alphabetical — "BC5 TOT" would otherwise sort before
+    # "BOOTCAMP_4". Unknown labels can't occur (the CASE is exhaustive over the
+    # same windows the WHERE filters on) but sort last rather than raising.
+    by_phase.sort(key=lambda r: TRAINER_COHORTS.index(r["phase"]) if r.get("phase") in TRAINER_COHORTS else len(TRAINER_COHORTS))
 
     return {
         "trainers": rows,
         "by_phase": by_phase,
         "domains": [{"key": key, "label": label} for key, _col, label in _TRAINER_DOMAIN_COLUMNS],
+        "cohorts": TRAINER_COHORTS,
     }
 
 
