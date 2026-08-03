@@ -3561,6 +3561,7 @@ function TrainersTab({ filters }) {
 function TrainerQualityPage({ filters, phase }) {
   const drill = useDrill();
   const [search, setSearch] = useState("");
+  const [openTrainerKey, setOpenTrainerKey] = useState(null);
   const { data, loading, error } = useApi(withPhaseParam(`/api/implementation/trainers${buildParams(filters)}`, phase));
   const allRows = data?.trainers || [];
   const byPhase = data?.by_phase || [];
@@ -3640,8 +3641,95 @@ function TrainerQualityPage({ filters, phase }) {
     });
   }
 
+  // Site (venue)-level drill for the four score cards below — stops at
+  // site, deliberately no further trainer-level child: the register table
+  // already has the richer per-trainer drill (trend, comparisons, insights),
+  // so this only needs to answer "which sites".
+  function openSiteDrill(cardLabel, matchRow) {
+    const byVenue = {};
+    rows.forEach((r) => {
+      const v = byVenue[r.venue] || (byVenue[r.venue] = { venue: r.venue, _count: 0, _sum: 0, _n: 0 });
+      if (matchRow(r)) v._count += 1;
+      if (r.score != null) { v._sum += Number(r.score) || 0; v._n += 1; }
+    });
+    const rootRows = Object.values(byVenue)
+      .map((v) => ({ venue: v.venue, count: v._count, avg_score: v._n ? Math.round((v._sum / v._n) * 100) / 100 : null }))
+      .filter((v) => v.count > 0)
+      .sort((a, b) => b.count - a.count);
+    drill.open({
+      title: `${cardLabel} — by site${phase ? ` · ${phase}` : " · all cohorts"}${q ? ` · "${search.trim()}"` : ""}`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "venue", rootLabel: "Site",
+      columns: [
+        { key: "count", label: cardLabel, align: "right", render: (v) => fmtNum(v) },
+        { key: "avg_score", label: "Avg score", align: "right", render: (v) => (v == null ? "—" : fmtScore(v)) },
+      ],
+      rootRows,
+    });
+  }
+
+  // One column per teaching domain on the register itself — colored by the
+  // same EXCEEDS/MEETS/BELOW bands as Overall, so a trainer's weak domain(s)
+  // are visible at a glance in the row, not just in the per-trainer drill's
+  // Comparisons tab. Full domain names, not abbreviations.
+  const domainColumns = domainDefs.map((d) => ({
+    key: `avg_${d.key}`,
+    label: d.label,
+    align: "right",
+    render: (v) => {
+      const rating = trainerRating(v);
+      const style = rating ? TRAINER_RATING_STYLE[rating] : null;
+      return (
+        <span style={{ display: "inline-block", minWidth: 30, textAlign: "center", padding: "2px 6px", borderRadius: 4, fontWeight: 700, background: style?.bg, color: style?.color || C.muted }}>
+          {fmtScore(v)}
+        </span>
+      );
+    },
+  }));
+
+  // Gender performance — # trainers, avg score, and the Exceeds/Meets/Below
+  // split per gender, straight from the already-filtered register rows.
+  const genderStats = Object.values(
+    rows.reduce((acc, r) => {
+      const g = r.trainer_gender || "Unknown";
+      const e = acc[g] || (acc[g] = { gender: g, n: 0, sumScore: 0, nScore: 0, exceeds: 0, meets: 0, below: 0 });
+      e.n += 1;
+      if (r.score != null) { e.sumScore += Number(r.score) || 0; e.nScore += 1; }
+      if (r.rating === "EXCEEDS") e.exceeds += 1;
+      else if (r.rating === "MEETS") e.meets += 1;
+      else if (r.rating === "BELOW") e.below += 1;
+      return acc;
+    }, {})
+  )
+    .map((g) => ({ ...g, avg_score: g.nScore ? Math.round((g.sumScore / g.nScore) * 100) / 100 : null }))
+    .sort((a, b) => b.n - a.n);
+
+  // District performance by rating category — same three bands as the score
+  // cards and the register's Rating column, broken out per district so it's
+  // visible where the Below-rated trainers are concentrated.
+  const districtCategoryStats = Object.values(
+    rows.reduce((acc, r) => {
+      const d = r.district || "Unknown";
+      const e = acc[d] || (acc[d] = { district: d, n: 0, sumScore: 0, nScore: 0, exceeds: 0, meets: 0, below: 0 });
+      e.n += 1;
+      if (r.score != null) { e.sumScore += Number(r.score) || 0; e.nScore += 1; }
+      if (r.rating === "EXCEEDS") e.exceeds += 1;
+      else if (r.rating === "MEETS") e.meets += 1;
+      else if (r.rating === "BELOW") e.below += 1;
+      return acc;
+    }, {})
+  )
+    .map((d) => ({ ...d, avg_score: d.nScore ? Math.round((d.sumScore / d.nScore) * 100) / 100 : null }))
+    .sort((a, b) => b.below - a.below || (b.n - a.n));
+
   return (
     <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <button onClick={openLessonObservationForm} style={{ fontSize: 12, fontWeight: 700, padding: "8px 16px", border: "none", borderRadius: 6, background: C.green, color: C.white, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8 }}>
+          📝 Lesson Observation Form
+        </button>
+      </div>
+
       <input
         type="text"
         value={search}
@@ -3661,11 +3749,15 @@ function TrainerQualityPage({ filters, phase }) {
           value={String(nObs)}
           sub={phase || `across ${cohortsWithData || TRAINER_COHORTS.length} cohorts — a trainer observed in two counts once per cohort`}
           tag="REAL"
+          onClick={() => openSiteDrill(phase ? "Trainers observed" : "Trainer records", () => true)}
         />
-        <KpiTile label="Exceeds expectations" value={String(nExceeds)} sub={nObs ? `${Math.round((nExceeds / nObs) * 100)}% of ${recordNoun}` : undefined} tag="REAL" />
-        <KpiTile label="Meets expectations" value={String(nMeets)} sub={nObs ? `${Math.round((nMeets / nObs) * 100)}% of ${recordNoun}` : undefined} tag="REAL" />
-        <KpiTile label="Below expectations" value={String(nBelow)} sub={nObs ? (nBelow === 0 ? "none flagged" : `${Math.round((nBelow / nObs) * 100)}% of ${recordNoun}`) : undefined} tone={nBelow > 0 ? "sim" : "real"} tag="REAL" />
+        <KpiTile label="Exceeds expectations" value={String(nExceeds)} sub={nObs ? `${Math.round((nExceeds / nObs) * 100)}% of ${recordNoun}` : undefined} tag="REAL" onClick={() => openSiteDrill("Exceeds expectations", (r) => r.rating === "EXCEEDS")} />
+        <KpiTile label="Meets expectations" value={String(nMeets)} sub={nObs ? `${Math.round((nMeets / nObs) * 100)}% of ${recordNoun}` : undefined} tag="REAL" onClick={() => openSiteDrill("Meets expectations", (r) => r.rating === "MEETS")} />
+        <KpiTile label="Below expectations" value={String(nBelow)} sub={nObs ? (nBelow === 0 ? "none flagged" : `${Math.round((nBelow / nObs) * 100)}% of ${recordNoun}`) : undefined} tone={nBelow > 0 ? "sim" : "real"} tag="REAL" onClick={() => openSiteDrill("Below expectations", (r) => r.rating === "BELOW")} />
       </Grid>
+      <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 20 }}>
+        Cards above drill by site. Trainer rows below drill to trend, comparisons & insights.
+      </div>
 
       {/* Always shown, even on a single-cohort view: the rollup deliberately
           spans every cohort server-side, so this stays the one place to compare
@@ -3696,33 +3788,75 @@ function TrainerQualityPage({ filters, phase }) {
 
       <Card
         title="Trainer observation register — who was observed & how they rated"
-        subtitle={`Mean observation score on the 0–${TRAINER_SCORE_MAX} scale, sorted lowest-first — trainers to prioritise for support appear at the top. Click Overall for a district breakdown.${phase ? ` Showing ${phase} only.` : ""}${q ? ` Filtered to "${search.trim()}".` : ""}`}
+        subtitle={`Mean observation score on the 0–${TRAINER_SCORE_MAX} scale, sorted lowest-first. Domain columns colored by band. Click a trainer for their profile, or Overall for a district breakdown.${phase ? ` Showing ${phase} only.` : ""}${q ? ` Filtered to "${search.trim()}".` : ""}`}
         chip="PII" chipTone="pii"
       >
         <State loading={loading} error={error} empty={!loading && rows.length === 0}>
           <div style={{ maxHeight: 380, overflowY: "auto" }}>
             <DataTable
               columns={[
-                { key: "trainer_name", label: "Trainer" },
+                {
+                  key: "trainer_name", label: "Trainer",
+                  render: (v) => <span><span style={{ color: C.teal, marginRight: 4 }}>›</span>{v}</span>,
+                },
                 { key: "venue", label: "Venue" },
                 { key: "district", label: "District" },
                 // Redundant when a single cohort is selected — every row would
                 // carry the same value — so it only earns a column on All cohorts.
                 ...(phase ? [] : [{ key: "cohort", label: "Cohort" }]),
+                { key: "observation_count", label: "# Observations", align: "right", render: (v) => fmtNum(v) },
                 { key: "score", label: "Overall", align: "right", onHeaderClick: openScoreDrill, render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
                 { key: "rating", label: "Rating", render: (v) => <TrainerRatingBadge rating={v} /> },
+                ...domainColumns,
               ]}
               rows={sortedRows}
+              onRowClick={(r) => setOpenTrainerKey(r.trainer_key)}
             />
           </div>
         </State>
       </Card>
+
+      {openTrainerKey && (
+        <TrainerProfilePanel trainerKey={openTrainerKey} registerRows={rows} onClose={() => setOpenTrainerKey(null)} />
+      )}
 
       <Card title="Domain summary" subtitle={`Mean observation score across all observed trainers by teaching domain, on the 0–${TRAINER_SCORE_MAX} scale. Same bands as the overall rating — green Exceeds ≥4 · amber Meets ≥3 · red Below <3.`} chip="REAL">
         <State loading={loading} error={error} empty={!loading && domainAverages.length === 0}>
           <div style={{ paddingTop: 4 }}>
             {domainAverages.map((d) => <DomainBar key={d.key} label={d.label} score={d.avg} />)}
           </div>
+        </State>
+      </Card>
+
+      <Card title="Gender performance" subtitle="# trainers, average score and rating split by gender." chip="REAL">
+        <State loading={loading} error={error} empty={!loading && genderStats.length === 0}>
+          <DataTable
+            columns={[
+              { key: "gender", label: "Gender" },
+              { key: "n", label: "# Trainers", align: "right", render: (v) => fmtNum(v) },
+              { key: "avg_score", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
+              { key: "exceeds", label: "Exceeds", align: "right", render: (v) => fmtNum(v) },
+              { key: "meets", label: "Meets", align: "right", render: (v) => fmtNum(v) },
+              { key: "below", label: "Below", align: "right", render: (v) => <span style={{ color: v > 0 ? C.coral : C.muted, fontWeight: v > 0 ? 700 : 400 }}>{fmtNum(v)}</span> },
+            ]}
+            rows={genderStats}
+          />
+        </State>
+      </Card>
+
+      <Card title="District performance — Exceeds / Meets / Below" subtitle="Same three rating bands as the register, broken out by district — sorted so districts with the most Below-rated trainers surface first." chip="REAL">
+        <State loading={loading} error={error} empty={!loading && districtCategoryStats.length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "n", label: "# Trainers", align: "right", render: (v) => fmtNum(v) },
+              { key: "avg_score", label: "Avg score", align: "right", render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
+              { key: "exceeds", label: "Exceeds", align: "right", render: (v) => fmtNum(v) },
+              { key: "meets", label: "Meets", align: "right", render: (v) => fmtNum(v) },
+              { key: "below", label: "Below", align: "right", render: (v) => <span style={{ color: v > 0 ? C.coral : C.muted, fontWeight: v > 0 ? 700 : 400 }}>{fmtNum(v)}</span> },
+            ]}
+            rows={districtCategoryStats}
+          />
         </State>
       </Card>
 
@@ -3769,6 +3903,319 @@ function TrainerQualityPage({ filters, phase }) {
         })()}
       </div>
     </div>
+  );
+}
+
+// ─── Trainer Quality: per-trainer drill (trend / comparisons / insights) ───
+// Reuses this page's own fmtScore/trainerRating/trainerScoreColor/DomainBar —
+// the 1-5 scale, bands and colors are already shared with the register and
+// the Domain summary card above, so this panel doesn't introduce a second
+// scoring system.
+
+// Same SurveyCTO form that feeds TRAINER_OBSERVATIONS
+// (raw_eba_2025_monitoring_tool_v2_ug — "monitoring_tool_v2" matches the
+// survey id below) — linked here the same way the reference trainer
+// dashboard ("Trainer Quality Toolkit.html") did, opened as a sized popup
+// with a fresh per-click case id, falling back to a normal tab if the
+// popup is blocked.
+function openLessonObservationForm() {
+  const surveyUrl = `https://expeducate.surveycto.com/collect/eba_2025_monitoring_tool_v2?caseid=case_${Date.now()}`;
+  const width = 1200, height = 800;
+  const left = Math.max(0, (window.screen.width - width) / 2);
+  const top = Math.max(0, (window.screen.height - height) / 2);
+  const win = window.open(surveyUrl, "LessonObservationForm", `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,toolbar=no,menubar=no,location=no,status=yes`);
+  if (!win) window.open(surveyUrl, "_blank");
+}
+
+// Raw values from the form export are shouty ("WEEK2", "BOOTCAMP_5") —
+// first-letter-capitalize instead of leaving them all-caps.
+function titleCaseWord(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s;
+}
+
+function avgOf(rows, key) {
+  const vals = rows.map((r) => r[key]).filter((v) => v != null);
+  return vals.length ? Math.round((vals.reduce((a, v) => a + v, 0) / vals.length) * 100) / 100 : null;
+}
+
+// Chronological split-half comparison of this trainer's own score history.
+// Needs >=2 observations. 0.3 (on the 1-5 scale) is deliberately small — a
+// full rating-band shift (BELOW->MEETS->EXCEEDS) is 1.0 apart, so 0.3 flags
+// meaningful movement within a band without reacting to a single noisy
+// observation. Revisit this threshold if it proves too twitchy in practice.
+function computeTrainerTrend(observations) {
+  if (!observations || observations.length < 2) return null;
+  const mid = Math.floor(observations.length / 2);
+  const avg = (arr) => arr.reduce((s, o) => s + (o.score || 0), 0) / arr.length;
+  const diff = avg(observations.slice(mid)) - avg(observations.slice(0, mid));
+  if (diff >= 0.3) return "improving";
+  if (diff <= -0.3) return "declining";
+  return "stable";
+}
+
+const TREND_DISPLAY = {
+  improving: { icon: "📈", label: "Improving", color: C.green },
+  stable: { icon: "➡️", label: "Stable", color: C.muted },
+  declining: { icon: "📉", label: "Declining", color: C.coral },
+};
+
+function ScoreCircle({ score }) {
+  const color = trainerScoreColor(score);
+  return (
+    <div style={{ width: 78, height: 78, borderRadius: "50%", background: C.cream, border: `4px solid ${color}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+      <div style={{ fontSize: 21, fontWeight: 800, color }}>{fmtScore(score)}</div>
+      <div style={{ fontSize: 8.5, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3 }}>Avg score</div>
+    </div>
+  );
+}
+
+function ComparisonCard({ icon, label, mine, other, otherCount }) {
+  const delta = mine != null && other != null ? Math.round((mine - other) * 100) / 100 : null;
+  const deltaColor = delta == null ? C.muted : delta >= 0 ? C.green : C.coral;
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: 14, borderLeft: `4px solid ${C.gold}` }}>
+      <div style={{ fontSize: 10.5, color: C.muted, textTransform: "uppercase", fontWeight: 700, marginBottom: 8 }}>{icon} {label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+        <span style={{ fontSize: 24, fontWeight: 800, color: trainerScoreColor(mine) }}>{fmtScore(mine)}</span>
+        <span style={{ fontSize: 12, color: C.muted }}>vs</span>
+        <span style={{ fontSize: 16, color: C.text }}>{fmtScore(other)}</span>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: deltaColor }}>
+        {delta == null ? "—" : `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`}
+        {otherCount != null && <span style={{ color: C.muted, fontWeight: 400, marginLeft: 6 }}>({otherCount} peers)</span>}
+      </div>
+    </div>
+  );
+}
+
+function TrainerOverviewSection({ observations, domainAverages, avgScore, observationCount }) {
+  const chartData = observations.map((o) => ({ date: o.observation_date, score: o.score }));
+  return (
+    <div>
+      <Grid cols={4}>
+        <KpiTile label="Observations" value={String(observationCount)} />
+        <KpiTile label="Average score" value={fmtScore(avgScore)} />
+        <KpiTile label="Rating" value={<TrainerRatingBadge rating={trainerRating(avgScore)} />} />
+        <KpiTile label="Domains tracked" value={String(domainAverages.filter((d) => d.avg != null).length)} />
+      </Grid>
+
+      <Card title="Score trend" subtitle={`Overall observation score (1–${TRAINER_SCORE_MAX}) across every recorded classroom visit, in order.`}>
+        {observations.length ? (
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+              <YAxis domain={[1, TRAINER_SCORE_MAX]} tick={{ fontSize: 10 }} />
+              <Tooltip formatter={(v) => fmtScore(v)} />
+              <Line type="monotone" dataKey="score" stroke={C.teal} strokeWidth={2} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <div style={{ padding: 20, textAlign: "center", color: C.muted, fontSize: 13 }}>No observations recorded yet.</div>
+        )}
+      </Card>
+
+      <Card title="Observation history">
+        <DataTable
+          columns={[
+            { key: "observation_date", label: "Date" },
+            { key: "training_week", label: "Week", render: (v, r) => [titleCaseWord(v), titleCaseWord(r.training_day)].filter(Boolean).join(" · ") || "—" },
+            { key: "observer_name", label: "Observer" },
+            { key: "score", label: "Score", align: "right", render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
+          ]}
+          rows={observations}
+        />
+      </Card>
+
+      <Card title="Domain breakdown" subtitle={`This trainer's own average per teaching domain (1–${TRAINER_SCORE_MAX} scale).`}>
+        {domainAverages.map((d) => <DomainBar key={d.key} label={d.label} score={d.avg} />)}
+      </Card>
+    </div>
+  );
+}
+
+function TrainerComparisonsSection({ avgScore, domainAverages, selfRow, registerRows, trainerKey }) {
+  const programAvg = avgOf(registerRows, "score");
+  const districtRows = selfRow ? registerRows.filter((r) => r.district === selfRow.district) : [];
+  const venueRows = selfRow ? registerRows.filter((r) => r.venue === selfRow.venue) : [];
+  const genderRows = selfRow?.trainer_gender ? registerRows.filter((r) => r.trainer_gender === selfRow.trainer_gender) : [];
+
+  const sortedByScore = [...registerRows].sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+  const rank = registerRows.length ? sortedByScore.findIndex((r) => r.trainer_key === trainerKey) + 1 : null;
+  const percentile = rank && registerRows.length ? Math.round(((registerRows.length - rank) / registerRows.length) * 100) : null;
+
+  return (
+    <div>
+      <Card title="Performance comparisons" subtitle={`This trainer's average score vs peers, same 1–${TRAINER_SCORE_MAX} scale.`}>
+        <Grid cols={2}>
+          <ComparisonCard icon="🌍" label="vs Program average" mine={avgScore} other={programAvg} otherCount={registerRows.length} />
+          <ComparisonCard icon="📍" label="vs District average" mine={avgScore} other={avgOf(districtRows, "score")} otherCount={districtRows.length} />
+          <ComparisonCard icon="🏫" label="vs Venue average" mine={avgScore} other={avgOf(venueRows, "score")} otherCount={venueRows.length} />
+          <ComparisonCard icon="👤" label={`vs ${selfRow?.trainer_gender || "Gender"} peers`} mine={avgScore} other={avgOf(genderRows, "score")} otherCount={genderRows.length} />
+        </Grid>
+      </Card>
+
+      <Card title="Domain scores vs program average">
+        {domainAverages.map((d) => {
+          const programDomainAvg = avgOf(registerRows, `avg_${d.key}`);
+          const diff = d.avg != null && programDomainAvg != null ? Math.round((d.avg - programDomainAvg) * 100) / 100 : null;
+          return (
+            <div key={d.key} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: C.text, fontWeight: 600 }}>{d.label}</span>
+                <span style={{ color: diff == null ? C.muted : diff >= 0 ? C.green : C.coral, fontWeight: 700 }}>
+                  {diff == null ? "—" : `${diff >= 0 ? "+" : ""}${diff.toFixed(2)} vs program`}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ flex: 1, height: 8, background: C.line, borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${d.avg == null ? 0 : Math.max(0, Math.min(100, (d.avg / TRAINER_SCORE_MAX) * 100))}%`, background: trainerScoreColor(d.avg) }} />
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 700, minWidth: 32, textAlign: "right", color: trainerScoreColor(d.avg) }}>{fmtScore(d.avg)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+
+      <Card title="Ranking">
+        <Grid cols={2}>
+          <KpiTile label="Program rank" value={rank ? `#${rank}` : "—"} sub={registerRows.length ? `out of ${registerRows.length}` : undefined} />
+          <KpiTile label="Percentile" value={percentile != null ? `${percentile}%` : "—"} sub={percentile != null ? `top ${100 - percentile}%` : undefined} />
+        </Grid>
+      </Card>
+    </div>
+  );
+}
+
+// Deterministic, rule-based read on this trainer's own numbers — NOT a real
+// AI/LLM call. Threshold checks against the same EXCEEDS/MEETS/BELOW bands
+// used across Trainer Quality, mirrored per domain.
+function buildTrainerInsights({ avgScore, rating, trend, domainAverages, observationCount }) {
+  const strengths = [];
+  domainAverages.forEach((d) => { if (d.avg != null && d.avg >= 4) strengths.push(`Strong ${d.label} (${fmtScore(d.avg)}/${TRAINER_SCORE_MAX}).`); });
+  if (trend === "improving") strengths.push("Scores are trending upward across recent observations.");
+  if (observationCount >= 8) strengths.push(`Consistently observed (${observationCount} classroom visits).`);
+  if (strengths.length === 0) strengths.push("Regular participation in observed sessions.");
+
+  const concerns = [];
+  domainAverages.forEach((d) => {
+    if (d.avg == null) return;
+    if (d.avg < 3) concerns.push({ tone: "risk", text: `${d.label} needs significant improvement (${fmtScore(d.avg)}/${TRAINER_SCORE_MAX}) — high priority.` });
+    else if (d.avg < 4) concerns.push({ tone: "warn", text: `${d.label} has room to grow (${fmtScore(d.avg)}/${TRAINER_SCORE_MAX}).` });
+  });
+  if (trend === "declining") concerns.push({ tone: "risk", text: "Scores have been trending downward across recent observations — worth a closer look." });
+  if (avgScore != null && avgScore < 4) concerns.push({ tone: "warn", text: `Overall average (${fmtScore(avgScore)}/${TRAINER_SCORE_MAX}) is below the Exceeds threshold.` });
+
+  const actions = [];
+  if (rating === "BELOW") {
+    actions.push("Schedule an intensive one-on-one coaching session soon.");
+    actions.push("Pair with a trainer currently rated Exceeds for job shadowing.");
+    actions.push("Review lesson plans together before upcoming sessions.");
+  } else if (rating === "MEETS") {
+    actions.push("Set up weekly coaching check-ins over the next few weeks.");
+    actions.push("Target practice specifically on the lowest-scoring domain below.");
+  } else if (rating === "EXCEEDS") {
+    actions.push("Maintain current performance and keep refining technique.");
+    actions.push("Consider for peer mentoring or trainer-of-trainers opportunities.");
+  }
+  const lowestDomain = [...domainAverages].filter((d) => d.avg != null).sort((a, b) => a.avg - b.avg)[0];
+  if (lowestDomain && lowestDomain.avg < 4) actions.push(`Targeted development on ${lowestDomain.label}, this trainer's lowest-scoring domain.`);
+
+  return { strengths, concerns, actions };
+}
+
+function TrainerInsightsSection({ avgScore, rating, trend, domainAverages, observationCount }) {
+  const { strengths, concerns, actions } = buildTrainerInsights({ avgScore, rating, trend, domainAverages, observationCount });
+  return (
+    <div>
+      <Card title="Strengths">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {strengths.map((s, i) => <Insight key={i} tone="pos">{s}</Insight>)}
+        </div>
+      </Card>
+      <Card title="Concerns">
+        {concerns.length === 0 ? (
+          <div style={{ color: C.muted, fontSize: 13 }}>No concerns flagged against the current bands.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {concerns.map((c, i) => <Insight key={i} tone={c.tone}>{c.text}</Insight>)}
+          </div>
+        )}
+      </Card>
+      <Card title="Recommended next steps">
+        <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8, color: C.text }}>
+          {actions.map((a, i) => <li key={i}>{a}</li>)}
+        </ol>
+      </Card>
+    </div>
+  );
+}
+
+function TrainerProfilePanel({ trainerKey, registerRows, onClose }) {
+  const [page, setPage] = useState("overview");
+  const { data, loading, error } = useApi(`/api/implementation/trainer-detail?trainer_key=${encodeURIComponent(trainerKey)}`);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const observations = data?.observations || [];
+  const domainDefs = data?.domains || [];
+  const trainerName = data?.trainer_name;
+  const avgScore = avgOf(observations, "score");
+  const rating = trainerRating(avgScore);
+  const trend = computeTrainerTrend(observations);
+  const trendInfo = trend ? TREND_DISPLAY[trend] : null;
+  const selfRow = registerRows.find((r) => r.trainer_key === trainerKey);
+  const domainAverages = domainDefs.map((d) => ({ key: d.key, label: d.label, avg: avgOf(observations, `avg_${d.key}`) }));
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,34,56,.40)", zIndex: 80 }} />
+      <aside role="dialog" aria-label="Trainer profile" style={{
+        position: "fixed", top: 0, right: 0, height: "100%", width: 640, maxWidth: "94vw",
+        background: C.cream, zIndex: 90, display: "flex", flexDirection: "column",
+        boxShadow: "-8px 0 28px rgba(0,0,0,.14)",
+      }}>
+        <div style={{ padding: "20px 24px 14px", borderBottom: `1px solid ${C.line}`, background: C.white, flexShrink: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+            <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+              <ScoreCircle score={avgScore} />
+              <div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: C.ink }}>{trainerName || "—"}</div>
+                <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{selfRow ? `${selfRow.venue} • ${selfRow.district}` : "—"}</div>
+                <div style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center" }}>
+                  <TrainerRatingBadge rating={rating} />
+                  {trendInfo && <span style={{ fontSize: 12, fontWeight: 700, color: trendInfo.color }}>{trendInfo.icon} {trendInfo.label}</span>}
+                </div>
+              </div>
+            </div>
+            <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", fontSize: 22, color: C.muted, cursor: "pointer", padding: "0 6px", lineHeight: 1 }}>&times;</button>
+          </div>
+        </div>
+        <div style={{ padding: "18px 24px 30px", overflowY: "auto", flex: 1 }}>
+          <PageNav
+            active={page}
+            onChange={setPage}
+            pages={[{ key: "overview", label: "Overview" }, { key: "comparisons", label: "Comparisons" }, { key: "insights", label: "Insights" }]}
+          />
+          <State loading={loading} error={error} empty={!loading && !error && observations.length === 0}>
+            {page === "overview" && (
+              <TrainerOverviewSection observations={observations} domainAverages={domainAverages} avgScore={avgScore} observationCount={observations.length} />
+            )}
+            {page === "comparisons" && (
+              <TrainerComparisonsSection avgScore={avgScore} domainAverages={domainAverages} selfRow={selfRow} registerRows={registerRows} trainerKey={trainerKey} />
+            )}
+            {page === "insights" && (
+              <TrainerInsightsSection avgScore={avgScore} rating={rating} trend={trend} domainAverages={domainAverages} observationCount={observations.length} />
+            )}
+          </State>
+        </div>
+      </aside>
+    </>
   );
 }
 
