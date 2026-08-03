@@ -7,6 +7,7 @@ to hand back the right shape per table rather than one set_rows() for a single
 query.
 """
 
+import app.core.pii as pii_module
 from app.core.tables import AWARENESS_SUMMARY, FUNNEL_STAGES
 from app.routers.implementation import TRAINER_COHORTS
 
@@ -108,7 +109,7 @@ def test_trainers_all_cohorts_excludes_the_gap_between_windows(as_staff, mock_ru
     assert register_sql.count("BETWEEN") >= 2 * len(TRAINER_COHORTS)
     # Cohort is part of the register's grain, so a trainer seen in two cohorts
     # yields a row per cohort rather than one blended score.
-    assert "GROUP BY trainer_name, venue, district, cohort" in register_sql
+    assert "GROUP BY trainer_name, trainer_gender, venue, district, cohort" in register_sql
 
 
 def test_trainers_narrowing_to_one_cohort_drops_the_or(as_staff, mock_run_query):
@@ -134,3 +135,95 @@ def test_trainers_rollup_is_chronological_not_alphabetical(as_staff, mock_run_qu
     mock_run_query.set_side_effect(side_effect)
     body = as_staff.get("/api/implementation/trainers").json()
     assert [p["phase"] for p in body["by_phase"]] == ["BOOTCAMP_4", "BC5 TOT"]
+
+
+# ─── Trainer Quality: per-trainer detail (trend/comparisons/insights drill) ──
+
+class _FakeQueryResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def result(self):
+        return self._rows
+
+
+class _FakeBQClient:
+    """Stands in for the real bigquery.Client used only by pii.py's
+    trainer_key reverse-lookup (name_from_trainer_key) — that helper bypasses
+    database.run_query by design (same precedent as phone_from_youth_id), so
+    mock_run_query alone doesn't cover it."""
+
+    def __init__(self, trainer_names):
+        self._rows = [{"trainer_name": n} for n in trainer_names]
+
+    def query(self, sql, job_config=None):
+        return _FakeQueryResult(self._rows)
+
+
+def test_trainer_detail_happy_path(as_staff, mock_run_query, monkeypatch):
+    monkeypatch.setattr(pii_module, "get_bq_client", lambda: _FakeBQClient(["Jane Doe"]))
+    mock_run_query.set_rows([
+        {
+            "observation_date": "2026-08-01", "cohort": "BC5 TOT",
+            "training_week": "WEEK1", "training_day": "Day01",
+            "observer_name": "Bob Observer", "venue": "BC5 TOT", "district": "JINJA",
+            "score": 3.8,
+            "avg_pck": 3.5, "avg_fds": 4.0, "avg_em": 3.2, "avg_gr": 3.9,
+            "avg_cm": 3.6, "avg_language": 4.1, "avg_leadership": 3.4,
+        },
+    ])
+    key = pii_module.trainer_key("Jane Doe")
+
+    r = as_staff.get(f"/api/implementation/trainer-detail?trainer_key={key}")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["trainer_name"] == "Jane Doe"  # staff sees the raw name
+    assert body["trainer_key"] == key
+    assert len(body["observations"]) == 1
+    assert body["observations"][0]["observer_name"] == "Bob Observer"
+    assert body["observations"][0]["score"] == 3.8
+    assert [d["key"] for d in body["domains"]] == ["pck", "fds", "em", "gr", "cm", "language", "leadership"]
+
+
+def test_trainer_detail_masks_names_for_guest(as_guest, mock_run_query, monkeypatch):
+    monkeypatch.setattr(pii_module, "get_bq_client", lambda: _FakeBQClient(["Jane Doe"]))
+    mock_run_query.set_rows([
+        {"observation_date": "2026-08-01", "cohort": "BC5 TOT", "observer_name": "Bob Observer", "score": 3.8},
+    ])
+    key = pii_module.trainer_key("Jane Doe")
+
+    r = as_guest.get(f"/api/implementation/trainer-detail?trainer_key={key}")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["trainer_name"] == "J. D."
+    assert body["observations"][0]["observer_name"] == "B. O."
+
+
+def test_trainer_detail_unknown_key_404s(as_staff, mock_run_query, monkeypatch):
+    monkeypatch.setattr(pii_module, "get_bq_client", lambda: _FakeBQClient(["Jane Doe"]))
+
+    r = as_staff.get("/api/implementation/trainer-detail?trainer_key=T-DEADBEEF")
+
+    assert r.status_code == 404
+    assert not mock_run_query.calls  # never reaches the observation query
+
+
+def test_trainer_detail_rejects_unknown_cohort(as_staff, mock_run_query, monkeypatch):
+    monkeypatch.setattr(pii_module, "get_bq_client", lambda: _FakeBQClient(["Jane Doe"]))
+    key = pii_module.trainer_key("Jane Doe")
+    assert as_staff.get(f"/api/implementation/trainer-detail?trainer_key={key}&phase=BOOTCAMP_9").status_code == 422
+
+
+def test_trainers_register_includes_trainer_key_and_gender(as_staff, mock_run_query):
+    mock_run_query.set_rows([
+        {"trainer_name": "Jane Doe", "trainer_gender": "Female", "venue": "BC5 TOT", "district": "JINJA", "score": 3.8},
+    ])
+
+    r = as_staff.get("/api/implementation/trainers")
+
+    assert r.status_code == 200
+    row = r.json()["trainers"][0]
+    assert row["trainer_gender"] == "Female"
+    assert row["trainer_key"] == pii_module.trainer_key("Jane Doe")

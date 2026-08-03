@@ -7,12 +7,13 @@ Trainer names are masked for the guest role.
 
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import current_user, User
 from app.core import database  # module import — required for the run_query test seam
 from app.core.database import _scalar
-from app.core.pii import mask_name
+from app.core.pii import mask_name, name_from_trainer_key
+from app.core.pii import trainer_key as compute_trainer_key
 from app.core.sql import build_where, cohort_clause
 from app.core.tables import (
     ATTENDANCE_DAILY,
@@ -389,9 +390,11 @@ def trainers(
     sql = f"""
     SELECT
       trainer_name,
+      trainer_gender,
       training_site AS venue,
       UPPER(district_name) AS district,
       {_trainer_cohort_case("tq")} AS cohort,
+      COUNT(*) AS observation_count,
       AVG(CAST(overall_average_class_observation_score AS FLOAT64)) AS score,
       {domain_select},
       CASE
@@ -403,11 +406,24 @@ def trainers(
     WHERE {where}
       AND report_type = 'rct_lesson_observation'
       AND trainer_name IS NOT NULL
-    GROUP BY trainer_name, venue, district, cohort
+    GROUP BY trainer_name, trainer_gender, venue, district, cohort
     ORDER BY score DESC
     """
-    rows = database.run_query(sql, params, role=user.role)
+    # database.run_query() caches its result and returns the SAME dict objects
+    # on a cache hit (see core/cache.py) — copy each row before mutating it.
+    # Skipping this once already caused a real bug: a guest-role call would
+    # compute trainer_key from the raw name on the first (cache-miss) request,
+    # then on the very next cache-hit request re-derive it from the row's
+    # now-already-masked trainer_name (mutated in place by the previous call),
+    # producing a key that could never match pii.name_from_trainer_key()'s
+    # reverse lookup — a permanent 404 on the trainer-detail drill until the
+    # 5-minute cache entry expired.
+    rows = [dict(r) for r in database.run_query(sql, params, role=user.role)]
     for r in rows:
+        # trainer_key is derived from the raw name before masking — the
+        # frontend's only way to fetch this one trainer's observation detail,
+        # since mask_name() below hides the real name from the guest role.
+        r["trainer_key"] = compute_trainer_key(r.get("trainer_name"))
         r["trainer_name"] = mask_name(user.role, r.get("trainer_name"))
 
     # Cohort rollup: always spans every cohort regardless of the selector, so
@@ -436,6 +452,61 @@ def trainers(
         "by_phase": by_phase,
         "domains": [{"key": key, "label": label} for key, _col, label in _TRAINER_DOMAIN_COLUMNS],
         "cohorts": TRAINER_COHORTS,
+    }
+
+
+@router.get("/api/implementation/trainer-detail")
+def trainer_detail(
+    trainer_key: str = Query(...),
+    phase: Optional[Literal["BOOTCAMP_4", "BC5 TOT", "BOOTCAMP_5"]] = Query(
+        None, description="Cohort to narrow to — omit for every cohort"
+    ),
+    user: User = Depends(current_user),
+):
+    """One trainer's individual observations (no GROUP BY — one row per
+    classroom visit), for the per-trainer drill-down: trend, comparisons and
+    rule-based insights are all computed client-side from this list plus the
+    already-loaded /api/implementation/trainers register.
+
+    `trainer_key` is the pseudonymous id from pii.trainer_key() — resolved
+    here back to the raw trainer_name so the frontend (which only ever sees
+    the masked name for the guest role) never has to round-trip a real name.
+    """
+    name = name_from_trainer_key(trainer_key)
+    if name is None:
+        raise HTTPException(status_code=404, detail="Trainer not found")
+
+    domain_select = ",\n      ".join(f"CAST({col} AS FLOAT64) AS avg_{key}" for key, col, _label in _TRAINER_DOMAIN_COLUMNS)
+    where, params = _trainer_where([], "tqd", phase)
+    sql = f"""
+    SELECT
+      DATE(submission_date) AS observation_date,
+      {_trainer_cohort_case("tqd")} AS cohort,
+      training_week,
+      training_day,
+      observer_name,
+      training_site AS venue,
+      UPPER(district_name) AS district,
+      CAST(overall_average_class_observation_score AS FLOAT64) AS score,
+      {domain_select}
+    FROM {TRAINER_OBSERVATIONS}
+    WHERE {where}
+      AND report_type = 'rct_lesson_observation'
+      AND trainer_name = @trainer_name
+    ORDER BY observation_date
+    """
+    params = params + [_scalar("trainer_name", "STRING", name)]
+    # Copy before mutating — see the matching comment in trainers() above;
+    # run_query()'s cached rows are shared objects across calls.
+    rows = [dict(r) for r in database.run_query(sql, params, role=user.role)]
+    for r in rows:
+        r["observer_name"] = mask_name(user.role, r.get("observer_name"))
+
+    return {
+        "trainer_name": mask_name(user.role, name),
+        "trainer_key": trainer_key,
+        "observations": rows,
+        "domains": [{"key": key, "label": label} for key, _col, label in _TRAINER_DOMAIN_COLUMNS],
     }
 
 
