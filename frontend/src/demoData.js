@@ -153,6 +153,24 @@ export const DEMO = {
     pct_unassigned: 75.0,
   },
 
+  // Arm x district x parish x gender grain behind the RCT assignment card's
+  // drill. Female/male sums per arm land close to the summary endpoint's
+  // treatment_count/control_count above (BUGIRI+IGANGA only, so a bit short
+  // of the full 1338/677 -- same "parish-grain undercounts the headline"
+  // tradeoff awareness_parish already has).
+  "/api/recruitment/awareness-eligible-assignment-detail": {
+    rows: [
+      { arm: "Treatment", district: "BUGIRI", parish: "BULIDHA", female: 210, male: 168 },
+      { arm: "Treatment", district: "BUGIRI", parish: "BUWUNGA", female: 140, male: 112 },
+      { arm: "Treatment", district: "IGANGA", parish: "IGANGA TOWN COUNCIL", female: 260, male: 208 },
+      { arm: "Treatment", district: "IGANGA", parish: "NAMALEMBA", female: 120, male: 96 },
+      { arm: "Control", district: "BUGIRI", parish: "BULIDHA", female: 105, male: 84 },
+      { arm: "Control", district: "BUGIRI", parish: "BUWUNGA", female: 70, male: 56 },
+      { arm: "Control", district: "IGANGA", parish: "IGANGA TOWN COUNCIL", female: 130, male: 104 },
+      { arm: "Control", district: "IGANGA", parish: "NAMALEMBA", female: 60, male: 48 },
+    ],
+  },
+
   "/api/recruitment/awareness-forecast": {
     daily: [
       { event_date: "2026-07-01", registered: 750, interested: 538, eligible: 419 },

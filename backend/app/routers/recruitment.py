@@ -514,6 +514,50 @@ def awareness_eligible_assignment(
     }
 
 
+@router.get("/api/recruitment/awareness-eligible-assignment-detail")
+def awareness_eligible_assignment_detail(
+    user: User = Depends(current_user),
+    district: List[str] = Query(default=[]),
+    gender:   Optional[str] = Query(None),
+    cohort:   List[str] = Query(default=[]),
+):
+    """Arm x district x parish x gender grain behind the RCT assignment
+    scorecards' drill -- gender ratios per arm, then district and parish
+    within whichever arm was clicked. Same table/filters as
+    awareness_eligible_assignment; this just adds district/parish/gender to
+    the GROUP BY instead of collapsing straight to one row.
+
+    Only assigned youth with a recorded parish are included (is_treatment
+    IS NOT NULL, youth_parish IS NOT NULL), so summing this endpoint's rows
+    for one arm can undercount that arm's headline treatment_count/
+    control_count by however many assigned youth have no parish on file --
+    same tradeoff awareness_parish already makes for its own totals.
+
+    One flat row set (frontend rolls it up to arm, then arm+district, then
+    arm+district+parish) rather than three endpoints, matching how this
+    page's other drills already reuse one parish-grain fetch for every
+    level.
+    """
+    where, params = build_where(
+        districts=district, gender=gender,
+        extra=[active_cohort_clause("aead", requested=cohort)], prefix="aead",
+        district_col="youth_district", gender_col="youth_gender",
+    )
+    sql = f"""
+    SELECT
+      CASE WHEN is_treatment = TRUE THEN 'Treatment' WHEN is_treatment = FALSE THEN 'Control' END AS arm,
+      UPPER(youth_district) AS district,
+      youth_parish AS parish,
+      COUNTIF(UPPER(youth_gender) = 'FEMALE') AS female,
+      COUNTIF(UPPER(youth_gender) = 'MALE') AS male
+    FROM {AWARENESS_KYC}
+    WHERE {where} AND elligible = TRUE AND is_treatment IS NOT NULL AND youth_parish IS NOT NULL
+    GROUP BY arm, district, parish
+    """
+    rows = database.run_query(sql, params, role=user.role) or []
+    return {"rows": rows}
+
+
 @router.get("/api/recruitment/awareness-eligible-target")
 def awareness_eligible_target(
     user: User = Depends(current_user),

@@ -1105,6 +1105,46 @@ function sumGenderByDistrict(parishRows, metricKey) {
   return Object.values(byDistrict);
 }
 
+// RCT assignment drill (awareness-eligible-assignment-detail rows: arm x
+// district x parish x female/male) — one flat fetch rolled up to whichever
+// level the drill is currently showing, same "one parish-grain fetch feeds
+// every drill level" approach as the rest of this page.
+function withGenderShare(base, female, male) {
+  const t = female + male;
+  return { ...base, female, male, pct_female: t ? Math.round((1000 * female) / t) / 10 : null };
+}
+
+function armRootRows(detailRows) {
+  const totals = {};
+  detailRows.forEach((r) => {
+    if (!totals[r.arm]) totals[r.arm] = { female: 0, male: 0 };
+    totals[r.arm].female += r.female || 0;
+    totals[r.arm].male += r.male || 0;
+  });
+  return ["Treatment", "Control"]
+    .filter((arm) => totals[arm])
+    .map((arm) => withGenderShare({ arm }, totals[arm].female, totals[arm].male));
+}
+
+function armDistrictRows(detailRows, arm) {
+  const byDistrict = {};
+  detailRows.filter((r) => r.arm === arm).forEach((r) => {
+    if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, arm, female: 0, male: 0 };
+    byDistrict[r.district].female += r.female || 0;
+    byDistrict[r.district].male += r.male || 0;
+  });
+  return Object.values(byDistrict)
+    .map((d) => withGenderShare(d, d.female, d.male))
+    .sort((a, b) => (b.female + b.male) - (a.female + a.male));
+}
+
+function armParishRows(detailRows, arm, district) {
+  return detailRows
+    .filter((r) => r.arm === arm && r.district === district)
+    .map((r) => withGenderShare({ parish: r.parish }, r.female, r.male))
+    .sort((a, b) => (b.female + b.male) - (a.female + a.male));
+}
+
 function AwarenessOverviewPage({ filters }) {
   const drill = useDrill();
   const [search, setSearch] = useState("");
@@ -1116,6 +1156,10 @@ function AwarenessOverviewPage({ filters }) {
   // silver KYC table (AWARENESS_KYC), not on the gold parish summary every
   // other card on this page reads — the two can't share one query.
   const assignment = useApi(`/api/recruitment/awareness-eligible-assignment${buildParams(filters)}`);
+  // Arm x district x parish gender breakdown behind the RCT cards' drill —
+  // fetched once at page load like `parish`, then rolled up client-side to
+  // whichever level (arm / district / parish) the drill is showing.
+  const assignmentDetail = useApi(`/api/recruitment/awareness-eligible-assignment-detail${buildParams(filters)}`);
 
   const parishRowsRaw = parish.data?.parishes || [];
 
@@ -1185,6 +1229,32 @@ function AwarenessOverviewPage({ filters }) {
         .map((p) => withEligibilityRate({ ...p, registered: p.reached }))
         .sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0)),
     });
+  }
+
+  // RCT assignment card -> gender split by arm, then district and parish
+  // within whichever arm was clicked. "‹ Back" from the district table goes
+  // to the arm root (both Treatment and Control gender ratios), matching
+  // openAt's usual use — the click already identifies the arm, no need to
+  // make the user pick it again from that root list.
+  function openArmAssignmentDrill(arm) {
+    const detailRows = assignmentDetail.data?.rows || [];
+    const spec = {
+      title: "Eligible youth — RCT assignment, by gender",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "arm", rootLabel: "Arm",
+      columns: [
+        { key: "female", label: "Female", align: "right", render: fmtNum },
+        { key: "male", label: "Male", align: "right", render: fmtNum },
+        { key: "pct_female", label: "% Female", align: "right", render: fmtPct },
+      ],
+      rootRows: () => armRootRows(assignmentDetail.data?.rows || []),
+      childKey: "district", childLabel: "District",
+      getChildRows: (root) => armDistrictRows(assignmentDetail.data?.rows || [], root.arm),
+      grandchildKey: "parish", grandchildLabel: "Parish",
+      getGrandchildRows: (child) => armParishRows(assignmentDetail.data?.rows || [], child.arm, child.district),
+    };
+    const rootRow = armRootRows(detailRows).find((r) => r.arm === arm) || { arm, female: 0, male: 0, pct_female: null };
+    drill.openAt(spec, rootRow);
   }
 
   const stageStats = [
@@ -1357,7 +1427,7 @@ function AwarenessOverviewPage({ filters }) {
 
       <Card
         title="Eligible youth — RCT assignment"
-        subtitle="Of eligible youth with a recorded Treatment/Control assignment, the share in each arm. Coverage is cohort-dependent — BOOTCAMP_2/3 predate randomization and BOOTCAMP_4 is only partially assigned, so 'not yet assigned' is usually the majority whenever those cohorts are in view; narrow the cohort filter to BOOTCAMP_5 to see where assignment is most complete."
+        subtitle="Of eligible youth with a recorded Treatment/Control assignment, the share in each arm. Coverage is cohort-dependent — BOOTCAMP_2/3 predate randomization and BOOTCAMP_4 is only partially assigned, so 'not yet assigned' is usually the majority whenever those cohorts are in view; narrow the cohort filter to BOOTCAMP_5 to see where assignment is most complete. Click either card for the gender split, by district and parish."
         chip="REAL"
       >
         <State loading={assignment.loading} error={assignment.error} empty={!assignment.loading && !assignment.data?.eligible_count}>
@@ -1365,10 +1435,12 @@ function AwarenessOverviewPage({ filters }) {
             <KpiTile
               label="Eligible — Treatment" value={fmtNum(assignment.data?.treatment_count)}
               sub={assignment.data?.pct_treatment != null ? `${fmtPct(assignment.data.pct_treatment)} of assigned eligible youth` : undefined}
+              onClick={() => openArmAssignmentDrill("Treatment")}
             />
             <KpiTile
               label="Eligible — Control" value={fmtNum(assignment.data?.control_count)}
               sub={assignment.data?.pct_control != null ? `${fmtPct(assignment.data.pct_control)} of assigned eligible youth` : undefined}
+              onClick={() => openArmAssignmentDrill("Control")}
             />
           </Grid>
           {assignment.data?.unassigned_count > 0 && (

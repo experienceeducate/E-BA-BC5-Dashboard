@@ -300,3 +300,49 @@ def test_awareness_eligible_assignment_accepts_district_gender_cohort(as_staff, 
     sql = mock_run_query.calls[0]["sql"]
     assert "youth_district" in sql
     assert "youth_gender" in sql
+
+
+def test_awareness_eligible_assignment_detail_shape(as_staff, mock_run_query):
+    mock_run_query.set_rows([
+        {"arm": "Treatment", "district": "BUGIRI", "parish": "BULIDHA", "female": 40, "male": 30},
+        {"arm": "Control", "district": "BUGIRI", "parish": "BULIDHA", "female": 20, "male": 15},
+    ])
+    r = as_staff.get("/api/recruitment/awareness-eligible-assignment-detail")
+    assert r.status_code == 200
+    rows = r.json()["rows"]
+    assert len(rows) == 2
+    assert rows[0]["arm"] == "Treatment"
+    assert rows[0]["district"] == "BUGIRI"
+    assert rows[0]["parish"] == "BULIDHA"
+    assert rows[0]["female"] == 40
+    assert rows[0]["male"] == 30
+
+
+def test_awareness_eligible_assignment_detail_empty_rows(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/recruitment/awareness-eligible-assignment-detail")
+    assert r.status_code == 200
+    assert r.json()["rows"] == []
+
+
+def test_awareness_eligible_assignment_detail_filters_assigned_with_parish(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/awareness-eligible-assignment-detail")
+    sql = mock_run_query.calls[0]["sql"]
+    assert AWARENESS_KYC in sql
+    assert "elligible = TRUE" in sql
+    assert "is_treatment IS NOT NULL" in sql
+    assert "youth_parish IS NOT NULL" in sql
+    assert "GROUP BY arm, district, parish" in sql
+
+
+def test_awareness_eligible_assignment_detail_accepts_district_gender_cohort(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/recruitment/awareness-eligible-assignment-detail",
+        params={"district": "BUGIRI", "gender": "FEMALE", "cohort": "BOOTCAMP_5"},
+    )
+    assert r.status_code == 200
+    sql = mock_run_query.calls[0]["sql"]
+    assert "youth_district" in sql
+    assert "youth_gender" in sql
