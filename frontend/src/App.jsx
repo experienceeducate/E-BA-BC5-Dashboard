@@ -1967,19 +1967,6 @@ function AwarenessKycPage({ filters }) {
   const questions = data?.questions || [];
   const kycInsights = buildKycInsights(demo, channels, bizByGenderDistrict, reasons);
 
-  // "New Recruits - Awareness Eligible Target" — real eligible counts at
-  // district/parish grain vs. the hardcoded BC5 district/parish/venue target
-  // sheet. Venue is target-only (see AWARENESS_ELIGIBLE_TARGET_BC5): there's
-  // no live per-venue actual at the eligibility stage, since venue assignment
-  // only happens once a youth reaches Mobilisation.
-  const eligTarget = useApi(`/api/recruitment/awareness-eligible-target${buildParams(filters)}`);
-  const byDistrict = eligTarget.data?.by_district || [];
-  const byParish = eligTarget.data?.by_parish || [];
-  const byVenue = eligTarget.data?.by_venue || [];
-  const totalEligActual = sumBy(byDistrict, "actual");
-  const totalEligTarget = sumBy(byDistrict, "target");
-  const eligTargetPct = totalEligTarget ? Math.round((1000 * totalEligActual) / totalEligTarget) / 10 : null;
-
   function openPersonaDrill(metricKey, label, sub) {
     drill.open({
       title: `${label} — by district`,
@@ -1987,27 +1974,6 @@ function AwarenessKycPage({ filters }) {
       rootKey: "district", rootLabel: "District",
       columns: [{ key: "value", label: sub || label, align: "right", render: fmtPct }],
       rootRows: () => fetchPerDistrict("/api/recruitment/awareness-kyc", filters, allDistricts, (json) => json?.demographics?.[metricKey] ?? null),
-    });
-  }
-
-  function openEligibleTargetDrill() {
-    drill.open({
-      title: "New recruits — Awareness eligible target",
-      tone: "sim", tagLabel: "TARGET: HARDCODED",
-      rootKey: "district", rootLabel: "District",
-      columns: [
-        { key: "actual", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
-        { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
-        { key: "pct_of_target", label: "% of target", align: "right", render: renderProgressPctCell },
-      ],
-      rootRows: byDistrict,
-      childKey: "parish", childLabel: "Parish",
-      getChildRows: (root) => byParish.filter((p) => p.district === root.district),
-      grandchildKey: "venue", grandchildLabel: "Venue",
-      getGrandchildRows: (parishRow) => byVenue.filter((v) => v.district === parishRow.district && v.parish === parishRow.parish),
-      grandchildColumns: [
-        { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
-      ],
     });
   }
 
@@ -2041,25 +2007,6 @@ function AwarenessKycPage({ filters }) {
           <p style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>
             {fmtNum(demo.eligible_count)} eligible youth in this cohort · average age {demo.avg_age ?? "—"}.
           </p>
-        </State>
-      </Card>
-
-      <Card
-        title="New recruits — Awareness eligible target"
-        subtitle="Real eligible-youth counts vs. a hardcoded BC5 district/parish/venue target sheet — click to drill District → Parish → Venue. The venue level is target-only (no live per-venue actual at this stage)."
-        chip="DERIVED" chipTone="sim"
-      >
-        <State loading={eligTarget.loading} error={eligTarget.error} empty={!eligTarget.loading && byDistrict.length === 0}>
-          <Grid cols={4}>
-            <KpiTile
-              label="Eligible vs BC5 target"
-              value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(eligTargetPct)] }}>{fmtPct(eligTargetPct)}</span>}
-              sub={`${fmtNum(totalEligActual)} eligible of ${fmtNum(totalEligTarget)} target`}
-              tag="DERIVED" tone="sim"
-              hint="District → Parish → Venue"
-              onClick={openEligibleTargetDrill}
-            />
-          </Grid>
         </State>
       </Card>
 

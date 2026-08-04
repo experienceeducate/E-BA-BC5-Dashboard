@@ -110,3 +110,36 @@ def date_clauses(date_col_expr: str, date_from, date_to, prefix: str):
         clauses.append(f"{date_col_expr} <= @{prefix}_to")
         params.append(_scalar(f"{prefix}_to", "DATE", str(date_to)))
     return clauses, params
+
+
+def multiselect_array_sql(column: str) -> str:
+    """
+    Array expression for a multiselect-style silver column, to UNNEST.
+    `column` is a fixed literal set by the caller (a real column name), never
+    user input, so splicing it in is safe -- same rule as build_where's
+    district_col/gender_col/venue_col.
+
+    Several of AWARENESS_KYC's multiselect columns (current_activty,
+    registration_reasons, decision_consultation, bc5_support_required,
+    open_questions) turn out to hold THREE inconsistent formats across
+    bootcamp cycles/form versions -- confirmed against live data, 2026-08-04,
+    by checking why their UNNEST(JSON_EXTRACT_STRING_ARRAY(...)) queries were
+    returning far fewer rows than the column's actual non-null count:
+      - a valid JSON array literal, e.g. '["Staying home"]'
+      - one or more quoted values with no enclosing brackets, e.g.
+        '"Learn business skills", "Network"' -- JSON_EXTRACT_STRING_ARRAY
+        fails on this as-is; wrapping it in [...] fixes it
+      - a single bare (unquoted) value, e.g. 'Attending school' -- still
+        fails JSON parsing even after wrapping, since bare text isn't a
+        valid JSON string literal
+    Each row's actual shape is detected before parsing, rather than assuming
+    one format for the whole column. NULL/blank values produce an empty
+    array (UNNEST drops that row, same as a bare JSON_EXTRACT_STRING_ARRAY
+    on a NULL column would) rather than a 1-element [NULL] array.
+    """
+    return f"""CASE
+      WHEN {column} IS NULL OR TRIM({column}) = '' THEN []
+      WHEN STARTS_WITH(TRIM({column}), '[') THEN JSON_EXTRACT_STRING_ARRAY({column})
+      WHEN STARTS_WITH(TRIM({column}), '"') THEN JSON_EXTRACT_STRING_ARRAY(CONCAT('[', {column}, ']'))
+      ELSE [{column}]
+    END"""
