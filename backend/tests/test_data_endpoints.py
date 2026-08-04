@@ -229,120 +229,69 @@ def test_trainers_register_includes_trainer_key_and_gender(as_staff, mock_run_qu
     assert row["trainer_key"] == pii_module.trainer_key("Jane Doe")
 
 
-# --- Awareness eligible-assignment (Treatment/Control) -----------------------
-# RCT assignment lives per-youth on AWARENESS_KYC (silver), not on the gold
-# parish summary the rest of Awareness Overview reads. Coverage is sparse and
-# cohort-dependent (confirmed against live data: ~0% on BOOTCAMP_2/3, ~11% on
-# BOOTCAMP_4, ~84% on BOOTCAMP_5), so pct_treatment/pct_control are of the
-# assigned pool only -- never of eligible_count, which would make both
-# percentages read as single digits for a reason unrelated to the split itself.
+# --- Awareness parish (incl. RCT Treatment/Control) --------------------------
+# The RCT assignment card's Treatment/Control/Unassigned split is now read
+# straight off AWARENESS_SUMMARY's per-parish total_registered_youth_treatment/
+# control (+ female/male) columns, the same table/query awareness_parish
+# already feeds the rest of Awareness Overview from -- one parish-grain fetch
+# for everything, so the card is automatically as search/filter-scoped as
+# every other card on the page. Confirmed against live data (2026-08-04):
+# summed by cohort, treatment+control equals total_eligible_youth exactly for
+# BOOTCAMP_3 (fully randomized), ~11% of it for BOOTCAMP_4, ~84% for
+# BOOTCAMP_5, 0% for BOOTCAMP_2 (predates randomization) -- despite the
+# warehouse's "registered" prefix, these columns track arm assignment within
+# the eligible population, not raw registration.
 
 
-def test_awareness_eligible_assignment_shape(as_staff, mock_run_query):
-    mock_run_query.set_rows([
-        {"eligible_count": 8072, "treatment_count": 1338, "control_count": 677, "unassigned_count": 6057},
-    ])
-    r = as_staff.get("/api/recruitment/awareness-eligible-assignment")
+def test_awareness_parish_shape_includes_treatment_control(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "registration_target" in sql:
+            return []
+        return [{
+            "district": "BUGIRI", "parish": "BULIDHA",
+            "reached": 500, "reached_female": 300, "reached_male": 200,
+            "interested": 400, "interested_female": 250, "interested_male": 150,
+            "eligible": 350, "eligible_female": 220, "eligible_male": 130,
+            "pct_female": 62.9,
+            "eligible_treatment": 150, "eligible_treatment_female": 95, "eligible_treatment_male": 55,
+            "eligible_control": 100, "eligible_control_female": 63, "eligible_control_male": 37,
+        }]
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/recruitment/awareness-parish")
     assert r.status_code == 200
-    body = r.json()
-    assert body["eligible_count"] == 8072
-    assert body["treatment_count"] == 1338
-    assert body["control_count"] == 677
-    assert body["unassigned_count"] == 6057
-    assert body["assigned_count"] == 2015  # 1338 + 677
-    # Percentages are of the ASSIGNED pool, not eligible_count -- must sum to 100.
-    assert body["pct_treatment"] == 66.4
-    assert body["pct_control"] == 33.6
-    assert body["pct_treatment"] + body["pct_control"] == 100.0
-    # pct_unassigned is a separate share, of eligible_count.
-    assert body["pct_unassigned"] == 75.0
+    row = r.json()["parishes"][0]
+    assert row["eligible_treatment"] == 150
+    assert row["eligible_treatment_female"] == 95
+    assert row["eligible_treatment_male"] == 55
+    assert row["eligible_control"] == 100
+    assert row["eligible_control_female"] == 63
+    assert row["eligible_control_male"] == 37
 
 
-def test_awareness_eligible_assignment_zero_assigned_returns_null_pct(as_staff, mock_run_query):
-    """No assigned youth at all (e.g. BOOTCAMP_2/3 alone) must not divide by
-    zero -- pct_treatment/pct_control are None, not a ZeroDivisionError 500."""
-    mock_run_query.set_rows([
-        {"eligible_count": 5500, "treatment_count": 0, "control_count": 0, "unassigned_count": 5500},
-    ])
-    r = as_staff.get("/api/recruitment/awareness-eligible-assignment")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["assigned_count"] == 0
-    assert body["pct_treatment"] is None
-    assert body["pct_control"] is None
-    assert body["pct_unassigned"] == 100.0
-
-
-def test_awareness_eligible_assignment_zero_eligible_returns_null_pct_unassigned(as_staff, mock_run_query):
-    mock_run_query.set_rows([
-        {"eligible_count": 0, "treatment_count": 0, "control_count": 0, "unassigned_count": 0},
-    ])
-    r = as_staff.get("/api/recruitment/awareness-eligible-assignment")
-    assert r.status_code == 200
-    assert r.json()["pct_unassigned"] is None
-
-
-def test_awareness_eligible_assignment_filters_to_elligible_true(as_staff, mock_run_query):
-    mock_run_query.set_rows([{}])
-    as_staff.get("/api/recruitment/awareness-eligible-assignment")
-    sql = mock_run_query.calls[0]["sql"]
-    assert AWARENESS_KYC in sql
-    assert "elligible = TRUE" in sql
-
-
-def test_awareness_eligible_assignment_accepts_district_gender_cohort(as_staff, mock_run_query):
-    mock_run_query.set_rows([{}])
-    r = as_staff.get(
-        "/api/recruitment/awareness-eligible-assignment",
-        params={"district": "BUGIRI", "gender": "FEMALE", "cohort": "BOOTCAMP_5"},
-    )
-    assert r.status_code == 200
-    sql = mock_run_query.calls[0]["sql"]
-    assert "youth_district" in sql
-    assert "youth_gender" in sql
-
-
-def test_awareness_eligible_assignment_detail_shape(as_staff, mock_run_query):
-    mock_run_query.set_rows([
-        {"arm": "Treatment", "district": "BUGIRI", "parish": "BULIDHA", "female": 40, "male": 30},
-        {"arm": "Control", "district": "BUGIRI", "parish": "BULIDHA", "female": 20, "male": 15},
-    ])
-    r = as_staff.get("/api/recruitment/awareness-eligible-assignment-detail")
-    assert r.status_code == 200
-    rows = r.json()["rows"]
-    assert len(rows) == 2
-    assert rows[0]["arm"] == "Treatment"
-    assert rows[0]["district"] == "BUGIRI"
-    assert rows[0]["parish"] == "BULIDHA"
-    assert rows[0]["female"] == 40
-    assert rows[0]["male"] == 30
-
-
-def test_awareness_eligible_assignment_detail_empty_rows(as_staff, mock_run_query):
+def test_awareness_parish_sql_sums_treatment_control_columns(as_staff, mock_run_query):
     mock_run_query.set_rows([])
-    r = as_staff.get("/api/recruitment/awareness-eligible-assignment-detail")
-    assert r.status_code == 200
-    assert r.json()["rows"] == []
+    as_staff.get("/api/recruitment/awareness-parish")
+    # target_sql runs before actual_sql inside the endpoint -- the treatment/
+    # control SUMs are on actual_sql, so find whichever call has them rather
+    # than assuming call order.
+    sql = next(c["sql"] for c in mock_run_query.calls if "eligible_treatment" in c["sql"])
+    assert AWARENESS_SUMMARY in sql
+    assert "SUM(total_registered_youth_treatment) AS eligible_treatment" in sql
+    assert "SUM(total_registered_youth_female_treatment) AS eligible_treatment_female" in sql
+    assert "SUM(total_registered_youth_male_treatment) AS eligible_treatment_male" in sql
+    assert "SUM(total_registered_youth_control) AS eligible_control" in sql
+    assert "SUM(total_registered_youth_female_control) AS eligible_control_female" in sql
+    assert "SUM(total_registered_youth_male_control) AS eligible_control_male" in sql
 
 
-def test_awareness_eligible_assignment_detail_filters_assigned_with_parish(as_staff, mock_run_query):
+def test_awareness_parish_hardcoded_target_only_row_zeroes_treatment_control(as_staff, mock_run_query):
+    """A parish with a hardcoded target but no awareness activity recorded
+    yet gets a zeroed row (existing behavior for reached/interested/eligible)
+    -- the new treatment/control fields must be zeroed the same way, not
+    missing, so the frontend's sums don't see undefined."""
     mock_run_query.set_rows([])
-    as_staff.get("/api/recruitment/awareness-eligible-assignment-detail")
-    sql = mock_run_query.calls[0]["sql"]
-    assert AWARENESS_KYC in sql
-    assert "elligible = TRUE" in sql
-    assert "is_treatment IS NOT NULL" in sql
-    assert "youth_parish IS NOT NULL" in sql
-    assert "GROUP BY arm, district, parish" in sql
-
-
-def test_awareness_eligible_assignment_detail_accepts_district_gender_cohort(as_staff, mock_run_query):
-    mock_run_query.set_rows([])
-    r = as_staff.get(
-        "/api/recruitment/awareness-eligible-assignment-detail",
-        params={"district": "BUGIRI", "gender": "FEMALE", "cohort": "BOOTCAMP_5"},
-    )
+    r = as_staff.get("/api/recruitment/awareness-parish", params={"district": "MAYUGE"})
     assert r.status_code == 200
-    sql = mock_run_query.calls[0]["sql"]
-    assert "youth_district" in sql
-    assert "youth_gender" in sql
+    for row in r.json()["parishes"]:
+        assert "eligible_treatment" in row
+        assert "eligible_control" in row

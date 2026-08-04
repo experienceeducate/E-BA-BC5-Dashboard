@@ -167,6 +167,22 @@ def awareness_parish(
     chart/gauges can be genuinely parish-precise when a search narrows to one
     parish, not just fall back to its containing district.
 
+    Also carries the RCT Treatment/Control split behind the "Eligible youth —
+    RCT assignment" card, from this same table's total_registered_youth_
+    treatment/control (+ female/male) columns — named after "registered" in
+    the warehouse, but confirmed (2026-08-04, summed by cohort against
+    total_eligible_youth) to actually track arm assignment within the
+    ELIGIBLE population: BOOTCAMP_3's treatment+control sums equal its
+    eligible total exactly (fully randomized), BOOTCAMP_4 covers ~11% of
+    eligible, BOOTCAMP_5 ~84%, BOOTCAMP_2 0% (predates randomization).
+    Exposed here as eligible_treatment(_female/_male) and eligible_control
+    (_female/_male) to name them for what they mean rather than the
+    warehouse's "registered" prefix. The frontend derives Unassigned as
+    eligible minus treatment minus control, per row — same one parish-grain
+    fetch this whole page already relies on, so the RCT card and its drill
+    are automatically as search/filter-scoped as every other card, with no
+    separate query against the per-youth silver table needed.
+
     `target` prefers the hardcoded AWARENESS_ELIGIBLE_TARGET_BC5 sheet over
     the live registration_target where the sheet has data for that parish
     (see the note at that constant) — `target_source` on each row says which
@@ -189,7 +205,13 @@ def awareness_parish(
       SUM(total_eligible_youth) AS eligible,
       SUM(total_eligible_female) AS eligible_female,
       SUM(total_eligible_male) AS eligible_male,
-      ROUND(SAFE_DIVIDE(SUM(total_eligible_female), NULLIF(SUM(total_eligible_youth), 0)) * 100, 1) AS pct_female
+      ROUND(SAFE_DIVIDE(SUM(total_eligible_female), NULLIF(SUM(total_eligible_youth), 0)) * 100, 1) AS pct_female,
+      SUM(total_registered_youth_treatment) AS eligible_treatment,
+      SUM(total_registered_youth_female_treatment) AS eligible_treatment_female,
+      SUM(total_registered_youth_male_treatment) AS eligible_treatment_male,
+      SUM(total_registered_youth_control) AS eligible_control,
+      SUM(total_registered_youth_female_control) AS eligible_control_female,
+      SUM(total_registered_youth_male_control) AS eligible_control_male
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND youth_parish IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
     GROUP BY district, parish
@@ -236,6 +258,8 @@ def awareness_parish(
             "interested": 0, "interested_female": 0, "interested_male": 0,
             "eligible": 0, "eligible_female": 0, "eligible_male": 0,
             "pct_female": None,
+            "eligible_treatment": 0, "eligible_treatment_female": 0, "eligible_treatment_male": 0,
+            "eligible_control": 0, "eligible_control_female": 0, "eligible_control_male": 0,
             "target": t, "target_source": "hardcoded",
         })
     rows.sort(key=lambda r: (r["district"], r["parish"]))
@@ -455,107 +479,6 @@ def awareness_kyc(
         "business": {"by_gender_district": biz_rows},
         "channels": channels,
     }
-
-
-@router.get("/api/recruitment/awareness-eligible-assignment")
-def awareness_eligible_assignment(
-    user: User = Depends(current_user),
-    district: List[str] = Query(default=[]),
-    gender:   Optional[str] = Query(None),
-    cohort:   List[str] = Query(default=[]),
-):
-    """Eligible youth split by RCT treatment/control assignment (is_treatment),
-    for the Awareness Overview scorecards. Same filter shape as awareness_kyc
-    (district/gender/cohort), same table (AWARENESS_KYC — is_treatment has no
-    equivalent on the AWARENESS_SUMMARY gold table the rest of this page reads).
-
-    is_treatment coverage is sparse and cohort-dependent: 0% on BOOTCAMP_2/3
-    (predate randomization), ~11% on BOOTCAMP_4, ~84% on BOOTCAMP_5 (confirmed
-    against live data, 2026-08-04). With no cohort filter applied this endpoint
-    spans ACTIVE_COHORTS (BC4+BC5, same default as every other Awareness card),
-    so "unassigned" will usually be the majority — that's BC4's un-randomized
-    youth, not missing data, hence unassigned_count/pct is returned alongside
-    the split rather than folded into it silently.
-
-    pct_treatment/pct_control are of the ASSIGNED pool (assigned_count =
-    treatment_count + control_count), so they sum to 100 — not of eligible_count,
-    which would make both percentages read as single digits whenever BC2-4 are
-    in view for a reason that has nothing to do with the split itself.
-    """
-    where, params = build_where(
-        districts=district, gender=gender,
-        extra=[active_cohort_clause("aea", requested=cohort)], prefix="aea",
-        district_col="youth_district", gender_col="youth_gender",
-    )
-    sql = f"""
-    SELECT
-      COUNT(*) AS eligible_count,
-      COUNTIF(is_treatment = TRUE) AS treatment_count,
-      COUNTIF(is_treatment = FALSE) AS control_count,
-      COUNTIF(is_treatment IS NULL) AS unassigned_count
-    FROM {AWARENESS_KYC}
-    WHERE {where} AND elligible = TRUE
-    """
-    row = (database.run_query(sql, params, role=user.role) or [{}])[0]
-    eligible_count = row.get("eligible_count") or 0
-    treatment_count = row.get("treatment_count") or 0
-    control_count = row.get("control_count") or 0
-    unassigned_count = row.get("unassigned_count") or 0
-    assigned_count = treatment_count + control_count
-    return {
-        "eligible_count": eligible_count,
-        "treatment_count": treatment_count,
-        "control_count": control_count,
-        "unassigned_count": unassigned_count,
-        "assigned_count": assigned_count,
-        "pct_treatment": round(100 * treatment_count / assigned_count, 1) if assigned_count else None,
-        "pct_control": round(100 * control_count / assigned_count, 1) if assigned_count else None,
-        "pct_unassigned": round(100 * unassigned_count / eligible_count, 1) if eligible_count else None,
-    }
-
-
-@router.get("/api/recruitment/awareness-eligible-assignment-detail")
-def awareness_eligible_assignment_detail(
-    user: User = Depends(current_user),
-    district: List[str] = Query(default=[]),
-    gender:   Optional[str] = Query(None),
-    cohort:   List[str] = Query(default=[]),
-):
-    """Arm x district x parish x gender grain behind the RCT assignment
-    scorecards' drill -- gender ratios per arm, then district and parish
-    within whichever arm was clicked. Same table/filters as
-    awareness_eligible_assignment; this just adds district/parish/gender to
-    the GROUP BY instead of collapsing straight to one row.
-
-    Only assigned youth with a recorded parish are included (is_treatment
-    IS NOT NULL, youth_parish IS NOT NULL), so summing this endpoint's rows
-    for one arm can undercount that arm's headline treatment_count/
-    control_count by however many assigned youth have no parish on file --
-    same tradeoff awareness_parish already makes for its own totals.
-
-    One flat row set (frontend rolls it up to arm, then arm+district, then
-    arm+district+parish) rather than three endpoints, matching how this
-    page's other drills already reuse one parish-grain fetch for every
-    level.
-    """
-    where, params = build_where(
-        districts=district, gender=gender,
-        extra=[active_cohort_clause("aead", requested=cohort)], prefix="aead",
-        district_col="youth_district", gender_col="youth_gender",
-    )
-    sql = f"""
-    SELECT
-      CASE WHEN is_treatment = TRUE THEN 'Treatment' WHEN is_treatment = FALSE THEN 'Control' END AS arm,
-      UPPER(youth_district) AS district,
-      youth_parish AS parish,
-      COUNTIF(UPPER(youth_gender) = 'FEMALE') AS female,
-      COUNTIF(UPPER(youth_gender) = 'MALE') AS male
-    FROM {AWARENESS_KYC}
-    WHERE {where} AND elligible = TRUE AND is_treatment IS NOT NULL AND youth_parish IS NOT NULL
-    GROUP BY arm, district, parish
-    """
-    rows = database.run_query(sql, params, role=user.role) or []
-    return {"rows": rows}
 
 
 @router.get("/api/recruitment/awareness-eligible-target")
