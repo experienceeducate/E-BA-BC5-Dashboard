@@ -138,6 +138,21 @@ export const DEMO = {
     ],
   },
 
+  // Mirrors the live endpoint's shape and its usual pattern: unassigned is
+  // the majority by default (spans ACTIVE_COHORTS, and BC4 is only ~11%
+  // assigned), assigned pool splits roughly 66/34 treatment/control as BC5's
+  // live numbers do.
+  "/api/recruitment/awareness-eligible-assignment": {
+    eligible_count: 8072,
+    treatment_count: 1338,
+    control_count: 677,
+    unassigned_count: 6057,
+    assigned_count: 2015,
+    pct_treatment: 66.4,
+    pct_control: 33.6,
+    pct_unassigned: 75.0,
+  },
+
   "/api/recruitment/awareness-forecast": {
     daily: [
       { event_date: "2026-07-01", registered: 750, interested: 538, eligible: 419 },

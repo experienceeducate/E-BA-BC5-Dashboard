@@ -1112,6 +1112,10 @@ function AwarenessOverviewPage({ filters }) {
   const [districtCat, setDistrictCat] = useState("All");
   const [parishPage, setParishPage] = useState(0);
   const parish = useApi(`/api/recruitment/awareness-parish${buildParams(filters)}`);
+  // Separate fetch: RCT treatment/control assignment lives per-youth on the
+  // silver KYC table (AWARENESS_KYC), not on the gold parish summary every
+  // other card on this page reads — the two can't share one query.
+  const assignment = useApi(`/api/recruitment/awareness-eligible-assignment${buildParams(filters)}`);
 
   const parishRowsRaw = parish.data?.parishes || [];
 
@@ -1350,6 +1354,30 @@ function AwarenessOverviewPage({ filters }) {
           onClick={() => openGenderStageDrill("eligible", "Eligible")}
         />
       </Grid>
+
+      <Card
+        title="Eligible youth — RCT assignment"
+        subtitle="Of eligible youth with a recorded Treatment/Control assignment, the share in each arm. Coverage is cohort-dependent — BOOTCAMP_2/3 predate randomization and BOOTCAMP_4 is only partially assigned, so 'not yet assigned' is usually the majority whenever those cohorts are in view; narrow the cohort filter to BOOTCAMP_5 to see where assignment is most complete."
+        chip="REAL"
+      >
+        <State loading={assignment.loading} error={assignment.error} empty={!assignment.loading && !assignment.data?.eligible_count}>
+          <Grid cols={2}>
+            <KpiTile
+              label="Eligible — Treatment" value={fmtNum(assignment.data?.treatment_count)}
+              sub={assignment.data?.pct_treatment != null ? `${fmtPct(assignment.data.pct_treatment)} of assigned eligible youth` : undefined}
+            />
+            <KpiTile
+              label="Eligible — Control" value={fmtNum(assignment.data?.control_count)}
+              sub={assignment.data?.pct_control != null ? `${fmtPct(assignment.data.pct_control)} of assigned eligible youth` : undefined}
+            />
+          </Grid>
+          {assignment.data?.unassigned_count > 0 && (
+            <p style={{ fontSize: 11, color: C.muted, marginTop: -6 }}>
+              <b>{fmtNum(assignment.data.unassigned_count)}</b> eligible youth ({fmtPct(assignment.data.pct_unassigned)} of {fmtNum(assignment.data.eligible_count)}) have no Treatment/Control assignment recorded yet — not folded into the percentages above, which are of the assigned pool only.
+            </p>
+          )}
+        </State>
+      </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <Card title="Awareness funnel Numbers disaggregated by Gender" subtitle="Female vs male at each stage (value and % of that stage) — click a bar to drill by district" chip="REAL">
