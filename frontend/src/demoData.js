@@ -123,41 +123,23 @@ export const DEMO = {
     ],
   },
 
+  // eligible_treatment/eligible_control (+ female/male) mirror the live
+  // AWARENESS_SUMMARY columns behind the "Eligible youth — RCT assignment"
+  // card and its drill — BUGIRI/IGANGA carry partial coverage (most of
+  // eligible_female/male still unassigned, same as BC4's live ~11%),
+  // BUGWERI/KAMULI/MAYUGE carry none (BC2/3-style, predates randomization).
   "/api/recruitment/awareness-parish": {
     parishes: [
-      { district: "BUGIRI", parish: "BUGIRI TOWN COUNCIL", reached: 1800, reached_female: 1062, reached_male: 738, interested: 1290, interested_female: 774, interested_male: 516, eligible: 1005, eligible_female: 607, eligible_male: 398, pct_female: 60.4, target: 2200 },
-      { district: "BUGIRI", parish: "BUWUNGA", reached: 1400, reached_female: 826, reached_male: 574, interested: 1003, interested_female: 602, interested_male: 401, eligible: 782, eligible_female: 472, eligible_male: 310, pct_female: 60.4, target: 2000 },
-      { district: "BUGWERI", parish: "BUGWERI TOWN COUNCIL", reached: 1200, reached_female: 708, reached_male: 492, interested: 860, interested_female: 516, interested_male: 344, eligible: 670, eligible_female: 405, eligible_male: 265, pct_female: 60.4, target: 1500 },
-      { district: "BUGWERI", parish: "IVUKULA", reached: 900, reached_female: 531, reached_male: 369, interested: 645, interested_female: 387, interested_male: 258, eligible: 502, eligible_female: 303, eligible_male: 199, pct_female: 60.4, target: 1300 },
-      { district: "IGANGA", parish: "IGANGA TOWN COUNCIL", reached: 1600, reached_female: 944, reached_male: 656, interested: 1147, interested_female: 688, interested_male: 459, eligible: 894, eligible_female: 540, eligible_male: 354, pct_female: 60.4, target: 2000 },
-      { district: "IGANGA", parish: "NAMALEMBA", reached: 1200, reached_female: 708, reached_male: 492, interested: 860, interested_female: 516, interested_male: 344, eligible: 670, eligible_female: 405, eligible_male: 265, pct_female: 60.4, target: 1700 },
-      { district: "KAMULI", parish: "KAMULI TOWN COUNCIL", reached: 1000, reached_female: 590, reached_male: 410, interested: 717, interested_female: 430, interested_male: 287, eligible: 559, eligible_female: 338, eligible_male: 221, pct_female: 60.5, target: 1400 },
-      { district: "KAMULI", parish: "BUGULUMBYA", reached: 800, reached_female: 472, reached_male: 328, interested: 573, interested_female: 344, interested_male: 229, eligible: 446, eligible_female: 269, eligible_male: 177, pct_female: 60.3, target: 1100 },
-      { district: "MAYUGE", parish: "MAYUGE TOWN COUNCIL", reached: 1300, reached_female: 767, reached_male: 533, interested: 932, interested_female: 559, interested_male: 373, eligible: 726, eligible_female: 438, eligible_male: 288, pct_female: 60.3, target: 1700 },
-      { district: "MAYUGE", parish: "MALONGO", reached: 800, reached_female: 472, reached_male: 328, interested: 573, interested_female: 344, interested_male: 229, eligible: 446, eligible_female: 269, eligible_male: 177, pct_female: 60.3, target: 1100 },
-    ],
-  },
-
-  // Arm x district x parish x gender grain behind the RCT assignment card --
-  // both its headline Treatment/Control/Unassigned counts and its drill are
-  // derived from these same rows (mirrors the live endpoint: unassigned is
-  // the majority by default since it spans ACTIVE_COHORTS and BC4 is only
-  // ~11% assigned; the assigned pool splits roughly 66/34 treatment/control
-  // as BC5's live numbers do).
-  "/api/recruitment/awareness-eligible-assignment-detail": {
-    rows: [
-      { arm: "Treatment", district: "BUGIRI", parish: "BULIDHA", female: 210, male: 168 },
-      { arm: "Treatment", district: "BUGIRI", parish: "BUWUNGA", female: 140, male: 112 },
-      { arm: "Treatment", district: "IGANGA", parish: "IGANGA TOWN COUNCIL", female: 260, male: 208 },
-      { arm: "Treatment", district: "IGANGA", parish: "NAMALEMBA", female: 120, male: 96 },
-      { arm: "Control", district: "BUGIRI", parish: "BULIDHA", female: 105, male: 84 },
-      { arm: "Control", district: "BUGIRI", parish: "BUWUNGA", female: 70, male: 56 },
-      { arm: "Control", district: "IGANGA", parish: "IGANGA TOWN COUNCIL", female: 130, male: 104 },
-      { arm: "Control", district: "IGANGA", parish: "NAMALEMBA", female: 60, male: 48 },
-      { arm: "Unassigned", district: "BUGIRI", parish: "BULIDHA", female: 950, male: 760 },
-      { arm: "Unassigned", district: "BUGIRI", parish: "BUWUNGA", female: 630, male: 504 },
-      { arm: "Unassigned", district: "IGANGA", parish: "IGANGA TOWN COUNCIL", female: 1170, male: 936 },
-      { arm: "Unassigned", district: "IGANGA", parish: "NAMALEMBA", female: 540, male: 432 },
+      { district: "BUGIRI", parish: "BUGIRI TOWN COUNCIL", reached: 1800, reached_female: 1062, reached_male: 738, interested: 1290, interested_female: 774, interested_male: 516, eligible: 1005, eligible_female: 607, eligible_male: 398, pct_female: 60.4, target: 2200, eligible_treatment: 378, eligible_treatment_female: 210, eligible_treatment_male: 168, eligible_control: 189, eligible_control_female: 105, eligible_control_male: 84 },
+      { district: "BUGIRI", parish: "BUWUNGA", reached: 1400, reached_female: 826, reached_male: 574, interested: 1003, interested_female: 602, interested_male: 401, eligible: 782, eligible_female: 472, eligible_male: 310, pct_female: 60.4, target: 2000, eligible_treatment: 252, eligible_treatment_female: 140, eligible_treatment_male: 112, eligible_control: 126, eligible_control_female: 70, eligible_control_male: 56 },
+      { district: "BUGWERI", parish: "BUGWERI TOWN COUNCIL", reached: 1200, reached_female: 708, reached_male: 492, interested: 860, interested_female: 516, interested_male: 344, eligible: 670, eligible_female: 405, eligible_male: 265, pct_female: 60.4, target: 1500, eligible_treatment: 0, eligible_treatment_female: 0, eligible_treatment_male: 0, eligible_control: 0, eligible_control_female: 0, eligible_control_male: 0 },
+      { district: "BUGWERI", parish: "IVUKULA", reached: 900, reached_female: 531, reached_male: 369, interested: 645, interested_female: 387, interested_male: 258, eligible: 502, eligible_female: 303, eligible_male: 199, pct_female: 60.4, target: 1300, eligible_treatment: 0, eligible_treatment_female: 0, eligible_treatment_male: 0, eligible_control: 0, eligible_control_female: 0, eligible_control_male: 0 },
+      { district: "IGANGA", parish: "IGANGA TOWN COUNCIL", reached: 1600, reached_female: 944, reached_male: 656, interested: 1147, interested_female: 688, interested_male: 459, eligible: 894, eligible_female: 540, eligible_male: 354, pct_female: 60.4, target: 2000, eligible_treatment: 468, eligible_treatment_female: 260, eligible_treatment_male: 208, eligible_control: 234, eligible_control_female: 130, eligible_control_male: 104 },
+      { district: "IGANGA", parish: "NAMALEMBA", reached: 1200, reached_female: 708, reached_male: 492, interested: 860, interested_female: 516, interested_male: 344, eligible: 670, eligible_female: 405, eligible_male: 265, pct_female: 60.4, target: 1700, eligible_treatment: 216, eligible_treatment_female: 120, eligible_treatment_male: 96, eligible_control: 108, eligible_control_female: 60, eligible_control_male: 48 },
+      { district: "KAMULI", parish: "KAMULI TOWN COUNCIL", reached: 1000, reached_female: 590, reached_male: 410, interested: 717, interested_female: 430, interested_male: 287, eligible: 559, eligible_female: 338, eligible_male: 221, pct_female: 60.5, target: 1400, eligible_treatment: 0, eligible_treatment_female: 0, eligible_treatment_male: 0, eligible_control: 0, eligible_control_female: 0, eligible_control_male: 0 },
+      { district: "KAMULI", parish: "BUGULUMBYA", reached: 800, reached_female: 472, reached_male: 328, interested: 573, interested_female: 344, interested_male: 229, eligible: 446, eligible_female: 269, eligible_male: 177, pct_female: 60.3, target: 1100, eligible_treatment: 0, eligible_treatment_female: 0, eligible_treatment_male: 0, eligible_control: 0, eligible_control_female: 0, eligible_control_male: 0 },
+      { district: "MAYUGE", parish: "MAYUGE TOWN COUNCIL", reached: 1300, reached_female: 767, reached_male: 533, interested: 932, interested_female: 559, interested_male: 373, eligible: 726, eligible_female: 438, eligible_male: 288, pct_female: 60.3, target: 1700, eligible_treatment: 0, eligible_treatment_female: 0, eligible_treatment_male: 0, eligible_control: 0, eligible_control_female: 0, eligible_control_male: 0 },
+      { district: "MAYUGE", parish: "MALONGO", reached: 800, reached_female: 472, reached_male: 328, interested: 573, interested_female: 344, interested_male: 229, eligible: 446, eligible_female: 269, eligible_male: 177, pct_female: 60.3, target: 1100, eligible_treatment: 0, eligible_treatment_female: 0, eligible_treatment_male: 0, eligible_control: 0, eligible_control_female: 0, eligible_control_male: 0 },
     ],
   },
 
