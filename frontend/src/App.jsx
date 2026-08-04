@@ -1352,7 +1352,7 @@ function AwarenessOverviewPage({ filters }) {
       </Grid>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="Awareness funnel — Reached → Interested → Eligible" subtitle="Female vs male at each stage (value and % of that stage) — click a bar to drill by district" chip="REAL">
+        <Card title="Awareness funnel Numbers disaggregated by Gender" subtitle="Female vs male at each stage (value and % of that stage) — click a bar to drill by district" chip="REAL">
           <State loading={genderLoading} error={genderError} empty={!genderLoading && stageStats.every((s) => !s.female && !s.male)}>
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={stageStats} margin={{ top: 20, right: 16, bottom: 8, left: 0 }}>
