@@ -8,6 +8,7 @@ query.
 """
 
 import app.core.pii as pii_module
+from app.core.sql import multiselect_array_sql
 from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES
 from app.routers.implementation import TRAINER_COHORTS
 
@@ -295,3 +296,38 @@ def test_awareness_parish_hardcoded_target_only_row_zeroes_treatment_control(as_
     for row in r.json()["parishes"]:
         assert "eligible_treatment" in row
         assert "eligible_control" in row
+
+
+# --- multiselect_array_sql / KYC multiselect columns --------------------------
+# current_activty/registration_reasons/decision_consultation/
+# bc5_support_required/open_questions were captured in three inconsistent
+# string formats across bootcamp cycles/form versions (confirmed against
+# live data, 2026-08-04): a valid JSON array, a quoted fragment missing its
+# enclosing brackets, or a single bare unquoted value. A bare
+# JSON_EXTRACT_STRING_ARRAY(column) silently drops any row it can't parse --
+# these tests lock in that all three shapes are now handled.
+
+def test_multiselect_array_sql_handles_all_three_formats():
+    sql = multiselect_array_sql("current_activty")
+    assert "STARTS_WITH(TRIM(current_activty), '[')" in sql
+    assert "JSON_EXTRACT_STRING_ARRAY(current_activty)" in sql
+    assert "STARTS_WITH(TRIM(current_activty), '\"')" in sql
+    assert "JSON_EXTRACT_STRING_ARRAY(CONCAT('[', current_activty, ']'))" in sql
+    assert "ELSE [current_activty]" in sql
+
+
+def test_multiselect_array_sql_empty_or_null_yields_empty_array():
+    sql = multiselect_array_sql("open_questions")
+    assert "WHEN open_questions IS NULL OR TRIM(open_questions) = '' THEN []" in sql
+
+
+def test_awareness_kyc_multiselect_columns_use_multiselect_array_sql(as_staff, mock_run_query):
+    """Regression guard: these five queries must not regress to a bare
+    UNNEST(JSON_EXTRACT_STRING_ARRAY(column)), which silently dropped most
+    rows for the two non-JSON-array formats these columns actually contain."""
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/awareness-kyc")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    for column in ["current_activty", "registration_reasons", "decision_consultation", "bc5_support_required", "open_questions"]:
+        assert f"UNNEST(JSON_EXTRACT_STRING_ARRAY({column}))" not in all_sql
+        assert f"STARTS_WITH(TRIM({column}), '[')" in all_sql

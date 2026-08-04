@@ -13,7 +13,7 @@ from app.auth import current_user, User
 from app.core import database  # module import — required for the run_query test seam
 from app.core.database import _array, _scalar
 from app.core.pii import mask_name, youth_id
-from app.core.sql import build_where, cohort_clause
+from app.core.sql import build_where, cohort_clause, multiselect_array_sql
 from app.core.tables import (
     RECRUITMENT_FUNNEL,
     MOBILISER_PERF,
@@ -353,6 +353,15 @@ def awareness_kyc(
     """Persona/demographic breakdown of the eligible pool, for the Awareness
     tab's KYC / Youth Profile sub-page. Backed by the live AWARENESS_KYC
     per-youth record (silver_eba.eba_bootcamp_awareness).
+
+    current_activty/registration_reasons/decision_consultation/
+    bc5_support_required/open_questions are multiselect columns whose values
+    were captured in three inconsistent string formats across bootcamp
+    cycles/form versions -- a bare JSON_EXTRACT_STRING_ARRAY(column) silently
+    drops any row it can't parse, which is why these cards were showing
+    little to no data even though the underlying columns are far from empty.
+    multiselect_array_sql() (app/core/sql.py) detects each row's actual shape
+    before parsing -- see that function's docstring for the three formats.
     """
     base_where, base_params = build_where(
         districts=district, gender=gender,
@@ -379,7 +388,7 @@ def awareness_kyc(
 
     activity_sql = f"""
     SELECT activity, COUNT(*) AS count
-    FROM {AWARENESS_KYC}, UNNEST(JSON_EXTRACT_STRING_ARRAY(current_activty)) AS activity
+    FROM {AWARENESS_KYC}, UNNEST({multiselect_array_sql("current_activty")}) AS activity
     WHERE {elig_where}
     GROUP BY activity ORDER BY count DESC
     """
@@ -387,7 +396,7 @@ def awareness_kyc(
 
     reasons_sql = f"""
     SELECT reason, COUNT(*) AS count
-    FROM {AWARENESS_KYC}, UNNEST(JSON_EXTRACT_STRING_ARRAY(registration_reasons)) AS reason
+    FROM {AWARENESS_KYC}, UNNEST({multiselect_array_sql("registration_reasons")}) AS reason
     WHERE {elig_where}
     GROUP BY reason ORDER BY count DESC
     """
@@ -395,7 +404,7 @@ def awareness_kyc(
 
     consultation_sql = f"""
     SELECT consultant, COUNT(*) AS count
-    FROM {AWARENESS_KYC}, UNNEST(JSON_EXTRACT_STRING_ARRAY(decision_consultation)) AS consultant
+    FROM {AWARENESS_KYC}, UNNEST({multiselect_array_sql("decision_consultation")}) AS consultant
     WHERE {elig_where}
     GROUP BY consultant ORDER BY count DESC
     """
@@ -403,7 +412,7 @@ def awareness_kyc(
 
     support_sql = f"""
     SELECT support, COUNT(*) AS count
-    FROM {AWARENESS_KYC}, UNNEST(JSON_EXTRACT_STRING_ARRAY(bc5_support_required)) AS support
+    FROM {AWARENESS_KYC}, UNNEST({multiselect_array_sql("bc5_support_required")}) AS support
     WHERE {elig_where}
     GROUP BY support ORDER BY count DESC
     """
@@ -427,7 +436,7 @@ def awareness_kyc(
     # 20 so a long tail of one-off phrasing doesn't flood the Q&A section.
     questions_sql = f"""
     SELECT question, COUNT(*) AS count
-    FROM {AWARENESS_KYC}, UNNEST(JSON_EXTRACT_STRING_ARRAY(open_questions)) AS question
+    FROM {AWARENESS_KYC}, UNNEST({multiselect_array_sql("open_questions")}) AS question
     WHERE {elig_where} AND question IS NOT NULL AND TRIM(question) != ''
     GROUP BY question ORDER BY count DESC
     LIMIT 20
