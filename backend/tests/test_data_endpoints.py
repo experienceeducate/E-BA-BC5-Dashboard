@@ -8,7 +8,7 @@ query.
 """
 
 import app.core.pii as pii_module
-from app.core.tables import AWARENESS_SUMMARY, FUNNEL_STAGES
+from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES
 from app.routers.implementation import TRAINER_COHORTS
 
 
@@ -227,3 +227,76 @@ def test_trainers_register_includes_trainer_key_and_gender(as_staff, mock_run_qu
     row = r.json()["trainers"][0]
     assert row["trainer_gender"] == "Female"
     assert row["trainer_key"] == pii_module.trainer_key("Jane Doe")
+
+
+# --- Awareness eligible-assignment (Treatment/Control) -----------------------
+# RCT assignment lives per-youth on AWARENESS_KYC (silver), not on the gold
+# parish summary the rest of Awareness Overview reads. Coverage is sparse and
+# cohort-dependent (confirmed against live data: ~0% on BOOTCAMP_2/3, ~11% on
+# BOOTCAMP_4, ~84% on BOOTCAMP_5), so pct_treatment/pct_control are of the
+# assigned pool only -- never of eligible_count, which would make both
+# percentages read as single digits for a reason unrelated to the split itself.
+
+
+def test_awareness_eligible_assignment_shape(as_staff, mock_run_query):
+    mock_run_query.set_rows([
+        {"eligible_count": 8072, "treatment_count": 1338, "control_count": 677, "unassigned_count": 6057},
+    ])
+    r = as_staff.get("/api/recruitment/awareness-eligible-assignment")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["eligible_count"] == 8072
+    assert body["treatment_count"] == 1338
+    assert body["control_count"] == 677
+    assert body["unassigned_count"] == 6057
+    assert body["assigned_count"] == 2015  # 1338 + 677
+    # Percentages are of the ASSIGNED pool, not eligible_count -- must sum to 100.
+    assert body["pct_treatment"] == 66.4
+    assert body["pct_control"] == 33.6
+    assert body["pct_treatment"] + body["pct_control"] == 100.0
+    # pct_unassigned is a separate share, of eligible_count.
+    assert body["pct_unassigned"] == 75.0
+
+
+def test_awareness_eligible_assignment_zero_assigned_returns_null_pct(as_staff, mock_run_query):
+    """No assigned youth at all (e.g. BOOTCAMP_2/3 alone) must not divide by
+    zero -- pct_treatment/pct_control are None, not a ZeroDivisionError 500."""
+    mock_run_query.set_rows([
+        {"eligible_count": 5500, "treatment_count": 0, "control_count": 0, "unassigned_count": 5500},
+    ])
+    r = as_staff.get("/api/recruitment/awareness-eligible-assignment")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["assigned_count"] == 0
+    assert body["pct_treatment"] is None
+    assert body["pct_control"] is None
+    assert body["pct_unassigned"] == 100.0
+
+
+def test_awareness_eligible_assignment_zero_eligible_returns_null_pct_unassigned(as_staff, mock_run_query):
+    mock_run_query.set_rows([
+        {"eligible_count": 0, "treatment_count": 0, "control_count": 0, "unassigned_count": 0},
+    ])
+    r = as_staff.get("/api/recruitment/awareness-eligible-assignment")
+    assert r.status_code == 200
+    assert r.json()["pct_unassigned"] is None
+
+
+def test_awareness_eligible_assignment_filters_to_elligible_true(as_staff, mock_run_query):
+    mock_run_query.set_rows([{}])
+    as_staff.get("/api/recruitment/awareness-eligible-assignment")
+    sql = mock_run_query.calls[0]["sql"]
+    assert AWARENESS_KYC in sql
+    assert "elligible = TRUE" in sql
+
+
+def test_awareness_eligible_assignment_accepts_district_gender_cohort(as_staff, mock_run_query):
+    mock_run_query.set_rows([{}])
+    r = as_staff.get(
+        "/api/recruitment/awareness-eligible-assignment",
+        params={"district": "BUGIRI", "gender": "FEMALE", "cohort": "BOOTCAMP_5"},
+    )
+    assert r.status_code == 200
+    sql = mock_run_query.calls[0]["sql"]
+    assert "youth_district" in sql
+    assert "youth_gender" in sql
