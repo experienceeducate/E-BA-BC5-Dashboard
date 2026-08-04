@@ -457,63 +457,6 @@ def awareness_kyc(
     }
 
 
-@router.get("/api/recruitment/awareness-eligible-assignment")
-def awareness_eligible_assignment(
-    user: User = Depends(current_user),
-    district: List[str] = Query(default=[]),
-    gender:   Optional[str] = Query(None),
-    cohort:   List[str] = Query(default=[]),
-):
-    """Eligible youth split by RCT treatment/control assignment (is_treatment),
-    for the Awareness Overview scorecards. Same filter shape as awareness_kyc
-    (district/gender/cohort), same table (AWARENESS_KYC — is_treatment has no
-    equivalent on the AWARENESS_SUMMARY gold table the rest of this page reads).
-
-    is_treatment coverage is sparse and cohort-dependent: 0% on BOOTCAMP_2/3
-    (predate randomization), ~11% on BOOTCAMP_4, ~84% on BOOTCAMP_5 (confirmed
-    against live data, 2026-08-04). With no cohort filter applied this endpoint
-    spans ACTIVE_COHORTS (BC4+BC5, same default as every other Awareness card),
-    so "unassigned" will usually be the majority — that's BC4's un-randomized
-    youth, not missing data, hence unassigned_count/pct is returned alongside
-    the split rather than folded into it silently.
-
-    pct_treatment/pct_control are of the ASSIGNED pool (assigned_count =
-    treatment_count + control_count), so they sum to 100 — not of eligible_count,
-    which would make both percentages read as single digits whenever BC2-4 are
-    in view for a reason that has nothing to do with the split itself.
-    """
-    where, params = build_where(
-        districts=district, gender=gender,
-        extra=[active_cohort_clause("aea", requested=cohort)], prefix="aea",
-        district_col="youth_district", gender_col="youth_gender",
-    )
-    sql = f"""
-    SELECT
-      COUNT(*) AS eligible_count,
-      COUNTIF(is_treatment = TRUE) AS treatment_count,
-      COUNTIF(is_treatment = FALSE) AS control_count,
-      COUNTIF(is_treatment IS NULL) AS unassigned_count
-    FROM {AWARENESS_KYC}
-    WHERE {where} AND elligible = TRUE
-    """
-    row = (database.run_query(sql, params, role=user.role) or [{}])[0]
-    eligible_count = row.get("eligible_count") or 0
-    treatment_count = row.get("treatment_count") or 0
-    control_count = row.get("control_count") or 0
-    unassigned_count = row.get("unassigned_count") or 0
-    assigned_count = treatment_count + control_count
-    return {
-        "eligible_count": eligible_count,
-        "treatment_count": treatment_count,
-        "control_count": control_count,
-        "unassigned_count": unassigned_count,
-        "assigned_count": assigned_count,
-        "pct_treatment": round(100 * treatment_count / assigned_count, 1) if assigned_count else None,
-        "pct_control": round(100 * control_count / assigned_count, 1) if assigned_count else None,
-        "pct_unassigned": round(100 * unassigned_count / eligible_count, 1) if eligible_count else None,
-    }
-
-
 @router.get("/api/recruitment/awareness-eligible-assignment-detail")
 def awareness_eligible_assignment_detail(
     user: User = Depends(current_user),
@@ -521,22 +464,27 @@ def awareness_eligible_assignment_detail(
     gender:   Optional[str] = Query(None),
     cohort:   List[str] = Query(default=[]),
 ):
-    """Arm x district x parish x gender grain behind the RCT assignment
-    scorecards' drill -- gender ratios per arm, then district and parish
-    within whichever arm was clicked. Same table/filters as
-    awareness_eligible_assignment; this just adds district/parish/gender to
-    the GROUP BY instead of collapsing straight to one row.
+    """Arm x district x parish x gender grain behind the Awareness Overview
+    RCT assignment card -- both its headline Treatment/Control/Unassigned
+    counts and its gender-by-district-by-parish drill are computed from this
+    one row set, the same "one parish-grain fetch feeds every rollup" shape
+    as awareness_parish feeds the rest of that page. That's what lets the
+    page's free-text district/parish search narrow this card too, instead of
+    it being the one card search skips.
 
-    Only assigned youth with a recorded parish are included (is_treatment
-    IS NOT NULL, youth_parish IS NOT NULL), so summing this endpoint's rows
-    for one arm can undercount that arm's headline treatment_count/
-    control_count by however many assigned youth have no parish on file --
-    same tradeoff awareness_parish already makes for its own totals.
+    Arm is 'Treatment' / 'Control' / 'Unassigned' (is_treatment TRUE / FALSE /
+    NULL) -- unlike the drill's own levels, Unassigned is included here so the
+    card's "N eligible youth have no assignment yet" figure stays search-
+    filterable too. Coverage is sparse and cohort-dependent: 0% on BOOTCAMP_2/3
+    (predate randomization), ~11% on BOOTCAMP_4, ~84% on BOOTCAMP_5 (confirmed
+    against live data, 2026-08-04) -- with no cohort filter this spans
+    ACTIVE_COHORTS (BC4+BC5), so Unassigned is usually the majority.
 
-    One flat row set (frontend rolls it up to arm, then arm+district, then
-    arm+district+parish) rather than three endpoints, matching how this
-    page's other drills already reuse one parish-grain fetch for every
-    level.
+    Only youth with a recorded parish are included (youth_parish IS NOT NULL)
+    -- same tradeoff awareness_parish already makes for its own totals, so a
+    handful of eligible youth with no parish on file won't appear in any of
+    this card's counts, same as they're already missing from the rest of the
+    page's score cards.
     """
     where, params = build_where(
         districts=district, gender=gender,
@@ -545,13 +493,13 @@ def awareness_eligible_assignment_detail(
     )
     sql = f"""
     SELECT
-      CASE WHEN is_treatment = TRUE THEN 'Treatment' WHEN is_treatment = FALSE THEN 'Control' END AS arm,
+      CASE WHEN is_treatment = TRUE THEN 'Treatment' WHEN is_treatment = FALSE THEN 'Control' ELSE 'Unassigned' END AS arm,
       UPPER(youth_district) AS district,
       youth_parish AS parish,
       COUNTIF(UPPER(youth_gender) = 'FEMALE') AS female,
       COUNTIF(UPPER(youth_gender) = 'MALE') AS male
     FROM {AWARENESS_KYC}
-    WHERE {where} AND elligible = TRUE AND is_treatment IS NOT NULL AND youth_parish IS NOT NULL
+    WHERE {where} AND elligible = TRUE AND youth_parish IS NOT NULL
     GROUP BY arm, district, parish
     """
     rows = database.run_query(sql, params, role=user.role) or []

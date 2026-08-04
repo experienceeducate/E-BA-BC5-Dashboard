@@ -1145,6 +1145,33 @@ function armParishRows(detailRows, arm, district) {
     .sort((a, b) => (b.female + b.male) - (a.female + a.male));
 }
 
+// RCT assignment card's headline counts, derived from the same detail rows
+// as its drill (including the Unassigned bucket the drill itself doesn't
+// show) -- so a district/parish search narrows this card exactly like every
+// other one on the page, instead of it being the one card search skips.
+function assignmentTotals(detailRows) {
+  const byArm = { Treatment: 0, Control: 0, Unassigned: 0 };
+  detailRows.forEach((r) => {
+    if (byArm[r.arm] == null) return;
+    byArm[r.arm] += (r.female || 0) + (r.male || 0);
+  });
+  const treatment_count = byArm.Treatment;
+  const control_count = byArm.Control;
+  const unassigned_count = byArm.Unassigned;
+  const assigned_count = treatment_count + control_count;
+  const eligible_count = assigned_count + unassigned_count;
+  return {
+    eligible_count,
+    treatment_count,
+    control_count,
+    unassigned_count,
+    assigned_count,
+    pct_treatment: assigned_count ? Math.round((1000 * treatment_count) / assigned_count) / 10 : null,
+    pct_control: assigned_count ? Math.round((1000 * control_count) / assigned_count) / 10 : null,
+    pct_unassigned: eligible_count ? Math.round((1000 * unassigned_count) / eligible_count) / 10 : null,
+  };
+}
+
 function AwarenessOverviewPage({ filters }) {
   const drill = useDrill();
   const [search, setSearch] = useState("");
@@ -1154,14 +1181,13 @@ function AwarenessOverviewPage({ filters }) {
   const parish = useApi(`/api/recruitment/awareness-parish${buildParams(filters)}`);
   // Separate fetch: RCT treatment/control assignment lives per-youth on the
   // silver KYC table (AWARENESS_KYC), not on the gold parish summary every
-  // other card on this page reads — the two can't share one query.
-  const assignment = useApi(`/api/recruitment/awareness-eligible-assignment${buildParams(filters)}`);
-  // Arm x district x parish gender breakdown behind the RCT cards' drill —
-  // fetched once at page load like `parish`, then rolled up client-side to
-  // whichever level (arm / district / parish) the drill is showing.
+  // other card on this page reads — the two can't share one query. Fetched
+  // once at page load like `parish`, then rolled up client-side to whichever
+  // level (card totals, or the drill's arm/district/parish) is needed.
   const assignmentDetail = useApi(`/api/recruitment/awareness-eligible-assignment-detail${buildParams(filters)}`);
 
   const parishRowsRaw = parish.data?.parishes || [];
+  const assignmentRowsRaw = assignmentDetail.data?.rows || [];
 
   // Universal search: every metric on this page — score cards, funnel chart,
   // gauges, District comparison, and the parish table — is computed straight
@@ -1177,6 +1203,14 @@ function AwarenessOverviewPage({ filters }) {
   const matchedParishRowsForSearch = q
     ? parishRowsRaw.filter((r) => (r.district || "").toLowerCase().includes(q) || (r.parish || "").toLowerCase().includes(q))
     : parishRowsRaw;
+
+  // Same search narrowing, applied to the RCT assignment detail rows so the
+  // "Eligible youth — RCT assignment" card and its drill match every other
+  // card on this page instead of staying at the filters-only total.
+  const matchedAssignmentRowsForSearch = q
+    ? assignmentRowsRaw.filter((r) => (r.district || "").toLowerCase().includes(q) || (r.parish || "").toLowerCase().includes(q))
+    : assignmentRowsRaw;
+  const assignmentAgg = assignmentTotals(matchedAssignmentRowsForSearch);
 
   // District comparison table + its drills: matched parishes rolled up by
   // district (groupParishRowsByDistrict, module-scope above) — narrows in
@@ -1235,9 +1269,10 @@ function AwarenessOverviewPage({ filters }) {
   // within whichever arm was clicked. "‹ Back" from the district table goes
   // to the arm root (both Treatment and Control gender ratios), matching
   // openAt's usual use — the click already identifies the arm, no need to
-  // make the user pick it again from that root list.
+  // make the user pick it again from that root list. Reads the same
+  // search-matched rows as the card itself, so drilling in doesn't reset
+  // whatever district/parish search is active.
   function openArmAssignmentDrill(arm) {
-    const detailRows = assignmentDetail.data?.rows || [];
     const spec = {
       title: "Eligible youth — RCT assignment, by gender",
       tone: "real", tagLabel: "REAL",
@@ -1247,13 +1282,13 @@ function AwarenessOverviewPage({ filters }) {
         { key: "male", label: "Male", align: "right", render: fmtNum },
         { key: "pct_female", label: "% Female", align: "right", render: fmtPct },
       ],
-      rootRows: () => armRootRows(assignmentDetail.data?.rows || []),
+      rootRows: () => armRootRows(matchedAssignmentRowsForSearch),
       childKey: "district", childLabel: "District",
-      getChildRows: (root) => armDistrictRows(assignmentDetail.data?.rows || [], root.arm),
+      getChildRows: (root) => armDistrictRows(matchedAssignmentRowsForSearch, root.arm),
       grandchildKey: "parish", grandchildLabel: "Parish",
-      getGrandchildRows: (child) => armParishRows(assignmentDetail.data?.rows || [], child.arm, child.district),
+      getGrandchildRows: (child) => armParishRows(matchedAssignmentRowsForSearch, child.arm, child.district),
     };
-    const rootRow = armRootRows(detailRows).find((r) => r.arm === arm) || { arm, female: 0, male: 0, pct_female: null };
+    const rootRow = armRootRows(matchedAssignmentRowsForSearch).find((r) => r.arm === arm) || { arm, female: 0, male: 0, pct_female: null };
     drill.openAt(spec, rootRow);
   }
 
@@ -1391,7 +1426,7 @@ function AwarenessOverviewPage({ filters }) {
         style={{ width: "100%", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5, marginBottom: 4 }}
       />
       <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
-        Filters every metric on this page to the exact parish or district you search for — score cards, the funnel chart, gauges, District comparison, and the parish table below.
+        Filters every metric on this page to the exact parish or district you search for — score cards, the RCT assignment card and its drill, the funnel chart, gauges, District comparison, and the parish table below.
       </div>
 
       <Grid cols={4}>
@@ -1430,22 +1465,22 @@ function AwarenessOverviewPage({ filters }) {
         subtitle="Of eligible youth with a recorded Treatment/Control assignment, the share in each arm. Coverage is cohort-dependent — BOOTCAMP_2/3 predate randomization and BOOTCAMP_4 is only partially assigned, so 'not yet assigned' is usually the majority whenever those cohorts are in view; narrow the cohort filter to BOOTCAMP_5 to see where assignment is most complete. Click either card for the gender split, by district and parish."
         chip="REAL"
       >
-        <State loading={assignment.loading} error={assignment.error} empty={!assignment.loading && !assignment.data?.eligible_count}>
+        <State loading={assignmentDetail.loading} error={assignmentDetail.error} empty={!assignmentDetail.loading && !assignmentAgg.eligible_count}>
           <Grid cols={2}>
             <KpiTile
-              label="Eligible — Treatment" value={fmtNum(assignment.data?.treatment_count)}
-              sub={assignment.data?.pct_treatment != null ? `${fmtPct(assignment.data.pct_treatment)} of assigned eligible youth` : undefined}
+              label="Eligible — Treatment" value={fmtNum(assignmentAgg.treatment_count)}
+              sub={assignmentAgg.pct_treatment != null ? `${fmtPct(assignmentAgg.pct_treatment)} of assigned eligible youth` : undefined}
               onClick={() => openArmAssignmentDrill("Treatment")}
             />
             <KpiTile
-              label="Eligible — Control" value={fmtNum(assignment.data?.control_count)}
-              sub={assignment.data?.pct_control != null ? `${fmtPct(assignment.data.pct_control)} of assigned eligible youth` : undefined}
+              label="Eligible — Control" value={fmtNum(assignmentAgg.control_count)}
+              sub={assignmentAgg.pct_control != null ? `${fmtPct(assignmentAgg.pct_control)} of assigned eligible youth` : undefined}
               onClick={() => openArmAssignmentDrill("Control")}
             />
           </Grid>
-          {assignment.data?.unassigned_count > 0 && (
+          {assignmentAgg.unassigned_count > 0 && (
             <p style={{ fontSize: 11, color: C.muted, marginTop: -6 }}>
-              <b>{fmtNum(assignment.data.unassigned_count)}</b> eligible youth ({fmtPct(assignment.data.pct_unassigned)} of {fmtNum(assignment.data.eligible_count)}) have no Treatment/Control assignment recorded yet — not folded into the percentages above, which are of the assigned pool only.
+              <b>{fmtNum(assignmentAgg.unassigned_count)}</b> eligible youth ({fmtPct(assignmentAgg.pct_unassigned)} of {fmtNum(assignmentAgg.eligible_count)}) have no Treatment/Control assignment recorded yet — not folded into the percentages above, which are of the assigned pool only.
             </p>
           )}
         </State>
@@ -1496,15 +1531,14 @@ function AwarenessOverviewPage({ filters }) {
           <DataTable
             columns={[
               { key: "district", label: "District" },
-              { key: "registered", label: "Reached", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("registered", "Reached") },
-              { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("interested", "Interested") },
-              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v), onHeaderClick: () => openMetricDrill("eligible", "Eligible") },
+              { key: "registered", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
+              { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
               {
                 key: "target", label: "Target", align: "right",
                 render: (v, r) => <span title={r.usesHardcodedTarget ? "Includes the hardcoded BC5 planning target for at least one parish in this district" : "Live registration_target"}>{fmtNum(v)}{r.usesHardcodedTarget ? " *" : ""}</span>,
-                onHeaderClick: () => openMetricDrill("target", "Registration target"),
               },
-              { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell, onHeaderClick: () => openMetricDrill("pct_female", "% Female", fmtPct) },
+              { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
               { key: "rate", label: "Progress", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
               { key: "category", label: "Status", render: (v) => <span style={{ background: `${RATE_CATEGORY_COLOR[v]}22`, color: RATE_CATEGORY_COLOR[v], fontWeight: 700, fontSize: 11, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>{v}</span> },
             ]}

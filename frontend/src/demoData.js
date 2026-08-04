@@ -138,26 +138,12 @@ export const DEMO = {
     ],
   },
 
-  // Mirrors the live endpoint's shape and its usual pattern: unassigned is
-  // the majority by default (spans ACTIVE_COHORTS, and BC4 is only ~11%
-  // assigned), assigned pool splits roughly 66/34 treatment/control as BC5's
-  // live numbers do.
-  "/api/recruitment/awareness-eligible-assignment": {
-    eligible_count: 8072,
-    treatment_count: 1338,
-    control_count: 677,
-    unassigned_count: 6057,
-    assigned_count: 2015,
-    pct_treatment: 66.4,
-    pct_control: 33.6,
-    pct_unassigned: 75.0,
-  },
-
-  // Arm x district x parish x gender grain behind the RCT assignment card's
-  // drill. Female/male sums per arm land close to the summary endpoint's
-  // treatment_count/control_count above (BUGIRI+IGANGA only, so a bit short
-  // of the full 1338/677 -- same "parish-grain undercounts the headline"
-  // tradeoff awareness_parish already has).
+  // Arm x district x parish x gender grain behind the RCT assignment card --
+  // both its headline Treatment/Control/Unassigned counts and its drill are
+  // derived from these same rows (mirrors the live endpoint: unassigned is
+  // the majority by default since it spans ACTIVE_COHORTS and BC4 is only
+  // ~11% assigned; the assigned pool splits roughly 66/34 treatment/control
+  // as BC5's live numbers do).
   "/api/recruitment/awareness-eligible-assignment-detail": {
     rows: [
       { arm: "Treatment", district: "BUGIRI", parish: "BULIDHA", female: 210, male: 168 },
@@ -168,6 +154,10 @@ export const DEMO = {
       { arm: "Control", district: "BUGIRI", parish: "BUWUNGA", female: 70, male: 56 },
       { arm: "Control", district: "IGANGA", parish: "IGANGA TOWN COUNCIL", female: 130, male: 104 },
       { arm: "Control", district: "IGANGA", parish: "NAMALEMBA", female: 60, male: 48 },
+      { arm: "Unassigned", district: "BUGIRI", parish: "BULIDHA", female: 950, male: 760 },
+      { arm: "Unassigned", district: "BUGIRI", parish: "BUWUNGA", female: 630, male: 504 },
+      { arm: "Unassigned", district: "IGANGA", parish: "IGANGA TOWN COUNCIL", female: 1170, male: 936 },
+      { arm: "Unassigned", district: "IGANGA", parish: "NAMALEMBA", female: 540, male: 432 },
     ],
   },
 
