@@ -2800,23 +2800,40 @@ function MobRecruitmentFunnelPage({ filters }) {
   ];
 
   // Venue rows have no auto-confirm/treatment-target split (no venue-level
-  // awareness data exists — see mobilisation_heatmap()), so they keep the
-  // simpler call-center-only column set.
-  const parishVenueColumns = [
-    { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
-    { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-    { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-    { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
-    { key: "progressPct", label: "% Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
-    { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+  // awareness data exists — see mobilisation_heatmap()), so there's no
+  // "Auto-confirmed" block to show — but still grouped the same way as
+  // Parish (GroupedDataTable, color-coded blocks) for a consistent look
+  // switching between the two. Assigned/Reached live in the Call-center
+  // block; Confirmed/Target/% vs target/% Female live in Total, since
+  // Confirmed here already IS the total (there's no second source to sum
+  // in) — keeping it to one column, not duplicated across both blocks.
+  const venueGroups = [
+    {
+      label: "Call-center", color: C.teal,
+      columns: [
+        { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+        { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+      ],
+    },
+    {
+      label: "Total", color: C.inkSoft,
+      columns: [
+        { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+        { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
+        { key: "progressPct", label: "% vs target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+        { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+      ],
+    },
+  ];
+  const venueTrailingColumns = [
     { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
   ];
 
-  // Parish vs Venue is a plain grain toggle, not a drill — both tables are
-  // always District + (Parish|Venue) + the same metric columns, switched by
-  // clicking one of two tabs. Parish is the default (per the recruitment
-  // team, 2026-08-04) since it's the grain with real combined numbers;
-  // Venue only has the call-center component (see parishVenueColumns' note).
+  // Parish vs Venue is a plain grain toggle, not a drill — both tables use
+  // the same GroupedDataTable layout, switched by clicking one of two tabs.
+  // Parish is the default (per the recruitment team, 2026-08-04) since it's
+  // the grain with real combined numbers; Venue only has the call-center
+  // component (see venueGroups' note).
   const venueCatCounts = { All: venueRows.length };
   RATE_CATEGORY_ORDER.forEach((c) => { venueCatCounts[c] = venueRows.filter((v) => v.category === c).length; });
   const filteredVenueRows = (parishCat === "All" ? venueRows : venueRows.filter((v) => v.category === parishCat))
@@ -2973,8 +2990,10 @@ function MobRecruitmentFunnelPage({ filters }) {
               rows={filteredParishRows}
             />
           ) : (
-            <DataTable
-              columns={[{ key: "district", label: "District" }, { key: "venue", label: "Venue" }, ...parishVenueColumns]}
+            <GroupedDataTable
+              leading={[{ key: "district", label: "District" }, { key: "venue", label: "Venue" }]}
+              groups={venueGroups}
+              trailing={venueTrailingColumns}
               rows={filteredVenueRows}
             />
           )}
