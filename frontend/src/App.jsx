@@ -8,7 +8,7 @@
  * Inline styles only — no CSS framework.
  */
 
-import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, Fragment, isValidElement, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, ComposedChart, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, Cell,
@@ -90,7 +90,14 @@ function apiGet(endpoint) {
 }
 
 // ─── Data hook ──────────────────────────────────────────────────────────────────
-function useApi(endpoint) {
+// `pollMs` is opt-in (undefined for every existing caller — identical
+// behavior to before) — pass it for a page that should keep itself current
+// against live BigQuery without a manual reload (e.g. Call Centre Insights,
+// whose free-text classification re-runs over whatever rows exist right
+// now). A poll refresh is silent — no loading spinner, no error card on a
+// transient failure — so it never disrupts someone actively reading the
+// page; only a successful poll replaces the shown data.
+function useApi(endpoint, { pollMs } = {}) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -98,37 +105,46 @@ function useApi(endpoint) {
 
   useEffect(() => {
     let alive = true;
-    // Resetting load/error state at the start of a (re)fetch is the intended
-    // React<->network sync point; the strict rule flags it as a false positive.
-    /* eslint-disable react-hooks/set-state-in-effect */
-    setLoading(true);
-    setError(null);
-    setIsDemo(false);
-    /* eslint-enable react-hooks/set-state-in-effect */
-    const token = getToken();
-    fetch(`${API_BASE}${endpoint}`, {
-      headers: { Authorization: `Bearer ${token}`, ...CLIENT_HEADER },
-    })
-      .then((res) => {
-        if (res.status === 401) { logout(); return null; }
-        if (!res.ok) { const err = new Error(`API ${res.status}`); err.status = res.status; throw err; }
-        return res.json();
+    let intervalId;
+
+    function load(background) {
+      // Resetting load/error state at the start of a (re)fetch is the intended
+      // React<->network sync point — done from a plain function called out of
+      // the effect, not the effect body itself, so the strict rule doesn't
+      // flag it here the way it did with this logic inline.
+      if (!background) {
+        setLoading(true);
+        setError(null);
+        setIsDemo(false);
+      }
+      const token = getToken();
+      fetch(`${API_BASE}${endpoint}`, {
+        headers: { Authorization: `Bearer ${token}`, ...CLIENT_HEADER },
       })
-      .then((json) => { if (alive && json !== null) setData(json); })
-      .catch((e) => {
-        if (!alive) return;
-        // "Not connected to live data" cases — a 503 (upstream BigQuery table
-        // missing, i.e. the BC5 feed isn't live) or an unreachable API — fall
-        // back to bundled demo data so the panel still shows how it will look.
-        // A genuine server error (500, etc.) still surfaces as an error card.
-        const demo = DEMO[endpoint.split("?")[0]];
-        const disconnected = e.status === 503 || e.status === undefined;
-        if (demo && disconnected) { setData(demo); setIsDemo(true); }
-        else { setError(e.message); }
-      })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [endpoint]);
+        .then((res) => {
+          if (res.status === 401) { logout(); return null; }
+          if (!res.ok) { const err = new Error(`API ${res.status}`); err.status = res.status; throw err; }
+          return res.json();
+        })
+        .then((json) => { if (alive && json !== null) setData(json); })
+        .catch((e) => {
+          if (!alive || background) return;
+          // "Not connected to live data" cases — a 503 (upstream BigQuery table
+          // missing, i.e. the BC5 feed isn't live) or an unreachable API — fall
+          // back to bundled demo data so the panel still shows how it will look.
+          // A genuine server error (500, etc.) still surfaces as an error card.
+          const demo = DEMO[endpoint.split("?")[0]];
+          const disconnected = e.status === 503 || e.status === undefined;
+          if (demo && disconnected) { setData(demo); setIsDemo(true); }
+          else { setError(e.message); }
+        })
+        .finally(() => { if (alive && !background) setLoading(false); });
+    }
+
+    load(false);
+    if (pollMs) intervalId = setInterval(() => load(true), pollMs);
+    return () => { alive = false; if (intervalId) clearInterval(intervalId); };
+  }, [endpoint, pollMs]);
 
   return { data, error, loading, isDemo };
 }
@@ -194,10 +210,38 @@ function Card({ title, subtitle, children, chip, chipTone = "real" }) {
 // border + tiny corner tag as the real/sample data-provenance signal.
 // onClick, when given, makes the tile a drill trigger — matches the reference
 // design's "hover and you'll see a click-to-drill cue" convention.
+//
+// The border follows RAG, not just data-provenance, whenever `value` is
+// already a color-coded `<span style={{color: X}}>...</span>` — the
+// established pattern every rate-vs-target tile already uses (rateColor,
+// categorizeRate+RATE_CATEGORY_COLOR, femaleShareStatus, callReachColor).
+// Picking that color up here means every such tile gets a matching border
+// for free, with no per-call-site change — a tile with no target (a plain
+// count) has no colored span, so it falls back to the tone-based green/coral
+// provenance color exactly as before.
+// Recurses into Fragments/children (not just the top-level element) since a
+// few tiles mix a colored span with plain trailing text — e.g. "Confirmed
+// female"'s sub is `<>{coloredSpan} of confirmed · target 60%</>`, a
+// Fragment whose own style is never set.
+function kpiTileColorOf(node) {
+  if (!isValidElement(node)) return undefined;
+  if (node.props?.style?.color) return node.props.style.color;
+  const kids = node.props?.children;
+  for (const child of Array.isArray(kids) ? kids : [kids]) {
+    const found = kpiTileColorOf(child);
+    if (found) return found;
+  }
+  return undefined;
+}
 function KpiTile({ label, value, sub, tone = "real", tag, onClick, hint }) {
   const t = CHIP_TONE[tone] || CHIP_TONE.real;
+  // `sub` fallback covers tiles where the headline value is a plain count and
+  // the RAG-evaluated rate lives in the caption instead (e.g. "Confirmed
+  // female" — the count itself has no target, only its % of total does).
+  const ragColor = kpiTileColorOf(value) || kpiTileColorOf(sub);
+  const border = ragColor || t.color;
   return (
-    <div onClick={onClick} style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: "11px 13px 10px", borderTop: `3px solid ${t.color}`, position: "relative", cursor: onClick ? "pointer" : undefined }}>
+    <div onClick={onClick} style={{ background: C.white, border: `1px solid ${C.line}`, borderRadius: 6, padding: "11px 13px 10px", borderTop: `3px solid ${border}`, position: "relative", cursor: onClick ? "pointer" : undefined }}>
       {tag && <span style={{ position: "absolute", top: 8, right: 9, fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: t.color }}>{tag}</span>}
       <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, fontWeight: 600, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 20, fontWeight: 600, color: C.ink, lineHeight: 1.1 }}>{value ?? "—"}{onClick && !hint && <span style={{ fontSize: 12, color: C.muted, marginLeft: 6 }}>›</span>}</div>
@@ -660,6 +704,59 @@ function DataTable({ columns, rows, onRowClick }) {
   );
 }
 
+// Same look as DataTable, but with a second header band grouping columns
+// under a tinted, spanning label (e.g. "Call-center" / "Auto-confirmed" /
+// "Total") — for tables wide enough that a flat row of column headers alone
+// makes it hard to tell which numbers belong together at a glance.
+// `leading`/`trailing` render as normal ungrouped columns (name, Status);
+// `groups` is [{ label, color, columns }] — each group's columns get a
+// left border + the group's tinted spanning header so the visual grouping
+// carries down into the body, not just the header.
+function GroupedDataTable({ leading, groups, trailing, rows }) {
+  const grouped = groups.flatMap((g) => g.columns.map((c, i) => ({ ...c, groupColor: g.color, groupStart: i === 0 })));
+  const thStyle = { padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11 };
+  const tdStyle = { padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text };
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr>
+            {(leading || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom" }}>{c.label}</th>)}
+            {groups.map((g) => (
+              <th key={g.label} colSpan={g.columns.length} style={{ padding: "6px 10px", borderBottom: `1px solid ${C.line}`, borderLeft: `2px solid ${C.line}`, background: `${g.color}18`, color: g.color, fontWeight: 700, textTransform: "uppercase", fontSize: 10.5, textAlign: "center" }}>
+                {g.label}
+              </th>
+            ))}
+            {(trailing || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom" }}>{c.label}</th>)}
+          </tr>
+          <tr>
+            {grouped.map((c) => (
+              <th key={c.key} style={{ ...thStyle, textAlign: c.align || "left", borderLeft: c.groupStart ? `2px solid ${C.line}` : undefined }}>{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>
+              {(leading || []).map((c) => (
+                <td key={c.key} style={{ ...tdStyle, textAlign: c.align || "left" }}>{c.render ? c.render(r[c.key], r) : (r[c.key] ?? "—")}</td>
+              ))}
+              {grouped.map((c) => (
+                <td key={c.key} style={{ ...tdStyle, textAlign: c.align || "left", borderLeft: c.groupStart ? `2px solid ${C.line}` : undefined, background: `${c.groupColor}0c` }}>
+                  {c.render ? c.render(r[c.key], r) : (r[c.key] ?? "—")}
+                </td>
+              ))}
+              {(trailing || []).map((c) => (
+                <td key={c.key} style={{ ...tdStyle, textAlign: c.align || "left" }}>{c.render ? c.render(r[c.key], r) : (r[c.key] ?? "—")}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ─── Executive Summary ───────────────────────────────────────────────────────
 const RATE_TARGETS = {
   eligibility_rate:  { good: 80, warn: 70, label: "Eligibility" },
@@ -668,6 +765,7 @@ const RATE_TARGETS = {
   activation_rate:   { good: 90, warn: 80, label: "Activation" },
   retention_rate:    { good: 85, warn: 75, label: "Retention" },
   attendance_rate:   { good: 95, warn: 90, label: "Attendance" },
+  reach_rate:        { good: 70, warn: 60, label: "Reach" },
 };
 
 // One color rule for every rate-vs-target figure that uses RATE_TARGETS'
@@ -1001,7 +1099,7 @@ function CohortComparisonPage() {
             columns={[
               { key: "cohort", label: "Cohort" },
               { key: "assigned", label: "# Assigned", align: "right", render: (v) => fmtNum(v) },
-              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "reach_rate", label: "Reach rate", align: "right", render: renderRateCell("reach_rate") },
               { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
               { key: "progress_pct", label: "Progress on target", align: "right", render: renderProgressPctCell },
               { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
@@ -2500,7 +2598,7 @@ function MobilisationTab({ filters }) {
       {page === "forecast" && <MobForecastsPage filters={filters} />}
       {page === "mobilisers" && <MobPerformancePage filters={filters} />}
       {page === "control" && <MobControlCallsPage />}
-      {page === "insights" && <MobCallCentreInsightsPage filters={filters} />}
+      {page === "insights" && <MobCallCentreInsightsPage />}
     </div>
   );
 }
@@ -2512,18 +2610,13 @@ function MobRecruitmentFunnelPage({ filters }) {
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
   const data = mob.data;
+  const [parishCat, setParishCat] = useState("All");
+  const [mobGrain, setMobGrain] = useState("parish");
   // Venue-grain only — no insight here depends on call_date. Day-level
   // tracking has proven sparse/unreliable for some cohorts (see the by_venue/
   // by_day split below), so score cards and insights are built entirely from
   // venue and cohort aggregates, which are consistently populated.
   const byVenue = heatmap.data?.by_venue || [];
-  // District-grain, not venue-grain: assigned/target (preload_youth/
-  // mobilisation_target) have no venue dimension in the source table at all
-  // (see tables.py), so the District performance table — which needs
-  // assigned alongside reached/confirmed for reach/mobilisation rate — has
-  // to roll up by district.
-  const byDistrict = heatmap.data?.by_district || [];
-  const [districtCat, setDistrictCat] = useState("All");
 
   // Same N+1-per-district approach as Executive Summary: /api/recruitment/
   // mobilisation already accepts a `district` filter but only ever returns
@@ -2538,76 +2631,134 @@ function MobRecruitmentFunnelPage({ filters }) {
     });
   }
 
-  // `target` comes from a hardcoded per-venue list (see VENUE_MOBILISATION_
-  // TARGET in tables.py — BigQuery has no real per-venue target). `rate`/
-  // `conversionCategory` (confirmed ÷ reached — call-center conversion) drive
-  // the Insights section below unchanged; `progressPct`/`category` (confirmed
-  // ÷ target) are a distinct signal that drives the categorisation table's
-  // filtering/Status instead, same basis as the district table. No per-venue
-  // "assigned" exists in that list or anywhere else, so Reach rate/
-  // Mobilisation rate (both ÷ assigned) can't be shown for venues.
+  // `target`/`assigned` are live per-venue where the cohort's target measure
+  // carries venue_name (confirmed for BOOTCAMP_5's 'venue_targets'), else
+  // `target` falls back to the hardcoded VENUE_MOBILISATION_TARGET and
+  // `assigned` stays 0 (see mobilisation_heatmap()). `rate`/`conversionCategory`
+  // (confirmed ÷ reached — call-center conversion) drive the Insights section
+  // below; `progressPct`/`category` (confirmed ÷ target) drive the merged
+  // District → Parish → Venue categorisation table/drill instead.
   const venueRows = byVenue.map((v) => {
-    const reached = v.reached || 0, confirmed = v.confirmed || 0, target = v.target ?? null;
+    const assigned = v.assigned || 0, reached = v.reached || 0, confirmed = v.confirmed || 0, target = v.target ?? null;
     const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
     const pctFemale = confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null;
     const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
-    return { district: v.district, venue: v.venue, reached, confirmed, pctFemale, target, rate, conversionCategory: categorizeRate(rate), progressPct, category: categorizeRate(progressPct) };
+    return { district: v.district, parish: v.parish, venue: v.venue, assigned, reached, confirmed, pctFemale, target, rate, conversionCategory: categorizeRate(rate), progressPct, category: categorizeRate(progressPct) };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
 
-  // Same shape as the "4-week vs 2.5-week cycle" table (assigned/reached/
-  // confirmed/reach rate/mobilisation rate/% female), rolled up by district
-  // instead of by cycle segment. assigned/target come straight off
-  // DAILY_ACQUISITION_SUMMARY's district-grain 'targets' rows (see
-  // mobilisation-heatmap) — progressPct/category (confirmed ÷ target) drive
-  // the Performance categorisation table below.
-  const districtRows = byDistrict.map((d) => {
-    const assigned = d.assigned || 0, target = d.target || 0, reached = d.reached || 0, confirmed = d.confirmed || 0;
-    const reachRate = assigned ? Math.round((1000 * reached) / assigned) / 10 : null;
-    const mobilisationRate = assigned ? Math.round((1000 * confirmed) / assigned) / 10 : null;
-    const pctFemale = confirmed ? Math.round((1000 * (d.confirmed_female || 0)) / confirmed) / 10 : null;
-    const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
-    return { district: d.district, assigned, target, reached, confirmed, reachRate, mobilisationRate, pctFemale, progressPct, category: categorizeRate(progressPct) };
-  }).sort((a, b) => b.confirmed - a.confirmed);
+  // Parish grain — the main visible/filterable table on this page (per the
+  // recruitment team, 2026-08-04: parishes are the useful grain to see
+  // directly; district only has 2 rows for BC5, too coarse to be the primary
+  // table). Every count is disaggregated by source — call-center (from
+  // 'daily_aggregates') vs the auto-confirm awareness pathway — AND checked
+  // against each source's OWN target, per the recruitment team, 2026-08-04:
+  // one blended progress % hid which pathway was actually driving (or
+  // missing) progress. mobilisationTarget is the acquisition-side target;
+  // treatmentTarget is this parish's share of the awareness-stage eligible
+  // target (BC5-only). target/confirmed/reached/pctFemale stay as the
+  // combined totals too, for the district-level summary card and anything
+  // that just wants one number. See mobilisation_heatmap()'s docstring for
+  // why the call-center component was 0 before the agent_district fix.
+  function buildSourceRow(p) {
+    const assigned = p.assigned || 0;
+    const mobilisationTarget = p.mobilisation_target || 0, treatmentTarget = p.treatment_target || 0;
+    const target = p.target || 0;
+    const callCentreReached = p.call_centre_reached || 0, callCentreConfirmed = p.call_centre_confirmed || 0;
+    const callCentreConfirmedFemale = p.call_centre_confirmed_female || 0;
+    const autoConfirmed = p.auto_confirmed || 0, autoConfirmedFemale = p.auto_confirmed_female || 0;
+    const reached = p.reached || 0, confirmed = p.confirmed || 0, confirmedFemale = p.confirmed_female || 0;
+    // Whole-number percentages throughout this table (not the usual 1dp) —
+    // it's already dense with numbers, one less digit per cell helps it
+    // read at a glance.
+    const progressPct = target ? Math.round((100 * confirmed) / target) : null;
+    return {
+      district: p.district, parish: p.parish, assigned,
+      mobilisationTarget, treatmentTarget, target,
+      callCentreReached, callCentreConfirmed,
+      callCentrePctFemale: callCentreConfirmed ? Math.round((100 * callCentreConfirmedFemale) / callCentreConfirmed) : null,
+      callCentreProgressPct: mobilisationTarget ? Math.round((100 * callCentreConfirmed) / mobilisationTarget) : null,
+      autoConfirmed,
+      autoPctFemale: autoConfirmed ? Math.round((100 * autoConfirmedFemale) / autoConfirmed) : null,
+      autoProgressPct: treatmentTarget ? Math.round((100 * autoConfirmed) / treatmentTarget) : null,
+      reached, confirmed,
+      pctFemale: confirmed ? Math.round((100 * confirmedFemale) / confirmed) : null,
+      progressPct, category: categorizeRate(progressPct),
+    };
+  }
 
-  const districtCatCounts = { All: districtRows.length };
-  RATE_CATEGORY_ORDER.forEach((c) => { districtCatCounts[c] = districtRows.filter((d) => d.category === c).length; });
-  const filteredDistrictRows = (districtCat === "All" ? districtRows : districtRows.filter((d) => d.category === districtCat))
+  const byParish = heatmap.data?.by_parish || [];
+  const parishRows = byParish.map(buildSourceRow).sort((a, b) => b.confirmed - a.confirmed);
+  const byDistrictTotals = heatmap.data?.by_district || [];
+  const districtTotalRows = byDistrictTotals.map(buildSourceRow).sort((a, b) => b.confirmed - a.confirmed);
+
+  const parishCatCounts = { All: parishRows.length };
+  RATE_CATEGORY_ORDER.forEach((c) => { parishCatCounts[c] = parishRows.filter((p) => p.category === c).length; });
+  const filteredParishRows = (parishCat === "All" ? parishRows : parishRows.filter((p) => p.category === parishCat))
     .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
 
-  // Columns shared by the drill's district (root) and venue (child) rows —
-  // both objects carry these exact same keys, so one column set renders
-  // either grain correctly. Assigned/Reach rate/Mobilisation rate are left
-  // out here even though districtRows has them: venueRows doesn't (no
-  // per-venue Assigned anywhere), and the drill reuses one column set for
-  // both levels.
-  const districtVenueDrillColumns = [
-    { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
-    { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-    { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-    { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
-    { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+  // Same columns as before, regrouped for GroupedDataTable — three
+  // color-coded, bordered blocks (Call-center / Auto-confirmed / Total)
+  // instead of one flat row of 12 numbers, so it's visually obvious which
+  // figures belong together without reading every header. Every percentage
+  // still RAG-colored (progressPct/category via RATE_CATEGORY_COLOR, %
+  // Female via renderPctFemaleCell's own bands).
+  const sourceGroups = [
+    {
+      label: "Call-center", color: C.teal,
+      columns: [
+        { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+        { key: "callCentreReached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+        { key: "callCentreConfirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+        { key: "callCentreProgressPct", label: "% vs target", align: "right", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(v)], fontWeight: 700 }}>{fmtPct(v)}</span> },
+        { key: "callCentrePctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+      ],
+    },
+    {
+      label: "Auto-confirmed (awareness)", color: C.gold,
+      columns: [
+        { key: "autoConfirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+        { key: "autoProgressPct", label: "% vs target", align: "right", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(v)], fontWeight: 700 }}>{fmtPct(v)}</span> },
+        { key: "autoPctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+      ],
+    },
+    {
+      label: "Total", color: C.inkSoft,
+      columns: [
+        { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+        { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
+        { key: "progressPct", label: "% vs target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+        { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+      ],
+    },
+  ];
+  const sourceTrailingColumns = [
     { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
   ];
 
-  // Row click on District performance vs target -> straight into that
-  // district's venues (openAt skips the root list entirely); "‹ Back"
-  // still works, showing all districts in the same column shape.
-  function openDistrictVenueDrill(districtRow) {
-    drill.openAt(
-      {
-        title: "Venue performance",
-        tone: "real", tagLabel: "REAL",
-        rootKey: "district", rootLabel: "District",
-        childKey: "venue", childLabel: "Venue",
-        columns: districtVenueDrillColumns,
-        rootRows: districtRows,
-        getChildRows: (root) => venueRows.filter((v) => v.district === root.district).sort((a, b) => b.confirmed - a.confirmed),
-      },
-      districtRow
-    );
-  }
+  // Venue rows have no auto-confirm/treatment-target split (no venue-level
+  // awareness data exists — see mobilisation_heatmap()), so they keep the
+  // simpler call-center-only column set.
+  const parishVenueColumns = [
+    { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
+    { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+    { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+    { key: "target", label: "Target", align: "right", render: (v) => (v == null ? "—" : fmtNum(v)) },
+    { key: "progressPct", label: "% Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+    { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
+    { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+  ];
+
+  // Parish vs Venue is a plain grain toggle, not a drill — both tables are
+  // always District + (Parish|Venue) + the same metric columns, switched by
+  // clicking one of two tabs. Parish is the default (per the recruitment
+  // team, 2026-08-04) since it's the grain with real combined numbers;
+  // Venue only has the call-center component (see parishVenueColumns' note).
+  const venueCatCounts = { All: venueRows.length };
+  RATE_CATEGORY_ORDER.forEach((c) => { venueCatCounts[c] = venueRows.filter((v) => v.category === c).length; });
+  const filteredVenueRows = (parishCat === "All" ? venueRows : venueRows.filter((v) => v.category === parishCat))
+    .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
 
   return (
     <div>
@@ -2615,31 +2766,70 @@ function MobRecruitmentFunnelPage({ filters }) {
       <State loading={mob.loading} error={mob.error} empty={!mob.loading && !data}>
         <Grid cols={4}>
           <KpiTile label="Assigned to treatment" value={fmtNum(data?.assigned)} tag="REAL" onClick={() => openMobDrill("assigned", "Assigned to treatment")} />
-          <KpiTile label="Youth reached" value={fmtNum(data?.reached)} sub={`of ${fmtNum(data?.four_week?.assigned)} assigned (4-week cycle)`} tag="REAL" onClick={() => openMobDrill("reached", "Youth reached")} />
-          <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} sub="reached ÷ assigned (4-week cycle)" tag="REAL" onClick={() => openMobDrill("reach_rate", "Reach rate", fmtPct)} />
-          <KpiTile label="Youth confirmed" value={fmtNum(data?.confirmed)} sub={`of ${fmtNum(data?.assigned)} assigned`} tag="REAL" onClick={() => openMobDrill("confirmed", "Youth confirmed")} />
+          <KpiTile label="Youth called" value={fmtNum(data?.called)} sub={`unique youth IDs dialed, of ${fmtNum(data?.assigned)} assigned`} tag="REAL" onClick={() => openMobDrill("called", "Youth called")} />
+          <KpiTile label="Youth reached" value={fmtNum(data?.reached)} sub={`of ${fmtNum(data?.assigned)} assigned`} tag="REAL" onClick={() => openMobDrill("reached", "Youth reached")} />
+          <KpiTile label="Reach rate" value={<span style={{ color: rateColor(data?.reach_rate, "reach_rate") }}>{fmtPct(data?.reach_rate)}</span>} sub="reached ÷ assigned · target 70%" tag="REAL" onClick={() => openMobDrill("reach_rate", "Reach rate", fmtPct)} />
+          <KpiTile label="Youth confirmed" value={fmtNum(data?.confirmed)} sub={`of ${fmtNum(data?.reached)} reached`} tag="REAL" onClick={() => openMobDrill("confirmed", "Youth confirmed")} />
           <KpiTile label="Confirmed female" value={fmtNum(data?.confirmed_female)} sub={<><span style={{ color: femaleShareStatus(data?.confirmed_female_pct)?.color, fontWeight: 700 }}>{fmtPct(data?.confirmed_female_pct)}</span> of confirmed · target 60%</>} tag="REAL" onClick={() => openMobDrill("confirmed_female", "Confirmed female")} />
-          <KpiTile label="Mobilisation rate" value={<span style={{ color: rateColor(data?.mobilisation_rate, "mobilisation_rate") }}>{fmtPct(data?.mobilisation_rate)}</span>} sub="confirmed ÷ assigned to treatment" tag="REAL" onClick={() => openMobDrill("mobilisation_rate", "Mobilisation rate", fmtPct)} />
-          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(data?.progress_pct)] }}>{fmtPct(data?.progress_pct)}</span>} sub={`confirmed ÷ target (${fmtNum(data?.target)})`} tag="REAL" onClick={() => openMobDrill("progress_pct", "Progress on target", fmtPct)} />
+          <KpiTile label="Mobilisation rate" value={<span style={{ color: rateColor(data?.mobilisation_rate, "mobilisation_rate") }}>{fmtPct(data?.mobilisation_rate)}</span>} sub="confirmed ÷ reached" tag="REAL" onClick={() => openMobDrill("mobilisation_rate", "Mobilisation rate", fmtPct)} />
+          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(data?.progress_pct)] }}>{fmtPct(data?.progress_pct)}</span>} sub={`confirmed ÷ target (${fmtNum(data?.target)}) — call-center only, see Combined progress below`} tag="REAL" onClick={() => openMobDrill("progress_pct", "Progress on target", fmtPct)} />
         </Grid>
-        <Card title="4-week vs 2.5-week cycle" subtitle="The 2.5-week pilot subcounties are auto-confirmed by policy — blending them into one rate hides the real call-center conversion" chip="REAL">
+        <p style={{ fontSize: 11.5, color: C.muted, margin: "-6px 0 14px" }}>
+          Everything above is built from the call-center pathway alone (DAILY_ACQUISITION_SUMMARY) — the auto-confirmed 2.5-week pilot is deliberately kept out of these numbers so it never blends into one confusing rate. See it on its own below, and combined with this pathway in "Combined progress."
+        </p>
+        <Card title="4-week vs 2.5-week cycle" subtitle="The 2.5-week pilot subcounties are auto-confirmed by policy — a distinct pathway with its own numbers, not blended into the 4-week cycle's rates." chip="REAL">
           <DataTable
             columns={[
               { key: "label", label: "Cycle" },
               { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
               { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
               { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "reach_rate", label: "Reach rate", align: "right", render: renderRateCell("reach_rate") },
               { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
               { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
             ]}
             rows={[
-              { label: "4-week cycle", ...data?.four_week },
+              { label: "4-week cycle (call-center)", ...data?.four_week },
               { label: "2.5-week cycle (auto-confirm)", ...data?.two_half_week },
-              { label: "Overall (blended)", assigned: data?.assigned, reached: data?.reached, confirmed: data?.confirmed, reach_rate: data?.reach_rate, mobilisation_rate: data?.mobilisation_rate, pct_female: data?.confirmed_female_pct },
             ]}
           />
         </Card>
+
+        {data?.combined && (
+          <Card
+            title="Combined progress — call-center + auto-confirm"
+            subtitle="The one place both pathways are added together: auto-confirmed (awareness pilot) + confirmed (call-center), against a combined target (mobilisation target + the awareness-stage eligible target). Kept separate from the clean call-center numbers above on purpose."
+            chip="REAL"
+          >
+            <Grid cols={3}>
+              <KpiTile label="Auto-confirmed (awareness)" value={fmtNum(data.combined.auto_confirmed)} tag="REAL" />
+              <KpiTile label="Confirmed (call-center)" value={fmtNum(data.combined.call_centre_confirmed)} tag="REAL" />
+              <KpiTile label="Total so far" value={fmtNum(data.combined.total_so_far)} sub={`of ${fmtNum(data.combined.target)} combined target`} tag="REAL" />
+            </Grid>
+            <div style={{ margin: "4px 0 16px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: C.text, fontWeight: 600 }}>Progress on combined target</span>
+                <span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(data.combined.progress_pct)], fontWeight: 700 }}>{fmtPct(data.combined.progress_pct)}</span>
+              </div>
+              <div style={{ background: C.line, borderRadius: 6, height: 10 }}>
+                <div style={{ width: `${Math.max(0, Math.min(100, data.combined.progress_pct || 0))}%`, background: RATE_CATEGORY_COLOR[categorizeRate(data.combined.progress_pct)], height: "100%", borderRadius: 6 }} />
+              </div>
+            </div>
+            <DataTable
+              columns={[
+                { key: "label", label: "Target component" },
+                { key: "value", label: "Value", align: "right", render: (v) => fmtNum(v) },
+              ]}
+              rows={[
+                { label: "Mobilisation target (acquisition)", value: data.combined.mobilisation_target },
+                { label: "Eligible target (awareness)", value: data.combined.eligible_target },
+                { label: "Treatment target (of the acquisition target, by RCT split)", value: data.combined.treatment_target },
+                { label: "Control target (of the acquisition target, by RCT split)", value: data.combined.control_target },
+              ]}
+            />
+          </Card>
+        )}
+
       </State>
 
       <ExecBand num="!" title="Insights" />
@@ -2681,30 +2871,51 @@ function MobRecruitmentFunnelPage({ filters }) {
         </div>
       </State>
 
-      <ExecBand num="◆" title="Performance categorisation — districts vs target (filters)" />
-      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && districtRows.length === 0}>
+      <ExecBand num="◆" title="Performance categorisation — Parish / Venue vs target (filters)" />
+      <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && parishRows.length === 0 && venueRows.length === 0}>
+        <Card
+          title="District totals"
+          subtitle="Same disaggregation as the parish table below, summed to district grain — call-center vs auto-confirmed (awareness), each checked against its own target."
+          chip="REAL"
+        >
+          <GroupedDataTable
+            leading={[{ key: "district", label: "District" }]}
+            groups={sourceGroups}
+            trailing={sourceTrailingColumns}
+            rows={districtTotalRows}
+          />
+        </Card>
+
         <Insight tone="neutral">
-          <b>How to use these filters.</b> Click a status to filter the table below to just those districts. Click <b>All</b> to reset. Click a district row for its venues.
+          <b>How to use these filters.</b> Click <b>Parish</b> or <b>Venue</b> to switch grain — Parish is the default and shows the full call-center vs auto-confirmed split; Venue is call-center only (see below). Click a status to filter the table to just those rows. Click <b>All</b> to reset.
         </Insight>
 
-        <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
-        <Card title="District performance vs target" chip="REAL">
-          <DataTable
-            columns={[
-              { key: "district", label: "District" },
-              { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
-              { key: "target", label: "Target", align: "right", render: (v) => fmtNum(v) },
-              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-              { key: "reachRate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
-              { key: "mobilisationRate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
-              { key: "pctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
-              { key: "progressPct", label: "Progress on target", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
-              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
-            ]}
-            rows={filteredDistrictRows}
-            onRowClick={openDistrictVenueDrill}
-          />
+        <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+          <button onClick={() => setMobGrain("parish")} style={{ fontSize: 12, fontWeight: 700, padding: "7px 16px", border: `1px solid ${mobGrain === "parish" ? C.gold : C.line}`, borderRadius: 5, background: mobGrain === "parish" ? C.gold : C.white, color: mobGrain === "parish" ? C.ink : C.inkSoft, cursor: "pointer" }}>Parish</button>
+          <button onClick={() => setMobGrain("venue")} style={{ fontSize: 12, fontWeight: 700, padding: "7px 16px", border: `1px solid ${mobGrain === "venue" ? C.gold : C.line}`, borderRadius: 5, background: mobGrain === "venue" ? C.gold : C.white, color: mobGrain === "venue" ? C.ink : C.inkSoft, cursor: "pointer" }}>Venue</button>
+        </div>
+
+        <CategoryFilterTiles counts={mobGrain === "parish" ? parishCatCounts : venueCatCounts} active={parishCat} onChange={setParishCat} entityLabelPlural={mobGrain === "parish" ? "parishes" : "venues"} />
+        <Card
+          title={mobGrain === "parish" ? "Parish performance vs target" : "Venue performance vs target"}
+          subtitle={mobGrain === "parish"
+            ? "Call-center confirmed (vs mobilisation target) and auto-confirmed from awareness-eligible youth (vs treatment target) shown separately, plus the total confirmed vs combined target."
+            : "Call-center only — no venue-level awareness data exists to blend in (awareness records carry district/parish, not venue)."}
+          chip="REAL"
+        >
+          {mobGrain === "parish" ? (
+            <GroupedDataTable
+              leading={[{ key: "district", label: "District" }, { key: "parish", label: "Parish" }]}
+              groups={sourceGroups}
+              trailing={sourceTrailingColumns}
+              rows={filteredParishRows}
+            />
+          ) : (
+            <DataTable
+              columns={[{ key: "district", label: "District" }, { key: "venue", label: "Venue" }, ...parishVenueColumns]}
+              rows={filteredVenueRows}
+            />
+          )}
         </Card>
       </State>
     </div>
@@ -3039,41 +3250,235 @@ function MobControlCallsPage() {
   );
 }
 
-function MobCallCentreInsightsPage({ filters }) {
-  const barriers = useApi(`/api/recruitment/call-centre-insights${buildParams(filters)}`);
-  const rows = barriers.data?.barriers || [];
+// Theme breakdown (chart + table) plus the full verbatim quote list below it —
+// shared by the three keyword-classified free-text sections on the Call
+// Centre Insights page (gatekeeper interactions / questions / support asks).
+// Each backend field driving this is `{n, themes, quotes}` — `themes` counts
+// every match (not deduped, so the frequency read is honest) while `quotes`
+// is deduped for display; "keep a wide range of verbatims" means quotes is
+// intentionally NOT trimmed down to match the theme chart's top rows.
+function ThemedQuotesCard({ title, subtitle, data, color, loading, error, chartHeight = 180 }) {
+  const themes = data?.themes || [];
+  const quotes = data?.quotes || [];
+  return (
+    <Card title={`${title} (n=${data?.n || 0})`} subtitle={subtitle} chip="SAMPLE" chipTone="sim">
+      <State loading={loading} error={error} empty={!loading && themes.length === 0}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginBottom: 18 }}>
+          <ResponsiveContainer width="100%" height={chartHeight}>
+            <BarChart data={themes} layout="vertical" margin={{ left: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
+              <YAxis type="category" dataKey="theme" tick={{ fontSize: 9.5 }} width={190} />
+              <Tooltip />
+              <Bar dataKey="count" fill={color} radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          <DataTable
+            columns={[{ key: "theme", label: "Theme" }, { key: "count", label: "#", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "%", align: "right", render: (v) => fmtPct(v) }]}
+            rows={themes}
+          />
+        </div>
+        <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 8 }}>
+            Verbatim — all {quotes.length}
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: C.text, lineHeight: 1.8, columns: "2 300px", columnGap: 24 }}>
+            {quotes.map((q, i) => <li key={i} style={{ breakInside: "avoid" }}>{q}</li>)}
+          </ul>
+        </div>
+      </State>
+    </Card>
+  );
+}
+
+function MobCallCentreInsightsPage() {
+  // 5 minutes matches the backend's own BigQuery cache TTL (app/core/cache.py)
+  // — polling faster wouldn't surface anything newer, just re-run the same
+  // cached query. Every classification here re-runs live over whatever call-log
+  // rows exist at fetch time, so this keeps the page current without a reload.
+  const cc = useApi("/api/recruitment/call-centre-insights", { pollMs: 5 * 60 * 1000 });
+  const data = cc.data;
+  const outcomes = data?.call_outcomes || [];
+  const gk = data?.gatekeepers;
+  const gkBreakdown = gk?.breakdown || [];
+  const gkRelationship = gk?.relationship;
+  const declineNo = data?.decline_reasons_no;
+  const declineMaybe = data?.decline_reasons_maybe;
+  const attendanceSupportNeeded = data?.attendance_support_needed;
+  const genuineQuestions = data?.genuine_questions || {};
+  const topQuestionTheme = genuineQuestions.themes?.[0];
+  const topSupportCategory = attendanceSupportNeeded?.categories?.[0];
+  const interestByLabel = Object.fromEntries((data?.interest || []).map((i) => [i.label, i.count]));
+  const gkByWho = Object.fromEntries(gkBreakdown.map((g) => [g.who, g.count]));
+  const pctColumns = [
+    { key: "count", label: "#", align: "right", render: (v) => fmtNum(v) },
+    { key: "pct", label: "%", align: "right", render: (v) => fmtPct(v) },
+  ];
+
   return (
     <div>
       <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
-        What barriers youth raise on mobilisation/acquisition calls, from the call log
-        (a call can raise more than one barrier). "Questions youth ask" has no structured
-        source in the live data yet — a coded call-notes export would be needed to add it.
+        BOOTCAMP_5 acquisition call log ({fmtNum(data?.calls_analysed)} calls) — call outcomes,
+        who actually answers for the youth ("gatekeepers"), why declined/hesitant youth said
+        no vs. maybe, what support they need, and a categorised read of every agent's
+        free-text call note for the genuine questions youth asked. Refreshes automatically
+        every 5 minutes against live BigQuery — no need to reload the page to see new calls
+        land.
       </p>
-      <Card title="Barriers youth raise" subtitle="Reasons given for not attending / hesitating (share of all barriers)" chip="REAL">
-        <State loading={barriers.loading} error={barriers.error} empty={!barriers.loading && rows.length === 0}>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={rows} layout="vertical" margin={{ left: 40 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-              <XAxis type="number" tick={{ fontSize: 11 }} />
-              <YAxis type="category" dataKey="barrier" tick={{ fontSize: 10 }} width={160} />
-              <Tooltip />
-              <Bar dataKey="count" fill={C.coral} radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+
+      <Grid cols={4}>
+        <KpiTile label="Calls analysed" value={fmtNum(data?.calls_analysed)} sub="BOOTCAMP_5 acquisition call log" tag="REAL" />
+        <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} sub={`${fmtNum(data?.reached)} reached of ${fmtNum(data?.calls_analysed)}`} tag="REAL" />
+        <KpiTile label="Positive intent" value={fmtPct(data?.positive_intent_rate)} sub={`of ${fmtNum(data?.interest_answered)} who stated an opinion`} tag="REAL" />
+        <KpiTile label="Gatekeeper rate" value={fmtPct(gk?.gatekeeper_rate)} sub={`of ${fmtNum(gk?.n_with_decision)} calls with a captured decision-maker`} tag="REAL" />
+      </Grid>
+
+      <ExecBand num="◆" title="Call status breakdown" />
+      <Card title="Call outcomes" subtitle="What happened when the call was placed" chip="REAL">
+        <State loading={cc.loading} error={cc.error} empty={!cc.loading && outcomes.length === 0}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={outcomes} layout="vertical" margin={{ left: 30 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="status" tick={{ fontSize: 11 }} width={100} />
+                <Tooltip />
+                <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                  {outcomes.map((o, i) => <Cell key={i} fill={o.status === "Reached" ? C.green : CHART_COLORS[i % CHART_COLORS.length]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <DataTable
+              columns={[{ key: "status", label: "Status" }, { key: "count", label: "# Calls", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "% of calls", align: "right", render: (v) => fmtPct(v) }]}
+              rows={outcomes}
+            />
+          </div>
         </State>
       </Card>
-      <Card title="Barriers detail" chip="REAL">
-        <State loading={barriers.loading} error={barriers.error} empty={!barriers.loading && rows.length === 0}>
-          <DataTable
-            columns={[
-              { key: "barrier", label: "Barrier" },
-              { key: "count", label: "# Youth", align: "right", render: (v) => fmtNum(v) },
-              { key: "pct", label: "% of barriers", align: "right", render: (v) => fmtPct(v) },
-            ]}
-            rows={rows}
-          />
+
+      <ExecBand num="◆" title="Gatekeepers — who actually answers for the youth" />
+      <Card
+        title="Decision-maker on the call"
+        subtitle={`Among the ${fmtNum(gk?.n_with_decision)} calls that captured who decides — anyone other than the youth (parent, spouse, relative, friend, community leader) is a gatekeeper standing between the call centre and the youth`}
+        chip="REAL"
+      >
+        <State loading={cc.loading} error={cc.error} empty={!cc.loading && gkBreakdown.length === 0}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={gkBreakdown} layout="vertical" margin={{ left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="who" tick={{ fontSize: 10 }} width={165} />
+                <Tooltip />
+                <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <DataTable columns={[{ key: "who", label: "Who" }, { key: "count", label: "# Calls", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "% of captured", align: "right", render: (v) => fmtPct(v) }]} rows={gkBreakdown} />
+          </div>
         </State>
       </Card>
+      <Card
+        title="Gatekeeper relationship — proxy contact reached"
+        subtitle={`A second, independent structured field — populated whenever a proxy contact was actually reached (${fmtNum(gkRelationship?.n)} calls), regardless of whether the decision-maker above was also captured`}
+        chip="REAL"
+      >
+        <State loading={cc.loading} error={cc.error} empty={!cc.loading && !(gkRelationship?.breakdown?.length)}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={gkRelationship?.breakdown || []} layout="vertical" margin={{ left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="who" tick={{ fontSize: 10 }} width={90} />
+                <Tooltip />
+                <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <DataTable columns={[{ key: "who", label: "Relationship" }, { key: "count", label: "# Calls", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "% of captured", align: "right", render: (v) => fmtPct(v) }]} rows={gkRelationship?.breakdown || []} />
+          </div>
+        </State>
+      </Card>
+      <ThemedQuotesCard
+        title="Gatekeeper interactions — verbatim"
+        subtitle="Agent call notes mentioning who actually picked up, grouped into themes — smaller-sample qualitative texture (real telemarketer wording) alongside the two structured breakdowns above"
+        data={gk?.interactions}
+        color={C.gold}
+        loading={cc.loading}
+        error={cc.error}
+      />
+
+      <ExecBand num="◆" title="Interest & decline reasons" />
+      <Grid cols={3}>
+        <KpiTile label="Yes" value={fmtNum(interestByLabel.Yes)} sub="of calls that stated an opinion" tag="REAL" />
+        <KpiTile label="Maybe" value={fmtNum(interestByLabel.Maybe)} sub="of calls that stated an opinion" tag="REAL" />
+        <KpiTile label="No" value={fmtNum(interestByLabel.No)} sub="of calls that stated an opinion" tag="REAL" />
+      </Grid>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title={`Why "No" (n=${declineNo?.n || 0})`} subtitle="Reasons given by youth who declined, categorised" chip="SAMPLE" chipTone="sim">
+          <State loading={cc.loading} error={cc.error} empty={!cc.loading && !(declineNo?.categories?.length)}>
+            <DataTable columns={[{ key: "category", label: "Reason" }, ...pctColumns]} rows={declineNo?.categories || []} />
+          </State>
+        </Card>
+        <Card title={`Why "Maybe" (n=${declineMaybe?.n || 0})`} subtitle="Reasons given by youth who are unsure, categorised" chip="SAMPLE" chipTone="sim">
+          <State loading={cc.loading} error={cc.error} empty={!cc.loading && !(declineMaybe?.categories?.length)}>
+            <DataTable columns={[{ key: "category", label: "Reason" }, ...pctColumns]} rows={declineMaybe?.categories || []} />
+          </State>
+        </Card>
+      </div>
+
+      <ExecBand num="◆" title="Attendance support needed" />
+      <Card
+        title={`What support youth need (n=${fmtNum(attendanceSupportNeeded?.n)})`}
+        subtitle='A dedicated coded field on every call, not something mined out of general notes — the "support needed" column on the acquisition mart is empty for BC5, but this one carries the real signal'
+        chip="REAL"
+      >
+        <State loading={cc.loading} error={cc.error} empty={!cc.loading && !(attendanceSupportNeeded?.categories?.length)}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <ResponsiveContainer width="100%" height={Math.max(260, (attendanceSupportNeeded?.categories?.length || 0) * 28 + 40)}>
+              <BarChart data={attendanceSupportNeeded?.categories || []} layout="vertical" margin={{ left: 10 }} barCategoryGap="20%">
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="category" tick={{ fontSize: 9.5 }} width={185} interval={0} />
+                <Tooltip />
+                <Bar dataKey="count" fill={C.coral} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <DataTable columns={[{ key: "category", label: "Support needed" }, ...pctColumns]} rows={attendanceSupportNeeded?.categories || []} />
+          </div>
+        </State>
+      </Card>
+
+      <ExecBand num="◆" title="Qualitative call-notes analysis — deep read" />
+      <p style={{ fontSize: 11.5, color: C.muted, margin: "-6px 0 14px" }}>
+        Every one of the {fmtNum(data?.feedback_n)} agent call notes was scanned and classified
+        by a keyword ruleset tuned by reading each one — not a live model call, but the same
+        analysis a human coder would produce. The most actionable theme it surfaces is below,
+        broken into its own sub-themes with a full verbatim list — not just a handful of
+        examples.
+      </p>
+      <ThemedQuotesCard
+        title="Questions youth ask"
+        subtitle="Genuine questions extracted from call notes, grouped into themes"
+        data={genuineQuestions}
+        color={C.teal}
+        loading={cc.loading}
+        error={cc.error}
+      />
+
+      <ExecBand num="!" title="The story" />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+        <Insight tone="pos">
+          <b>Intent is not the problem.</b> {fmtPct(data?.positive_intent_rate)} of youth who stated an opinion are positive — the {fmtNum(declineNo?.n)} "no"s are overwhelmingly practical and involuntary (already employed, pregnancy/childcare, relocation, already in school), not persuasion failures.
+        </Insight>
+        <Insight tone="warn">
+          <b>Most captured decisions don't come from the youth.</b> Among the {fmtNum(gk?.n_with_decision)} calls that recorded who decides, {fmtPct(gk?.gatekeeper_rate)} went through a gatekeeper — mostly parents ({fmtNum(gkByWho.Parents)}) and spouses ({fmtNum(gkByWho.Spouse)}). A second, independent field confirms the same pattern at even larger scale: of {fmtNum(gkRelationship?.n)} calls where a proxy contact was actually reached, {fmtPct(gkRelationship?.breakdown?.[0]?.pct)} were a {(gkRelationship?.breakdown?.[0]?.who || "").toLowerCase()}. Call scripts and identity verification need to treat a proxy respondent as the norm, not the exception.
+        </Insight>
+        <Insight tone="neutral">
+          <b>Youth are asking about the payoff, not the programme.</b> "{topQuestionTheme?.theme}" is the top theme in the genuine questions ({fmtNum(topQuestionTheme?.count)} of {fmtNum(genuineQuestions.n)}) — a short scripted FAQ at first contact would answer most of these upfront.
+        </Insight>
+        <Insight tone="warn">
+          <b>Support needs are overwhelmingly one thing: transport.</b> "{topSupportCategory?.category}" alone accounts for {fmtPct(topSupportCategory?.pct)} of the {fmtNum(attendanceSupportNeeded?.n)} calls where a support need was logged — a concrete, fixable logistics gap, not a new benefit to design. {fmtPct(attendanceSupportNeeded?.categories?.find((c) => c.category === "No support needed")?.pct)} said they need no support at all.
+        </Insight>
+      </div>
     </div>
   );
 }
@@ -5035,7 +5440,7 @@ async function buildMobilisationExport(filters) {
     apiGet(`/api/filters`),
   ]);
   const allDistricts = filterMeta.districts || [];
-  const mobMetricKeys = ["assigned", "reached", "reach_rate", "confirmed", "confirmed_female", "mobilisation_rate", "progress_pct"];
+  const mobMetricKeys = ["assigned", "called", "reached", "reach_rate", "confirmed", "confirmed_female", "mobilisation_rate", "progress_pct"];
   const byDistrictMob = await fetchPerDistrictFields("/api/recruitment/mobilisation", filters, allDistricts,
     Object.fromEntries(mobMetricKeys.map((k) => [k, (json) => json?.[k] ?? null])));
 
@@ -5045,10 +5450,20 @@ async function buildMobilisationExport(filters) {
     return {
       district: d.district, assigned, target, reached, confirmed,
       reachRate: assigned ? Math.round((1000 * reached) / assigned) / 10 : null,
-      mobilisationRate: assigned ? Math.round((1000 * confirmed) / assigned) / 10 : null,
+      mobilisationRate: reached ? Math.round((1000 * confirmed) / reached) / 10 : null,
       pctFemale: confirmed ? Math.round((1000 * (d.confirmed_female || 0)) / confirmed) / 10 : null,
       progressPct: target ? Math.round((1000 * confirmed) / target) / 10 : null,
       daysToTarget: daysToTargetFor(confirmed, target, nDays),
+    };
+  });
+  const byParish = (heatmap.by_parish || []).map((p) => {
+    const assigned = p.assigned || 0, target = p.target || 0, reached = p.reached || 0, confirmed = p.confirmed || 0;
+    return {
+      district: p.district, parish: p.parish, assigned, target, reached, confirmed,
+      reachRate: assigned ? Math.round((1000 * reached) / assigned) / 10 : null,
+      mobilisationRate: reached ? Math.round((1000 * confirmed) / reached) / 10 : null,
+      pctFemale: confirmed ? Math.round((1000 * (p.confirmed_female || 0)) / confirmed) / 10 : null,
+      progressPct: target ? Math.round((1000 * confirmed) / target) / 10 : null,
     };
   });
   const byVenue = (heatmap.by_venue || []).map((v) => {
@@ -5071,15 +5486,34 @@ async function buildMobilisationExport(filters) {
         xCol("assigned", "Assigned"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
         xCol("reach_rate", "Reach rate", { format: fmtPct }), xCol("mobilisation_rate", "Mobilisation rate", { format: fmtPct }), xCol("pct_female", "% Female", { format: fmtPct }),
       ], [
-        { label: "4-week cycle", ...mob.four_week },
+        { label: "4-week cycle (call-center)", ...mob.four_week },
         { label: "2.5-week cycle (auto-confirm)", ...mob.two_half_week },
-        { label: "Overall (blended)", assigned: mob.assigned, reached: mob.reached, confirmed: mob.confirmed, reach_rate: mob.reach_rate, mobilisation_rate: mob.mobilisation_rate, pct_female: mob.confirmed_female_pct },
-      ]),
+      ], "Deliberately not blended into one row — see \"Combined progress\" below for the two pathways added together."),
+      ...(mob.combined ? [
+        xSection("Combined progress — call-center + auto-confirm", "label", "Component", [
+          xCol("value", "Value"),
+        ], [
+          { label: "Auto-confirmed (awareness)", value: mob.combined.auto_confirmed },
+          { label: "Confirmed (call-center)", value: mob.combined.call_centre_confirmed },
+          { label: "Total so far", value: mob.combined.total_so_far },
+          { label: "Mobilisation target (acquisition)", value: mob.combined.mobilisation_target },
+          { label: "Eligible target (awareness)", value: mob.combined.eligible_target },
+          { label: "Combined target", value: mob.combined.target },
+          { label: "Progress on combined target (%)", value: mob.combined.progress_pct },
+          { label: "Treatment target (RCT split)", value: mob.combined.treatment_target },
+          { label: "Control target (RCT split)", value: mob.combined.control_target },
+        ]),
+      ] : []),
       xSection("District performance vs target", "district", "District", [
         xCol("assigned", "Assigned"), xCol("target", "Target"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
         xCol("reachRate", "Reach rate", { format: fmtPct }), xCol("mobilisationRate", "Mobilisation rate", { format: fmtPct }),
         xCol("pctFemale", "% Female", { format: fmtPct }), xCol("progressPct", "Progress on target", { format: fmtPct }), xCol("daysToTarget", "Days to target"),
       ], byDistrict),
+      xSection("Parish performance vs target", "parish", "Parish", [
+        xTextCol("district", "District"), xCol("assigned", "Assigned"), xCol("target", "Target"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
+        xCol("reachRate", "Reach rate", { format: fmtPct }), xCol("mobilisationRate", "Mobilisation rate", { format: fmtPct }),
+        xCol("pctFemale", "% Female", { format: fmtPct }), xCol("progressPct", "Progress on target", { format: fmtPct }),
+      ], byParish, "Assigned/target and reached/confirmed come from data sources that don't share districts live for every parish — a parish can show 0 on one side and real numbers on the other."),
       xSection("Venue performance", "venue", "Venue", [
         xTextCol("district", "District"), xCol("target", "Target"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
         xCol("rate", "Confirmed ÷ reached", { format: fmtPct }), xCol("pctFemale", "% Female", { format: fmtPct }),
@@ -5088,7 +5522,18 @@ async function buildMobilisationExport(filters) {
       xSection("Daily trend — reached vs confirmed", "event_date", "Date", [xCol("reached", "Reached"), xCol("confirmed", "Confirmed")], forecast.daily || []),
       xSection("Control arm — call status", "status", "Status", [xCol("n", "# Youth")], controlCalls.by_status || []),
       xSection("Control arm — district composition", "district", "District", [xCol("n", "# Youth")], controlCalls.by_district || []),
-      xSection("Call centre barriers", "barrier", "Barrier", [xCol("count", "# Youth"), xCol("pct", "% of barriers", { format: fmtPct })], callCentre.barriers || []),
+      xSection("Call centre — call outcomes", "status", "Status", [xCol("count", "# Calls"), xCol("pct", "% of calls", { format: fmtPct })], callCentre.call_outcomes || []),
+      xSection("Call centre — gatekeepers (decision-maker on the call)", "who", "Who", [xCol("count", "# Calls"), xCol("pct", "% of captured", { format: fmtPct })], callCentre.gatekeepers?.breakdown || [],
+        `Gatekeeper rate: ${fmtPct(callCentre.gatekeepers?.gatekeeper_rate)} of ${fmtNum(callCentre.gatekeepers?.n_with_decision)} calls with a captured decision-maker.`),
+      xSection("Call centre — gatekeeper relationship (proxy contact reached)", "who", "Relationship", [xCol("count", "# Calls"), xCol("pct", "% of captured", { format: fmtPct })], callCentre.gatekeepers?.relationship?.breakdown || []),
+      xSection("Call centre — gatekeeper interactions, by theme", "theme", "Theme", [xCol("count", "#"), xCol("pct", "%", { format: fmtPct })], callCentre.gatekeepers?.interactions?.themes || []),
+      xSection("Call centre — gatekeeper interactions, verbatim", "quote", "Quote", [], (callCentre.gatekeepers?.interactions?.quotes || []).map((q) => ({ quote: q }))),
+      xSection(`Call centre — decline reasons, "No" (n=${callCentre.decline_reasons_no?.n || 0})`, "category", "Reason", [xCol("count", "#"), xCol("pct", "%", { format: fmtPct })], callCentre.decline_reasons_no?.categories || []),
+      xSection(`Call centre — decline reasons, "Maybe" (n=${callCentre.decline_reasons_maybe?.n || 0})`, "category", "Reason", [xCol("count", "#"), xCol("pct", "%", { format: fmtPct })], callCentre.decline_reasons_maybe?.categories || []),
+      xSection(`Call centre — attendance support needed (n=${callCentre.attendance_support_needed?.n || 0})`, "category", "Support needed", [xCol("count", "#"), xCol("pct", "%", { format: fmtPct })], callCentre.attendance_support_needed?.categories || []),
+      xSection("Call centre — call-note themes (all)", "theme", "Theme", [xCol("count", "#"), xCol("pct", "%", { format: fmtPct })], callCentre.feedback_themes || []),
+      xSection("Call centre — questions youth ask, by theme", "theme", "Theme", [xCol("count", "#"), xCol("pct", "%", { format: fmtPct })], callCentre.genuine_questions?.themes || []),
+      xSection("Call centre — questions youth ask, verbatim", "quote", "Quote", [], (callCentre.genuine_questions?.quotes || []).map((q) => ({ quote: q }))),
     ],
   };
 }
