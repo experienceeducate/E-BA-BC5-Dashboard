@@ -511,15 +511,20 @@ def trainer_detail(
     }
 
 
-def _milestones_where(district, gender, venue, cohort, prefix):
+def _milestones_where(district, gender, venue, cohort, prefix, include_cohort=True):
     # No NOT_TEST_DATA here (unlike _filter_extra) -- this table has no
     # is_test_data column. Cohort filters bootcamp_cycle directly rather than
     # defaulting to ACTIVE_COHORTS -- no BOOTCAMP_5 rows exist in this table
     # yet, so that default would show nothing (see MILESTONES in tables.py).
+    # include_cohort=False drops the bootcamp_cycle restriction entirely --
+    # used by by_cohort_week, which compares cohorts against each other and
+    # so must never be narrowed to whichever single cohort the page filter
+    # has selected.
     extra = []
-    coh_clause, coh_params = cohort_clause(cohort, prefix=prefix, column="bootcamp_cycle")
-    if coh_clause:
-        extra.append((coh_clause, coh_params))
+    if include_cohort:
+        coh_clause, coh_params = cohort_clause(cohort, prefix=prefix, column="bootcamp_cycle")
+        if coh_clause:
+            extra.append((coh_clause, coh_params))
     return build_where(
         districts=district, gender=gender, venues=venue,
         extra=extra, prefix=prefix,
@@ -537,9 +542,15 @@ def milestones(
 ):
     """Weekly business-pitch milestone distribution (below/meet/exceed),
     completion, and parent-engagement -- programme-wide (weekly), cumulative
-    per venue (by_venue), and single-week grain by district (by_district_week)
-    and by venue (by_venue_week), for the district/venue x week matrix tables
-    and the week-over-week variance drill.
+    per venue (by_venue), and single-week grain by district (by_district_week),
+    venue (by_venue_week), gender (by_gender_week), and cohort (by_cohort_week),
+    for the district/venue x week matrix tables, the weekly performance chart's
+    district/venue/gender drill, and the cross-cohort quality-trend comparison.
+
+    by_cohort_week ignores the page's own cohort filter (see _milestones_where's
+    include_cohort=False) -- the whole point of that table is comparing cohorts
+    against each other, so narrowing it to one selected cohort would defeat it.
+    district/gender/venue filters still apply.
 
     Backed by the live silver MILESTONES table (see tables.py for the
     recruitment/M&E team's own scoring rubric — MILESTONE_PERFORMANCE_CATEGORY_SQL
@@ -702,7 +713,81 @@ def milestones(
         v["exceed_pct"] = round(100 * (v.get("exceed") or 0) / total, 1) if total else None
         v["completion_pct"] = round(100 * (v.get("completed") or 0) / total, 1) if total else None
 
-    return {"weekly": weekly, "by_venue": by_venue, "by_district_week": by_district_week, "by_venue_week": by_venue_week}
+    # Gender x week -- respects the page's own filters (including cohort),
+    # unlike by_cohort_week below. Feeds the weekly performance chart's
+    # by-gender drill.
+    gender_week_where, gender_week_params = _milestones_where(district, gender, venue, cohort, "msgw")
+    gender_week_sql = f"""
+    WITH classified AS (
+      SELECT
+        youth_id, UPPER(youth_gender) AS gender,
+        SAFE_CAST(REGEXP_EXTRACT(week, r'(\\d+)') AS INT64) AS week_number,
+        business_plan_score,
+        {MILESTONE_PERFORMANCE_CATEGORY_SQL} AS performance_category
+      FROM {MILESTONES}
+      WHERE {gender_week_where}
+    )
+    SELECT
+      gender, week_number,
+      COUNT(DISTINCT youth_id) AS total_youth,
+      COUNTIF(performance_category = 'below') AS below,
+      COUNTIF(performance_category = 'meet') AS meet,
+      COUNTIF(performance_category = 'exceed') AS exceed,
+      COUNTIF(business_plan_score >= 1) AS completed
+    FROM classified
+    GROUP BY gender, week_number
+    ORDER BY gender, week_number
+    """
+    by_gender_week = database.run_query(gender_week_sql, gender_week_params, role=user.role)
+    for g in by_gender_week:
+        total = g.get("total_youth") or 0
+        g["below_pct"] = round(100 * (g.get("below") or 0) / total, 1) if total else None
+        g["meet_pct"] = round(100 * (g.get("meet") or 0) / total, 1) if total else None
+        g["exceed_pct"] = round(100 * (g.get("exceed") or 0) / total, 1) if total else None
+        g["completion_pct"] = round(100 * (g.get("completed") or 0) / total, 1) if total else None
+
+    # Cohort x week -- deliberately ignores the page's cohort filter (see
+    # _milestones_where) so every cohort with data shows up side by side,
+    # letting the "does quality improve or drop by week" read be compared
+    # across cohorts rather than collapsed to whichever one is selected.
+    cohort_week_where, cohort_week_params = _milestones_where(district, gender, venue, cohort, "mscw", include_cohort=False)
+    cohort_week_sql = f"""
+    WITH classified AS (
+      SELECT
+        youth_id, bootcamp_cycle AS cohort,
+        SAFE_CAST(REGEXP_EXTRACT(week, r'(\\d+)') AS INT64) AS week_number,
+        business_plan_score,
+        {MILESTONE_PERFORMANCE_CATEGORY_SQL} AS performance_category
+      FROM {MILESTONES}
+      WHERE {cohort_week_where}
+    )
+    SELECT
+      cohort, week_number,
+      COUNT(DISTINCT youth_id) AS total_youth,
+      COUNTIF(performance_category = 'below') AS below,
+      COUNTIF(performance_category = 'meet') AS meet,
+      COUNTIF(performance_category = 'exceed') AS exceed,
+      COUNTIF(business_plan_score >= 1) AS completed
+    FROM classified
+    GROUP BY cohort, week_number
+    ORDER BY cohort, week_number
+    """
+    by_cohort_week = database.run_query(cohort_week_sql, cohort_week_params, role=user.role)
+    for c in by_cohort_week:
+        total = c.get("total_youth") or 0
+        c["below_pct"] = round(100 * (c.get("below") or 0) / total, 1) if total else None
+        c["meet_pct"] = round(100 * (c.get("meet") or 0) / total, 1) if total else None
+        c["exceed_pct"] = round(100 * (c.get("exceed") or 0) / total, 1) if total else None
+        c["completion_pct"] = round(100 * (c.get("completed") or 0) / total, 1) if total else None
+
+    return {
+        "weekly": weekly,
+        "by_venue": by_venue,
+        "by_district_week": by_district_week,
+        "by_venue_week": by_venue_week,
+        "by_gender_week": by_gender_week,
+        "by_cohort_week": by_cohort_week,
+    }
 
 
 @router.get("/api/implementation/youth-experience")
