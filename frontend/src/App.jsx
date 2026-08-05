@@ -750,7 +750,7 @@ function DataTable({ columns, rows, onRowClick }) {
 // `groups` is [{ label, color, columns }] — each group's columns get a
 // left border + the group's tinted spanning header so the visual grouping
 // carries down into the body, not just the header.
-function GroupedDataTable({ leading, groups, trailing, rows }) {
+function GroupedDataTable({ leading, groups, trailing, rows, onRowClick }) {
   const grouped = groups.flatMap((g) => g.columns.map((c, i) => ({ ...c, groupColor: g.color, groupStart: i === 0 })));
   const thStyle = { padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11 };
   const tdStyle = { padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text };
@@ -775,7 +775,7 @@ function GroupedDataTable({ leading, groups, trailing, rows }) {
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i}>
+            <tr key={i} onClick={onRowClick ? () => onRowClick(r) : undefined} style={onRowClick ? { cursor: "pointer" } : undefined}>
               {(leading || []).map((c) => (
                 <td key={c.key} style={{ ...tdStyle, textAlign: c.align || "left" }}>{c.render ? c.render(r[c.key], r) : (r[c.key] ?? "—")}</td>
               ))}
@@ -4891,6 +4891,78 @@ function milestoneDistrictRollup(venueRows) {
   }));
 }
 
+// Pivots long-format (entity, week_number, metrics...) rows into one row per
+// entity with w{N}_ prefixed fields, for the District x Week / Venue x Week
+// matrix tables (GroupedDataTable, one column group per week).
+function pivotByWeek(rows, entityKey, extraKeys = []) {
+  const byEntity = {};
+  rows.forEach((r) => {
+    const key = r[entityKey];
+    if (!byEntity[key]) {
+      byEntity[key] = { [entityKey]: key };
+      extraKeys.forEach((k) => { byEntity[key][k] = r[k]; });
+    }
+    const e = byEntity[key];
+    const w = r.week_number;
+    e[`w${w}_total_youth`] = r.total_youth;
+    e[`w${w}_completed`] = r.completed;
+    e[`w${w}_completion_pct`] = r.completion_pct;
+    e[`w${w}_exceed_pct`] = r.exceed_pct;
+    e[`w${w}_meet_pct`] = r.meet_pct;
+    e[`w${w}_below_pct`] = r.below_pct;
+  });
+  return Object.values(byEntity);
+}
+
+// Distinct, sorted week numbers actually present -- drives both the pivot
+// column groups above and the variance drill below, rather than assuming a
+// fixed 4 weeks (a cohort/filter could report fewer).
+function weekNumbersIn(rows) {
+  return [...new Set(rows.map((r) => r.week_number))].sort((a, b) => a - b);
+}
+
+const WEEK_GROUP_COLORS = [C.teal, C.gold, C.green, C.coral];
+
+// One GroupedDataTable column-group per week, for the District x Week /
+// Venue x Week matrices.
+function weekColumnGroups(weekNumbers) {
+  return weekNumbers.map((w, i) => ({
+    label: `Week ${w}`,
+    color: WEEK_GROUP_COLORS[i % WEEK_GROUP_COLORS.length],
+    columns: [
+      { key: `w${w}_total_youth`, label: "Activated", align: "right", render: fmtNum },
+      { key: `w${w}_completed`, label: "Completed", align: "right", render: fmtNum },
+      { key: `w${w}_completion_pct`, label: "% Complete", align: "right", render: fmtPct },
+      { key: `w${w}_exceed_pct`, label: "% Exceed", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+      { key: `w${w}_meet_pct`, label: "% Meet", align: "right", render: fmtPct },
+      { key: `w${w}_below_pct`, label: "% Below", align: "right", render: (v) => <span style={{ color: v <= 5 ? C.green : v <= 10 ? C.gold : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
+    ],
+  }));
+}
+
+function renderMilestoneDelta(v) {
+  if (v == null) return "—";
+  return <span style={{ color: v >= 0 ? C.green : C.coral, fontWeight: 700 }}>{v > 0 ? "+" : ""}{v}pp</span>;
+}
+
+// That one district/venue's own week-by-week trend, with the change vs the
+// prior week for both completion and quality (% exceeding) -- "are youths
+// improving or not", the child level of the comparison drill below.
+function weekVariance(rows, entityKey, entityValue) {
+  const filtered = rows.filter((r) => r[entityKey] === entityValue).sort((a, b) => a.week_number - b.week_number);
+  return filtered.map((r, i) => {
+    const prev = filtered[i - 1];
+    const delta = (curr, prior) => (curr != null && prior != null ? Math.round((curr - prior) * 10) / 10 : null);
+    return {
+      week: `Week ${r.week_number}`,
+      completion_pct: r.completion_pct,
+      completion_delta: prev ? delta(r.completion_pct, prev.completion_pct) : null,
+      exceed_pct: r.exceed_pct,
+      exceed_delta: prev ? delta(r.exceed_pct, prev.exceed_pct) : null,
+    };
+  });
+}
+
 function MilestonesTab({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/milestones${buildParams(filters)}`);
@@ -4911,6 +4983,13 @@ function MilestonesTab({ filters }) {
   // as Awareness Overview/Mobilisers.
   const q = venueSearch.trim().toLowerCase();
   const matchedVenues = q ? byVenue.filter((v) => (v.venue || "").toLowerCase().includes(q)) : byVenue;
+
+  // Single-week grain (unlike byVenue's cumulative-across-weeks rollup) —
+  // feeds the District x Week / Venue x Week matrices and the week-over-week
+  // variance drill. Districts aren't venues, so the venue search only
+  // narrows the venue-week grain, same as the venue table itself.
+  const districtWeekRows = data?.by_district_week || [];
+  const matchedVenueWeek = q ? (data?.by_venue_week || []).filter((v) => (v.venue || "").toLowerCase().includes(q)) : (data?.by_venue_week || []);
 
   const venuesRanked = [...matchedVenues].filter((v) => v.exceed_pct != null).sort((a, b) => b.exceed_pct - a.exceed_pct);
   const top5 = venuesRanked.slice(0, 5);
@@ -4995,6 +5074,52 @@ function MilestonesTab({ filters }) {
     });
   }
 
+  // Row click on the District x Week / Venue x Week matrices -> how does
+  // this one compare with its peers (root, ranked by % exceeding), then
+  // drill into it for its own week-over-week variance (child) -- "is it
+  // improving or not". Two asks, one drill: peer comparison is the first
+  // thing shown (matches "click a venue -> see how it compares"), its own
+  // trend is one click deeper (matches "a table of variances between
+  // weeks"). Root rows carry no delta (that's a week-over-week concept, not
+  // a cross-entity one) -- renderMilestoneDelta shows "—" for null.
+  function openDistrictComparisonDrill() {
+    const rootRows = districtRollup
+      .map((d) => ({ district: d.district, completion_pct: d.avg_completion_pct, exceed_pct: d.avg_exceed_pct, completion_delta: null, exceed_delta: null }))
+      .sort((a, b) => (b.exceed_pct ?? -1) - (a.exceed_pct ?? -1));
+    drill.open({
+      title: "District comparison — completion & quality",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [
+        { key: "completion_pct", label: "% Completed", align: "right", render: fmtPct },
+        { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+        { key: "completion_delta", label: "Δ Completion (wk/wk)", align: "right", render: renderMilestoneDelta },
+        { key: "exceed_delta", label: "Δ Quality (wk/wk)", align: "right", render: renderMilestoneDelta },
+      ],
+      rootRows,
+      childKey: "week", childLabel: "Week",
+      getChildRows: (root) => weekVariance(districtWeekRows, "district", root.district),
+    });
+  }
+
+  function openVenueComparisonDrill() {
+    const rootRows = venuesRanked.map((v) => ({ venue: v.venue, completion_pct: v.completion_pct, exceed_pct: v.exceed_pct, completion_delta: null, exceed_delta: null }));
+    drill.open({
+      title: "Venue comparison — completion & quality",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "venue", rootLabel: "Venue",
+      columns: [
+        { key: "completion_pct", label: "% Completed", align: "right", render: fmtPct },
+        { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+        { key: "completion_delta", label: "Δ Completion (wk/wk)", align: "right", render: renderMilestoneDelta },
+        { key: "exceed_delta", label: "Δ Quality (wk/wk)", align: "right", render: renderMilestoneDelta },
+      ],
+      rootRows,
+      childKey: "week", childLabel: "Week",
+      getChildRows: (root) => weekVariance(matchedVenueWeek, "venue", root.venue),
+    });
+  }
+
   return (
     <div>
       {!loading && !error && weekly.length === 0 && (
@@ -5046,6 +5171,21 @@ function MilestonesTab({ filters }) {
             ]}
             rows={districtRollup}
             onRowClick={(d) => openDistrictDrill(d.district)}
+          />
+        </State>
+      </Card>
+
+      <Card
+        title="District × Week"
+        subtitle="Every district's week-by-week numbers side by side — activated, completed, and the below/meets/exceeds split, each week's own denominator (not cumulative). Click a district to see how it compares with the others, then drill into its own week-over-week change."
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && districtWeekRows.length === 0}>
+          <GroupedDataTable
+            leading={[{ key: "district", label: "District" }]}
+            groups={weekColumnGroups(weekNumbersIn(districtWeekRows))}
+            rows={pivotByWeek(districtWeekRows, "district")}
+            onRowClick={() => openDistrictComparisonDrill()}
           />
         </State>
       </Card>
@@ -5132,6 +5272,23 @@ function MilestonesTab({ filters }) {
                 { key: "completion_pct", label: "% Completed", align: "right", render: fmtPct, onHeaderClick: () => openMilestoneMetricDrill("completion_pct") },
               ]}
               rows={venuesRanked}
+            />
+          </div>
+        </State>
+      </Card>
+
+      <Card
+        title="Venue × Week"
+        subtitle="Every venue's week-by-week numbers side by side — activated, completed, and the below/meets/exceeds split, each week's own denominator (not cumulative). Click a venue to see how it compares with the others, then drill into its own week-over-week change."
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && matchedVenueWeek.length === 0}>
+          <div style={{ maxHeight: 420, overflowY: "auto" }}>
+            <GroupedDataTable
+              leading={[{ key: "venue", label: "Venue" }, { key: "district", label: "District" }]}
+              groups={weekColumnGroups(weekNumbersIn(matchedVenueWeek))}
+              rows={pivotByWeek(matchedVenueWeek, "venue", ["district"])}
+              onRowClick={() => openVenueComparisonDrill()}
             />
           </div>
         </State>

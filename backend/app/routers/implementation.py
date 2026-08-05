@@ -536,8 +536,10 @@ def milestones(
     cohort:   List[str] = Query(default=[]),
 ):
     """Weekly business-pitch milestone distribution (below/meet/exceed),
-    completion, and parent-engagement, plus a per-venue rollup (cumulative
-    over every week reported).
+    completion, and parent-engagement -- programme-wide (weekly), cumulative
+    per venue (by_venue), and single-week grain by district (by_district_week)
+    and by venue (by_venue_week), for the district/venue x week matrix tables
+    and the week-over-week variance drill.
 
     Backed by the live silver MILESTONES table (see tables.py for the
     recruitment/M&E team's own scoring rubric — MILESTONE_PERFORMANCE_CATEGORY_SQL
@@ -553,6 +555,11 @@ def milestones(
     separately (parent_engagement is NULL for a large share of rows in every
     cohort) — same "don't fold an unreported share into a real category"
     approach as the Awareness Overview RCT card's Unassigned bucket.
+
+    by_district_week/by_venue_week are each already single-week grain (unlike
+    by_venue, which sums across every week reported into one row per venue),
+    so total_youth is a safe same-week percentage denominator there too — no
+    row-count-vs-headcount correction needed like by_venue's total_reports.
     """
     where, params = _milestones_where(district, gender, venue, cohort, "ms")
     sql = f"""
@@ -628,7 +635,74 @@ def milestones(
         v["completion_pct"] = round(100 * (v.get("completed") or 0) / reports, 1) if reports else None
         v["avg_youth_per_week"] = round(youth / weeks, 1) if weeks else None
 
-    return {"weekly": weekly, "by_venue": by_venue}
+    # District x week and venue x week grain -- each row already single-week
+    # (unlike by_venue's cumulative-across-weeks rollup above), so total_youth
+    # is a safe same-week percentage denominator here, no row-count-vs-
+    # headcount mismatch to correct for. Feeds the district/venue x week
+    # matrix tables and the week-over-week variance drill (both computed
+    # client-side from this one flat row set, same "one fetch feeds every
+    # rollup" approach as the rest of this page).
+    district_week_where, district_week_params = _milestones_where(district, gender, venue, cohort, "msdw")
+    district_week_sql = f"""
+    WITH classified AS (
+      SELECT
+        youth_id, UPPER(youth_district) AS district,
+        SAFE_CAST(REGEXP_EXTRACT(week, r'(\\d+)') AS INT64) AS week_number,
+        business_plan_score,
+        {MILESTONE_PERFORMANCE_CATEGORY_SQL} AS performance_category
+      FROM {MILESTONES}
+      WHERE {district_week_where}
+    )
+    SELECT
+      district, week_number,
+      COUNT(DISTINCT youth_id) AS total_youth,
+      COUNTIF(performance_category = 'below') AS below,
+      COUNTIF(performance_category = 'meet') AS meet,
+      COUNTIF(performance_category = 'exceed') AS exceed,
+      COUNTIF(business_plan_score >= 1) AS completed
+    FROM classified
+    GROUP BY district, week_number
+    ORDER BY district, week_number
+    """
+    by_district_week = database.run_query(district_week_sql, district_week_params, role=user.role)
+    for d in by_district_week:
+        total = d.get("total_youth") or 0
+        d["below_pct"] = round(100 * (d.get("below") or 0) / total, 1) if total else None
+        d["meet_pct"] = round(100 * (d.get("meet") or 0) / total, 1) if total else None
+        d["exceed_pct"] = round(100 * (d.get("exceed") or 0) / total, 1) if total else None
+        d["completion_pct"] = round(100 * (d.get("completed") or 0) / total, 1) if total else None
+
+    venue_week_where, venue_week_params = _milestones_where(district, gender, venue, cohort, "msvw")
+    venue_week_sql = f"""
+    WITH classified AS (
+      SELECT
+        youth_id, venue_name AS venue, UPPER(youth_district) AS district,
+        SAFE_CAST(REGEXP_EXTRACT(week, r'(\\d+)') AS INT64) AS week_number,
+        business_plan_score,
+        {MILESTONE_PERFORMANCE_CATEGORY_SQL} AS performance_category
+      FROM {MILESTONES}
+      WHERE {venue_week_where}
+    )
+    SELECT
+      venue, district, week_number,
+      COUNT(DISTINCT youth_id) AS total_youth,
+      COUNTIF(performance_category = 'below') AS below,
+      COUNTIF(performance_category = 'meet') AS meet,
+      COUNTIF(performance_category = 'exceed') AS exceed,
+      COUNTIF(business_plan_score >= 1) AS completed
+    FROM classified
+    GROUP BY venue, district, week_number
+    ORDER BY venue, week_number
+    """
+    by_venue_week = database.run_query(venue_week_sql, venue_week_params, role=user.role)
+    for v in by_venue_week:
+        total = v.get("total_youth") or 0
+        v["below_pct"] = round(100 * (v.get("below") or 0) / total, 1) if total else None
+        v["meet_pct"] = round(100 * (v.get("meet") or 0) / total, 1) if total else None
+        v["exceed_pct"] = round(100 * (v.get("exceed") or 0) / total, 1) if total else None
+        v["completion_pct"] = round(100 * (v.get("completed") or 0) / total, 1) if total else None
+
+    return {"weekly": weekly, "by_venue": by_venue, "by_district_week": by_district_week, "by_venue_week": by_venue_week}
 
 
 @router.get("/api/implementation/youth-experience")
