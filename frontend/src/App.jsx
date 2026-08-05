@@ -2139,17 +2139,21 @@ function AwarenessKycPage({ filters }) {
       </Card>
 
       <ExecBand num="?" title="Q&A — what youth are asking" />
-      <Card title="Open questions raised before joining" subtitle="Free text, grouped by exact wording — repeated questions surface first. Showing the top 20." chip="REAL">
+      <Card
+        title="Open questions raised before joining"
+        subtitle="Free-text answers, qualitatively coded into themes rather than grouped by exact wording — most raw phrasings are one-off, so grouping by exact text buried the real signal under typo variants of &ldquo;no questions&rdquo;. Each theme's example is its single most common raw phrasing."
+        chip="REAL"
+      >
         <State loading={loading} error={error} empty={!loading && questions.length === 0}>
-          <div style={{ maxHeight: 280, overflowY: "auto" }}>
-            <DataTable
-              columns={[
-                { key: "question", label: "Question" },
-                { key: "count", label: "Times raised", align: "right", render: (v) => fmtNum(v) },
-              ]}
-              rows={questions}
-            />
-          </div>
+          <DataTable
+            columns={[
+              { key: "theme", label: "Theme" },
+              { key: "count", label: "Youth", align: "right", render: (v) => fmtNum(v) },
+              { key: "pct_of_eligible", label: "% of eligible", align: "right", render: (v) => fmtPct(v) },
+              { key: "example", label: "Representative example", render: (v) => <span style={{ fontStyle: "italic", color: C.muted }}>&ldquo;{v}&rdquo;</span> },
+            ]}
+            rows={questions.map((q) => ({ ...q, pct_of_eligible: demo.eligible_count ? Math.round((1000 * q.count) / demo.eligible_count) / 10 : null }))}
+          />
         </State>
       </Card>
     </div>
@@ -5000,7 +5004,9 @@ async function buildAwarenessExport(filters) {
         xTextCol("gender", "Gender"), xCol("owners", "Owners"), xCol("total", "Eligible"), xCol("pct_owns_business", "% Owning", { format: fmtPct }),
       ], kyc.business?.by_gender_district || []),
       xSection("Recruitment channels", "channel", "Channel", [xCol("eligible", "Eligible"), xCol("ineligible", "Ineligible")], kyc.channels || []),
-      xSection("Open questions raised before joining", "question", "Question", [xCol("count", "Times raised")], kyc.questions || []),
+      xSection("Open questions raised before joining, by theme", "theme", "Theme", [
+        xCol("count", "Youth"), xTextCol("example", "Representative example"),
+      ], kyc.questions || []),
       xSection("Mobiliser performance", "mobiliser_name", "Mobiliser", [
         xTextCol("district", "District"), xCol("reached", "Reached"), xCol("eligible", "Eligible"), xCol("eligible_female", "Eligible (F)"),
       ], mobilisers.mobilisers || []),

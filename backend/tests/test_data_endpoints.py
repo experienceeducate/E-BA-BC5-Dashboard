@@ -7,7 +7,10 @@ to hand back the right shape per table rather than one set_rows() for a single
 query.
 """
 
+import pytest
+
 import app.core.pii as pii_module
+from app.core.question_themes import classify_question
 from app.core.sql import multiselect_array_sql, normalized_parish_sql
 from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES
 from app.routers.implementation import TRAINER_COHORTS
@@ -365,3 +368,74 @@ def test_awareness_eligible_target_uses_normalized_parish_sql(as_staff, mock_run
     as_staff.get("/api/recruitment/awareness-eligible-target")
     sql = mock_run_query.calls[0]["sql"]
     assert "WHEN UPPER(TRIM(youth_parish)) = 'MAYIRINYA' THEN 'MAIRINYA'" in sql
+
+
+# --- classify_question / "Open questions" qualitative coding ------------------
+# Grouping the KYC page's free-text open_questions by exact wording buried the
+# real signal: ~88% of live values are typo/casing variants of a bare "no"/
+# "NA"/thanks, and every substantive question is a one-off phrasing a top-20
+# exact-text cap would drop. classify_question() (app/core/question_themes.py)
+# qualitatively codes each distinct phrasing into a theme instead.
+
+@pytest.mark.parametrize("question,expected_theme", [
+    ("no", "No question raised (or just thanks)"),
+    ("NA", "No question raised (or just thanks)"),
+    ("Na", "No question raised (or just thanks)"),
+    ("none", "No question raised (or just thanks)"),
+    ("No questions", "No question raised (or just thanks)"),
+    ("appreciated the program", "No question raised (or just thanks)"),
+    ("Thank you", "No question raised (or just thanks)"),
+    ("No questions but appreciative for the program.", "No question raised (or just thanks)"),
+    ("what Is educate", "What is Educate / program identity"),
+    ("who is the founder of educate", "What is Educate / program identity"),
+    ("when is the boot camp", "Bootcamp schedule, venue & logistics"),
+    ("venue for the training", "Bootcamp schedule, venue & logistics"),
+    ("Can educate offer start up capital", "Startup capital / financial support"),
+    ("will you give us capital", "Startup capital / financial support"),
+    ("how much is the transport", "Transport & facilitation"),
+    ("who is a youth", "Eligibility & who can join"),
+    ("I have two young kids am I eligible", "Eligibility & who can join"),
+    ("how helpful is the certificate", "Certificate, jobs & post-training outcomes"),
+    ("will we given jobs after graduation", "Certificate, jobs & post-training outcomes"),
+    ("but won't you deceive us", "Attendance policy, selection & trust"),
+    ("What of the youths that remained in the control group?", "Control-group / study design"),
+    ("can you take three contacts", "Other"),
+])
+def test_classify_question_themes(question, expected_theme):
+    assert classify_question(question) == expected_theme
+
+
+def test_awareness_kyc_questions_returns_themes_not_raw_text(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "open_questions" in sql:
+            return [
+                {"question": "no", "count": 700},
+                {"question": "NA", "count": 400},
+                {"question": "what Is educate", "count": 41},
+                {"question": "how much is the transport", "count": 8},
+                {"question": "can you take three contacts", "count": 1},
+            ]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/recruitment/awareness-kyc")
+    assert r.status_code == 200
+    questions = r.json()["questions"]
+    themes = {q["theme"] for q in questions}
+    assert "No question raised (or just thanks)" in themes
+    assert "question" not in questions[0]
+    # "no" (700) and "NA" (400) both code to the same theme -- must sum, not
+    # overwrite, and that combined theme must lead since it's the largest.
+    top = max(questions, key=lambda q: q["count"])
+    assert top["theme"] == "No question raised (or just thanks)"
+    assert top["count"] == 1100
+    assert top["example"] == "no"  # most common raw phrasing within the theme
+
+
+def test_awareness_kyc_questions_sql_has_no_limit(as_staff, mock_run_query):
+    """A LIMIT here would silently drop the long tail of one-off substantive
+    questions before they ever reach classify_question() -- every distinct
+    phrasing must be fetched for the theme counts to be complete."""
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/awareness-kyc")
+    questions_sql = next(c["sql"] for c in mock_run_query.calls if "open_questions" in c["sql"])
+    assert "LIMIT" not in questions_sql.upper()
