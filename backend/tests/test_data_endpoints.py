@@ -12,7 +12,7 @@ import pytest
 import app.core.pii as pii_module
 from app.core.question_themes import classify_question
 from app.core.sql import multiselect_array_sql, normalized_parish_sql
-from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES
+from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES, venue_mobilisation_target, canonical_venue_sql
 from app.routers.implementation import TRAINER_COHORTS
 
 
@@ -363,6 +363,39 @@ def test_awareness_eligible_target_uses_normalized_parish_sql(as_staff, mock_run
     as_staff.get("/api/recruitment/awareness-eligible-target")
     sql = mock_run_query.calls[0]["sql"]
     assert "WHEN UPPER(TRIM(youth_parish)) = 'MAYIRINYA' THEN 'MAIRINYA'" in sql
+
+
+# --- venue_mobilisation_target (name aliases) --------------------------------
+# Same class of bug as MAIRINYA/MAYIRINYA above, at venue grain: live
+# venue_name spellings confirmed 2026-08-05 that don't match
+# VENUE_MOBILISATION_TARGET even after whitespace/case normalisation, so
+# mobilisation_heatmap()'s by_venue silently read target=0 for these venues
+# despite real reach/confirm activity.
+
+def test_venue_mobilisation_target_folds_doubled_word_variant():
+    assert venue_mobilisation_target("KINAWAMBUZI PRIMARY PRIMARY SCHOOL") == 50
+
+
+def test_venue_mobilisation_target_folds_parenthetical_suffix_variant():
+    assert venue_mobilisation_target("GOLDEN JUNIOR PRIMARY SCHOOL (JUNIOR)") == 64
+
+
+def test_venue_mobilisation_target_folds_missing_space_variant():
+    assert venue_mobilisation_target("ABU HURAIRAH ISLAMIC NUS& PRIMARY SCHOOL") == 59
+
+
+def test_venue_mobilisation_target_still_matches_canonical_name_case_insensitively():
+    assert venue_mobilisation_target("kinawambuzi   primary school") == 50
+
+
+def test_venue_mobilisation_target_returns_none_for_unmapped_venue():
+    assert venue_mobilisation_target("Some Venue Not On The List") is None
+
+
+def test_canonical_venue_sql_folds_known_variant_onto_canonical_spelling():
+    sql = canonical_venue_sql("venue_name")
+    assert "WHEN UPPER(venue_name) = 'GOLDEN JUNIOR PRIMARY SCHOOL (JUNIOR)' THEN 'GOLDEN JUNIOR PRIMARY SCHOOL'" in sql
+    assert "ELSE UPPER(venue_name)" in sql
 
 
 # --- classify_question / "Open questions" qualitative coding ------------------

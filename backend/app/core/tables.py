@@ -196,14 +196,55 @@ VENUE_MOBILISATION_TARGET = {
 }
 
 
+
+# Live venue_name spelling variants confirmed live 2026-08-05 — a doubled
+# word, a stray "(Junior)" suffix, and a missing space before "&". Each of
+# these three real venues was fragmenting into TWO rows in
+# mobilisation_heatmap()'s by_venue: DAILY_ACQUISITION_TARGETS_DEDUPED (the
+# target side) spells it one way, DAILY_ACQUISITION_SUMMARY (the actual
+# side) spells it the other, so grouping by bare UPPER(venue_name) split one
+# venue's assigned/target onto one row and its reached/confirmed onto a
+# separate row — never both together, and the actual-side row's target fell
+# through to VENUE_MOBILISATION_TARGET's hardcoded fallback, which ALSO
+# didn't match the variant spelling, reading target=0 despite real activity.
+# Flat alias map (not fuzzy matching) for the same reason as
+# PARISH_NAME_ALIASES — it never silently merges two genuinely different
+# venues. Used two ways: canonical_venue_sql() folds both spellings onto one
+# row before the two sides ever get grouped; venue_mobilisation_target()
+# below still needs it too, for a venue that only ever appears under the
+# variant spelling (no live target row under either spelling at all).
+VENUE_NAME_ALIASES = {
+    "GOLDEN JUNIOR PRIMARY SCHOOL (JUNIOR)": "Golden Junior Primary School",
+    "KINAWAMBUZI PRIMARY PRIMARY SCHOOL": "Kinawambuzi Primary School",
+    "ABU HURAIRAH ISLAMIC NUS& PRIMARY SCHOOL": "Abu Hurairah Islamic Nus & Primary School",
+}
+
+
+def canonical_venue_sql(col: str) -> str:
+    """UPPER(col), corrected for known live spelling variants
+    (VENUE_NAME_ALIASES) — splice in place of a bare `UPPER(col)` in any
+    SELECT/GROUP BY that reads a live venue_name column, so the same real
+    venue doesn't fragment into two rows across a cross-table rollup (see
+    the note at VENUE_NAME_ALIASES)."""
+    base = f"UPPER({col})"
+    if not VENUE_NAME_ALIASES:
+        return base
+    whens = " ".join(f"WHEN {base} = '{wrong}' THEN '{right.upper()}'" for wrong, right in VENUE_NAME_ALIASES.items())
+    return f"(CASE {whens} ELSE {base} END)"
+
+
 def venue_mobilisation_target(venue_name: str):
     """Case/whitespace-insensitive lookup into VENUE_MOBILISATION_TARGET —
     live venue_name values aren't guaranteed to match this hardcoded list's
-    casing exactly. Returns None (not 0) for an unmatched venue, so callers
-    can tell "no target on file" apart from "target is genuinely zero"."""
+    casing exactly, and a handful don't match even after normalising (see
+    VENUE_NAME_ALIASES). Returns None (not 0) for an unmatched venue, so
+    callers can tell "no target on file" apart from "target is genuinely
+    zero"."""
     if not venue_name:
         return None
-    key = " ".join(venue_name.split()).casefold()
+    normalized = " ".join(venue_name.split())
+    canonical = VENUE_NAME_ALIASES.get(normalized.upper(), normalized)
+    key = canonical.casefold()
     for name, target in VENUE_MOBILISATION_TARGET.items():
         if " ".join(name.split()).casefold() == key:
             return target

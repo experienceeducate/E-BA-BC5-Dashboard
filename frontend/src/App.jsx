@@ -2700,12 +2700,27 @@ function MobRecruitmentFunnelPage({ filters }) {
   // (confirmed ÷ reached — call-center conversion) drive the Insights section
   // below; `progressPct`/`category` (confirmed ÷ target) drive the merged
   // District → Parish → Venue categorisation table/drill instead.
+  // autoConfirmed/autoConfirmedFemale/treatmentTarget are PARISH-level, not
+  // venue-specific (see mobilisation_heatmap()'s docstring) — a parish with
+  // more than one venue shows the same figure on each of its venues. Shown
+  // for structural parity with Parish's Auto-confirmed block; deliberately
+  // NOT folded into confirmed/target/reached/rate/progressPct above, which
+  // stay call-center-only, since summing those across a parish's venues
+  // would otherwise double-count that parish's real auto-confirmed number.
   const venueRows = byVenue.map((v) => {
     const assigned = v.assigned || 0, reached = v.reached || 0, confirmed = v.confirmed || 0, target = v.target ?? null;
     const rate = reached ? Math.round((1000 * confirmed) / reached) / 10 : null;
     const pctFemale = confirmed ? Math.round((1000 * (v.confirmed_female || 0)) / confirmed) / 10 : null;
     const progressPct = target ? Math.round((1000 * confirmed) / target) / 10 : null;
-    return { district: v.district, parish: v.parish, venue: v.venue, assigned, reached, confirmed, pctFemale, target, rate, conversionCategory: categorizeRate(rate), progressPct, category: categorizeRate(progressPct) };
+    const autoConfirmed = v.auto_confirmed || 0, autoConfirmedFemale = v.auto_confirmed_female || 0;
+    const autoPctFemale = autoConfirmed ? Math.round((1000 * autoConfirmedFemale) / autoConfirmed) / 10 : null;
+    const treatmentTarget = v.treatment_target || 0;
+    const autoProgressPct = treatmentTarget ? Math.round((1000 * autoConfirmed) / treatmentTarget) / 10 : null;
+    return {
+      district: v.district, parish: v.parish, venue: v.venue, assigned, reached, confirmed, pctFemale, target,
+      rate, conversionCategory: categorizeRate(rate), progressPct, category: categorizeRate(progressPct),
+      autoConfirmed, autoPctFemale, treatmentTarget, autoProgressPct,
+    };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
   const topVenue = venueRows[0];
@@ -2813,6 +2828,16 @@ function MobRecruitmentFunnelPage({ filters }) {
       columns: [
         { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
         { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+      ],
+    },
+    {
+      // Parish-level, not venue-specific — see venueRows' note above. A
+      // parish with more than one venue shows the same figures on each.
+      label: "Auto-confirmed (awareness, parish-level)", color: C.gold,
+      columns: [
+        { key: "autoConfirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+        { key: "autoProgressPct", label: "% vs target", align: "right", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(v)], fontWeight: 700 }}>{fmtPct(v)}</span> },
+        { key: "autoPctFemale", label: "% Female", align: "right", render: renderPctFemaleCell },
       ],
     },
     {
@@ -2979,7 +3004,7 @@ function MobRecruitmentFunnelPage({ filters }) {
           title={mobGrain === "parish" ? "Parish performance vs target" : "Venue performance vs target"}
           subtitle={mobGrain === "parish"
             ? "Call-center confirmed (vs mobilisation target) and auto-confirmed from awareness-eligible youth (vs treatment target) shown separately, plus the total confirmed vs combined target."
-            : "Call-center only — no venue-level awareness data exists to blend in (awareness records carry district/parish, not venue)."}
+            : "Call-center confirmed (vs mobilisation target) shown alongside its parish's auto-confirmed figure (vs treatment target) — awareness records carry no venue at all, only district/parish, so that middle block is the same number on every venue in that parish, not venue-specific. Total stays call-center-only, to avoid double-counting a shared parish figure across sibling venues."}
           chip="REAL"
         >
           {mobGrain === "parish" ? (
