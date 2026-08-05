@@ -35,13 +35,14 @@ from app.core.tables import (
     RETENTION_ATTENDANCE_RAW,
     AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT,
     AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT,
+    AWARENESS_ELIGIBLE_TARGET_BC5,
     active_cohort_clause,
     resolve_active_cohorts,
     target_measure_where,
     TARGET_MEASURE_BY_COHORT,
     DEFAULT_TARGET_MEASURE,
 )
-from app.routers.recruitment import _auto_confirmed_count
+from app.routers.recruitment import _auto_confirmed_count, _mobilisation_target_by_parish_bc5
 
 router = APIRouter()
 
@@ -457,22 +458,52 @@ def stage_progress(
         f"SELECT SUM(registration_target) AS t FROM {AWARENESS_SUMMARY} "
         f"WHERE {aw_where} AND data_measure = '{AWARENESS_MEASURE_TARGET}'",
         aw_params, role=user.role) or [{}])[0].get("t") or 0
+    # registration_target is NULL on every one of BOOTCAMP_5's gold rows
+    # (confirmed live 2026-08-05 — 26 'parish_targets' rows, all NULL), so
+    # aw_target comes back 0 for BC5 even though a real target exists — the
+    # same hardcoded AWARENESS_ELIGIBLE_TARGET_BC5 sheet (1,428) the rest of
+    # the Awareness tab already uses as its sole target source. Falls back to
+    # it here too, rather than leaving Registered/Interested/Eligible's score
+    # cards with "no target set" when a real number is available elsewhere in
+    # the same app.
+    if not aw_target:
+        requested_districts = {d.upper() for d in district} if district else None
+        aw_target = sum(
+            row["target"] for row in AWARENESS_ELIGIBLE_TARGET_BC5
+            if not requested_districts or row["district"] in requested_districts
+        )
 
     # mobilisation_target has no gender breakdown (only the 'targets'/
     # 'venue_targets' rows carry it, and those have no gender column at all
     # — see tables.py). DAILY_ACQUISITION_TARGETS_DEDUPED, not the raw table
     # — see the note in _stage_counts above on why a plain SUM over the raw
-    # snapshot-log rows inflates this total. target_measure_where (not a
-    # hardcoded measure = 'targets') — see the same note on why the real
-    # measure differs by cohort.
-    mo_tm_where, mo_tm_params = target_measure_where("spmo", resolve_active_cohorts(cohort))
-    mo_where, mo_params = build_where(
-        districts=district, extra=[(mo_tm_where, mo_tm_params)], prefix="spmo",
-        district_col="agent_district",
-    )
-    mo_target = (database.run_query(
-        f"SELECT SUM(mobilisation_target) AS t FROM {DAILY_ACQUISITION_TARGETS_DEDUPED} WHERE {mo_where}",
-        mo_params, role=user.role) or [{}])[0].get("t") or 0
+    # snapshot-log rows inflates this total.
+    #
+    # BOOTCAMP_5 is a special case, same as mobilisation()/mobilisation_
+    # heatmap(): its mobilisation_target column (on EITHER 'targets' or
+    # 'venue_targets') is confirmed live to be an exact duplicate of
+    # AWARENESS_ELIGIBLE_TARGET_BC5's own per-parish target — not an
+    # independent mobilisation figure at all (e.g. summing it gives 1,428,
+    # identical to the awareness-stage target). The real mobilisation target
+    # is PARISH_TARGETS_BC5.control_mobilised_target (1,447), which
+    # _mobilisation_target_by_parish_bc5() already resolves correctly for
+    # mobilisation()/mobilisation_heatmap() — reused here so this endpoint's
+    # Assigned/Reached/Confirmed score cards agree with those tabs instead of
+    # silently reading the awareness-stage number.
+    cohorts = resolve_active_cohorts(cohort)
+    non_bc5_cohorts = [c for c in cohorts if c != "BOOTCAMP_5"]
+    mo_target = 0
+    if non_bc5_cohorts:
+        mo_tm_where, mo_tm_params = target_measure_where("spmo", non_bc5_cohorts)
+        mo_where, mo_params = build_where(
+            districts=district, extra=[(mo_tm_where, mo_tm_params)], prefix="spmo",
+            district_col="agent_district",
+        )
+        mo_target = (database.run_query(
+            f"SELECT SUM(mobilisation_target) AS t FROM {DAILY_ACQUISITION_TARGETS_DEDUPED} WHERE {mo_where}",
+            mo_params, role=user.role) or [{}])[0].get("t") or 0
+    if "BOOTCAMP_5" in cohorts:
+        mo_target += sum(_mobilisation_target_by_parish_bc5(district, user.role).values())
 
     sf_where, sf_params = build_where(
         districts=district, gender=gender, extra=[active_cohort_clause("spsf", requested=cohort)], prefix="spsf",
@@ -672,12 +703,12 @@ def cohort_comparison(user: User = Depends(current_user)):
     GROUP BY bootcamp_cycle
     """
     moa_by_cycle = {r["bootcamp_cycle"]: r for r in database.run_query(moa_detail_sql, role=user.role)}
-    # Override any cohort whose real preload_youth/mobilisation_target live
-    # on a different measure than the '{DAILY_ACQ_MEASURE_TARGET}' this query
-    # is hardcoded to (see TARGET_MEASURE_BY_COHORT in tables.py) — currently
-    # just BOOTCAMP_5, whose real figures are on 'venue_targets' (confirmed
-    # live 2026-08-05: preload_youth 2,073 there vs 1,995 on 'targets', a
-    # different/wrong total for that cohort).
+    # Override any cohort whose real preload_youth lives on a different
+    # measure than the '{DAILY_ACQ_MEASURE_TARGET}' this query is hardcoded
+    # to (see TARGET_MEASURE_BY_COHORT in tables.py) — currently just
+    # BOOTCAMP_5, whose real preload_youth is on 'venue_targets' (confirmed
+    # live 2026-08-05: 2,073 there vs 1,995 on 'targets', a different/wrong
+    # total for that cohort).
     for cyc, measure in TARGET_MEASURE_BY_COHORT.items():
         if measure == DEFAULT_TARGET_MEASURE:
             continue
@@ -688,6 +719,19 @@ def cohort_comparison(user: User = Depends(current_user)):
             role=user.role) or [{}])[0]
         if row.get("assigned") is not None or row.get("target") is not None:
             moa_by_cycle[cyc] = row
+    # BOOTCAMP_5's mobilisation_target column (on EITHER measure) is
+    # confirmed live to be an exact duplicate of AWARENESS_ELIGIBLE_TARGET_BC5's
+    # own per-parish target, not an independent mobilisation figure — see the
+    # note at stage_progress's mo_target. The real target is
+    # PARISH_TARGETS_BC5.control_mobilised_target, via
+    # _mobilisation_target_by_parish_bc5() — same fix mobilisation()/
+    # mobilisation_heatmap() already apply, reused here so this cohort's row
+    # agrees with those tabs' own targets.
+    if "BOOTCAMP_5" in moa_by_cycle:
+        moa_by_cycle["BOOTCAMP_5"] = {
+            **moa_by_cycle["BOOTCAMP_5"],
+            "target": sum(_mobilisation_target_by_parish_bc5([], user.role).values()),
+        }
 
     mo_detail_sql = f"""
     SELECT bootcamp_cycle,
