@@ -234,33 +234,31 @@ def test_trainers_register_includes_trainer_key_and_gender(as_staff, mock_run_qu
 
 
 # --- Awareness parish (incl. RCT Treatment/Control) --------------------------
-# The RCT assignment card's Treatment/Control/Unassigned split is now read
-# straight off AWARENESS_SUMMARY's per-parish total_registered_youth_treatment/
-# control (+ female/male) columns, the same table/query awareness_parish
+# awareness_parish is backed by the live per-youth AWARENESS_KYC table, not
+# the gold AWARENESS_SUMMARY mart (which lags live registrations -- see the
+# function's docstring). The RCT assignment card's Treatment/Control/
+# Unassigned split is read straight off AWARENESS_KYC's per-youth
+# is_treatment BOOL column (TRUE/FALSE/NULL), the same query awareness_parish
 # already feeds the rest of Awareness Overview from -- one parish-grain fetch
 # for everything, so the card is automatically as search/filter-scoped as
-# every other card on the page. Confirmed against live data (2026-08-04):
-# summed by cohort, treatment+control equals total_eligible_youth exactly for
-# BOOTCAMP_3 (fully randomized), ~11% of it for BOOTCAMP_4, ~84% for
-# BOOTCAMP_5, 0% for BOOTCAMP_2 (predates randomization) -- despite the
-# warehouse's "registered" prefix, these columns track arm assignment within
-# the eligible population, not raw registration.
+# every other card on the page. Confirmed against live data (2026-08-05):
+# COUNTIF(is_treatment = TRUE)/COUNTIF(is_treatment = FALSE) match the gold
+# mart's own treatment/control totals exactly for both cohorts that carry
+# is_treatment data (BOOTCAMP_4: 596/100; BOOTCAMP_5: 870/679) -- BOOTCAMP_2/3
+# carry no is_treatment data on this table, same as the gold mart's own
+# 0%/fully-randomized-elsewhere gap for those cohorts.
 
 
 def test_awareness_parish_shape_includes_treatment_control(as_staff, mock_run_query):
-    def side_effect(sql, params, role):
-        if "registration_target" in sql:
-            return []
-        return [{
-            "district": "BUGIRI", "parish": "BULIDHA",
-            "reached": 500, "reached_female": 300, "reached_male": 200,
-            "interested": 400, "interested_female": 250, "interested_male": 150,
-            "eligible": 350, "eligible_female": 220, "eligible_male": 130,
-            "pct_female": 62.9,
-            "eligible_treatment": 150, "eligible_treatment_female": 95, "eligible_treatment_male": 55,
-            "eligible_control": 100, "eligible_control_female": 63, "eligible_control_male": 37,
-        }]
-    mock_run_query.set_side_effect(side_effect)
+    mock_run_query.set_rows([{
+        "district": "BUGIRI", "parish": "BULIDHA",
+        "reached": 500, "reached_female": 300, "reached_male": 200,
+        "interested": 400, "interested_female": 250, "interested_male": 150,
+        "eligible": 350, "eligible_female": 220, "eligible_male": 130,
+        "pct_female": 62.9,
+        "eligible_treatment": 150, "eligible_treatment_female": 95, "eligible_treatment_male": 55,
+        "eligible_control": 100, "eligible_control_female": 63, "eligible_control_male": 37,
+    }])
     r = as_staff.get("/api/recruitment/awareness-parish")
     assert r.status_code == 200
     row = r.json()["parishes"][0]
@@ -275,17 +273,14 @@ def test_awareness_parish_shape_includes_treatment_control(as_staff, mock_run_qu
 def test_awareness_parish_sql_sums_treatment_control_columns(as_staff, mock_run_query):
     mock_run_query.set_rows([])
     as_staff.get("/api/recruitment/awareness-parish")
-    # target_sql runs before actual_sql inside the endpoint -- the treatment/
-    # control SUMs are on actual_sql, so find whichever call has them rather
-    # than assuming call order.
-    sql = next(c["sql"] for c in mock_run_query.calls if "eligible_treatment" in c["sql"])
-    assert AWARENESS_SUMMARY in sql
-    assert "SUM(total_registered_youth_treatment) AS eligible_treatment" in sql
-    assert "SUM(total_registered_youth_female_treatment) AS eligible_treatment_female" in sql
-    assert "SUM(total_registered_youth_male_treatment) AS eligible_treatment_male" in sql
-    assert "SUM(total_registered_youth_control) AS eligible_control" in sql
-    assert "SUM(total_registered_youth_female_control) AS eligible_control_female" in sql
-    assert "SUM(total_registered_youth_male_control) AS eligible_control_male" in sql
+    sql = mock_run_query.calls[0]["sql"]
+    assert AWARENESS_KYC in sql
+    assert "COUNTIF(elligible = TRUE AND is_treatment = TRUE) AS eligible_treatment" in sql
+    assert "COUNTIF(elligible = TRUE AND is_treatment = TRUE AND UPPER(youth_gender) = 'FEMALE') AS eligible_treatment_female" in sql
+    assert "COUNTIF(elligible = TRUE AND is_treatment = TRUE AND UPPER(youth_gender) = 'MALE') AS eligible_treatment_male" in sql
+    assert "COUNTIF(elligible = TRUE AND is_treatment = FALSE) AS eligible_control" in sql
+    assert "COUNTIF(elligible = TRUE AND is_treatment = FALSE AND UPPER(youth_gender) = 'FEMALE') AS eligible_control_female" in sql
+    assert "COUNTIF(elligible = TRUE AND is_treatment = FALSE AND UPPER(youth_gender) = 'MALE') AS eligible_control_male" in sql
 
 
 def test_awareness_parish_hardcoded_target_only_row_zeroes_treatment_control(as_staff, mock_run_query):

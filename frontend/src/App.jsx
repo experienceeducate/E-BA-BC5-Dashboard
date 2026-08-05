@@ -1674,7 +1674,7 @@ function AwarenessOverviewPage({ filters }) {
               { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
               {
                 key: "target", label: "Target", align: "right",
-                render: (v, r) => <span title={r.usesHardcodedTarget ? "Includes the hardcoded BC5 planning target for at least one parish in this district" : "Live registration_target"}>{fmtNum(v)}{r.usesHardcodedTarget ? " *" : ""}</span>,
+                render: (v, r) => <span title={r.usesHardcodedTarget ? "Includes the hardcoded BC5 planning target for at least one parish in this district" : undefined}>{fmtNum(v)}{r.usesHardcodedTarget ? " *" : ""}</span>,
               },
               { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
               { key: "rate", label: "Progress", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
@@ -1705,7 +1705,7 @@ function AwarenessOverviewPage({ filters }) {
                   { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
                   {
                     key: "target", label: "Target", align: "right",
-                    render: (v, r) => <span title={r.target_source === "hardcoded" ? "Hardcoded BC5 planning target" : r.target_source === "live" ? "Live registration_target" : undefined}>{fmtNum(v)}{r.target_source === "hardcoded" ? " *" : ""}</span>,
+                    render: (v, r) => <span title={r.target_source === "hardcoded" ? "Hardcoded BC5 planning target" : undefined}>{fmtNum(v)}{r.target_source === "hardcoded" ? " *" : ""}</span>,
                   },
                   { key: "pct_female", label: "% Female", align: "right", render: (v) => <span style={{ color: v == null ? C.muted : v >= 60 ? C.green : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
                   { key: "rate", label: "Progress", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
@@ -1720,7 +1720,7 @@ function AwarenessOverviewPage({ filters }) {
                   <button onClick={() => setParishPage(Math.min(parishMaxPage, parishPageClamped + 1))} disabled={parishPageClamped === parishMaxPage} style={{ ...PAGER_BTN, opacity: parishPageClamped === parishMaxPage ? 0.5 : 1 }}>Next ›</button>
                 </span>
               </div>
-              <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>* Hardcoded BC5 planning target (currently MAYUGE/IGANGA only) — every other parish falls back to the live registration_target.</p>
+              <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>* Hardcoded BC5 planning target (currently MAYUGE/IGANGA only) — no target is shown for any other parish (no live source since the Awareness tab moved off the gold summary mart).</p>
             </>
           )}
         </State>
@@ -2369,10 +2369,9 @@ function AwarenessForecastPage({ filters }) {
     return { event_date: d.event_date, eligible_cum: eligCum, target: data?.target ?? null };
   });
 
-  // Target is an eligible-youth quota where hardcoded (AWARENESS_ELIGIBLE_TARGET_BC5),
-  // a raw-registration quota where live-fallback — progress/gap/pace all
-  // compare against whichever basis applies (backend already picks the right
-  // one per district into `actual`/actual_to_date_for_target).
+  // Target is an eligible-youth quota (AWARENESS_ELIGIBLE_TARGET_BC5, the
+  // only target source now that Awareness is off the gold summary mart) —
+  // progress/gap/pace all compare against eligible, not raw registrations.
   const progressPct = data?.target ? Math.round(1000 * (data.actual_to_date_for_target || 0) / data.target) / 10 : null;
 
   const districtRows = byDistrict.map((d) => ({ ...d, category: categorizeRate(d.pct_of_target) }));
@@ -2380,11 +2379,9 @@ function AwarenessForecastPage({ filters }) {
   const parishRows = (parishData.data?.parishes || []).map((p) => {
     const registered = p.reached || 0;
     const eligible = p.eligible || 0;
-    const isHardcoded = p.target_source === "hardcoded";
-    const actual = isHardcoded ? eligible : registered;
     const target = p.target || 0;
-    const gap = Math.max(target - actual, 0);
-    const rate = data?.n_days ? actual / data.n_days : null;
+    const gap = Math.max(target - eligible, 0);
+    const rate = data?.n_days ? eligible / data.n_days : null;
     return {
       district: p.district,
       parish: p.parish,
@@ -2393,7 +2390,7 @@ function AwarenessForecastPage({ filters }) {
       target,
       target_source: p.target_source,
       gap,
-      pct_of_target: target ? Math.round(1000 * actual / target) / 10 : null,
+      pct_of_target: target ? Math.round(1000 * eligible / target) / 10 : null,
       days_to_target: rate ? Math.round(gap / rate) : null,
     };
   });
@@ -2403,7 +2400,7 @@ function AwarenessForecastPage({ filters }) {
     { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
     {
       key: "target", label: "Target", align: "right",
-      render: (v, r) => <span title={r.target_source === "hardcoded" ? "Hardcoded BC5 planning target — an eligible-youth quota" : r.target_source === "live" ? "Live registration_target — a raw-registration quota" : undefined}>{fmtNum(v)}{r.target_source === "hardcoded" ? " *" : ""}</span>,
+      render: (v, r) => <span title={r.target_source === "hardcoded" ? "Hardcoded BC5 planning target — an eligible-youth quota" : undefined}>{fmtNum(v)}{r.target_source === "hardcoded" ? " *" : ""}</span>,
     },
     { key: "gap", label: "Gap", align: "right", render: (v) => fmtNum(v) },
     { key: "days_to_target", label: "Days to target", align: "right", render: (v) => (v == null ? "—" : v <= 0 ? "Met" : `${fmtNum(v)} d`) },
@@ -2426,17 +2423,15 @@ function AwarenessForecastPage({ filters }) {
   return (
     <div>
       <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
-        Pace against target — daily trend, progress by district, and days-to-target at the current pace.
-        Target prefers the hardcoded BC5 planning sheet where it has data for a district/parish (marked *,
-        an eligible-youth quota), falling back to the live registration_target elsewhere (a raw-registration
-        quota) — progress/gap/pace below compare against whichever basis applies. Click a district row to
-        drill into its parishes.
+        Eligible-youth pace against target — daily trend, progress by district, and days-to-target at the
+        current pace. Target is the hardcoded BC5 planning sheet only (marked *) — no target is shown for a
+        district/parish it doesn't cover. Click a district row to drill into its parishes.
       </p>
 
       <Grid cols={4}>
         <KpiTile label="Registered to date" value={fmtNum(data?.registered_to_date)} tag="REAL" />
         <KpiTile label="Registration target" value={fmtNum(data?.target)} tag="REAL" />
-        <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(progressPct)] }}>{fmtPct(progressPct)}</span>} sub="eligible or registered ÷ target" tag="DERIVED" tone="sim" />
+        <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(progressPct)] }}>{fmtPct(progressPct)}</span>} sub="eligible ÷ target" tag="DERIVED" tone="sim" />
         <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub={`at current pace · ${fmtNum(data?.avg_daily_rate)}/day`} tag="DERIVED" tone="sim" />
         <KpiTile label="Eligible to date" value={fmtNum(data?.eligible_to_date)} sub={`of ${fmtNum(data?.interested_to_date)} interested`} tag="REAL" />
         <KpiTile label="Eligibility rate" value={<span style={{ color: rateColor(data?.eligibility_rate, "eligibility_rate") }}>{fmtPct(data?.eligibility_rate)}</span>} sub={`eligible ÷ interested · ${RATE_TARGETS.eligibility_rate.good}% target`} tag="DERIVED" tone="sim" />
@@ -2465,7 +2460,7 @@ function AwarenessForecastPage({ filters }) {
         </State>
       </Card>
 
-      <Card title="Daily trend — eligible youth vs target (cumulative)" subtitle="Running total of eligible youth against the registration target (hardcoded BC5 sheet where available, live registration_target elsewhere) — stands in for the reference design's eligible-youth target line" chip="REAL">
+      <Card title="Daily trend — eligible youth vs target (cumulative)" subtitle="Running total of eligible youth against the registration target (hardcoded BC5 sheet — MAYUGE/IGANGA only, no target elsewhere) — stands in for the reference design's eligible-youth target line" chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
           <ResponsiveContainer width="100%" height={280}>
             <AreaChart data={cumDaily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
@@ -2487,14 +2482,14 @@ function AwarenessForecastPage({ filters }) {
         </State>
       </Card>
 
-      <Card title="Days to target, by district" subtitle="Eligible or registered (whichever the target's basis is) vs target at current pace — click a district to see its parishes" chip="REAL">
+      <Card title="Days to target, by district" subtitle="Eligible youth vs target at current pace — click a district to see its parishes" chip="REAL">
         <State loading={loading} error={error} empty={!loading && districtRows.length === 0}>
           <DataTable
             columns={[{ key: "district", label: "District" }, ...forecastColumns]}
             rows={districtRows}
             onRowClick={openParishDrill}
           />
-          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>* Hardcoded BC5 planning target (currently MAYUGE/IGANGA only) — every other district/parish falls back to the live registration_target.</p>
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>* Hardcoded BC5 planning target (currently MAYUGE/IGANGA only) — no target is shown for any other district/parish (no live source since the Awareness tab moved off the gold summary mart).</p>
         </State>
       </Card>
     </div>
@@ -5604,19 +5599,19 @@ async function buildAwarenessExport(filters) {
     return { stage: label, female: f, male: m, pct_female: t ? Math.round((1000 * f) / t) / 10 : null };
   });
 
-  // Target is an eligible-youth quota where hardcoded, a raw-registration
-  // quota where live — compare against whichever basis applies (matches
-  // awareness_forecast's by_district and AwarenessForecastPage's parishRows).
+  // Target is an eligible-youth quota (AWARENESS_ELIGIBLE_TARGET_BC5, the
+  // only target source now that Awareness is off the gold summary mart) —
+  // matches awareness_forecast's by_district and AwarenessForecastPage's
+  // parishRows.
   const nDays = forecast.n_days;
   const forecastByDistrict = (forecast.by_district || []);
   const forecastByParish = parishRows.map((p) => {
     const registered = p.reached || 0, eligible = p.eligible || 0;
-    const actual = p.target_source === "hardcoded" ? eligible : registered;
-    const target = p.target || 0, gap = Math.max(target - actual, 0);
-    const rate = nDays ? actual / nDays : null;
+    const target = p.target || 0, gap = Math.max(target - eligible, 0);
+    const rate = nDays ? eligible / nDays : null;
     return {
       district: p.district, parish: p.parish, registered, eligible, target, gap,
-      pct_of_target: target ? Math.round((1000 * actual) / target) / 10 : null,
+      pct_of_target: target ? Math.round((1000 * eligible) / target) / 10 : null,
       days_to_target: rate ? Math.round(gap / rate) : null,
     };
   });
