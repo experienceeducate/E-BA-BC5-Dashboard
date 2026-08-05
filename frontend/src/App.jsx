@@ -4856,10 +4856,6 @@ function MilestonesTab({ filters }) {
 
   const bottom5AvgCompletion = bottom5.length ? Math.round((10 * sumBy(bottom5, "completion_pct")) / bottom5.length) / 10 : null;
 
-  const parentVals = weekly.map((w) => w.parent_present_pct).filter((v) => v != null);
-  const parentGapWide = parentVals.length >= 2 && (Math.max(...parentVals) - Math.min(...parentVals) > 40);
-  const avgParentNoReportPct = weekly.length ? Math.round((10 * sumBy(weekly, "parent_no_report_pct")) / weekly.length) / 10 : null;
-
   // Climb-then-reverse narrative — same read as the reference design's "Wk1
   // 35% -> Wk3 59% -> Wk4 26%", but built off whichever week actually peaks
   // and whichever week is latest, not a hardcoded "Week 3"/"Week 4".
@@ -5092,14 +5088,32 @@ function MilestonesTab({ filters }) {
             <b>Then week {latest.week_number} reverses it.</b> Exceeding expectations falls to <b>{fmtPct(latest.exceed_pct)}</b>, down {Math.abs(weekOverWeek)}pp from week {prior.week_number}, even as completion holds at {fmtPct(latest.completion_pct)} — this is the moment to concentrate coaching, before graduation rather than after.
           </Insight>
         )}
-        {parentGapWide && (
-          <Insight tone="warn">
-            <b>Fix the parent-engagement capture.</b> Reported parent presence swings from {fmtPct(Math.min(...parentVals))} to {fmtPct(Math.max(...parentVals))} across weeks — {avgParentNoReportPct != null && avgParentNoReportPct > 30 ? "a large share of that swing is unreported weeks, not real absence" : "that's a data-capture gap, not real absence"}. See "Parental engagement" below for the week-by-week detail.
-          </Insight>
-        )}
       </div>
+    </div>
+  );
+}
 
-      <ExecBand num="◆" title="Parental engagement" />
+// Parental engagement lives on the same MILESTONES table as pitch quality
+// (parent_engagement is captured alongside business_plan_score on the same
+// weekly Friday record) but is its own Implementation tab rather than a
+// section of Milestones — a separate stakeholder concern (parent buy-in,
+// not pitch coaching), even though it shares a fetch.
+function ParentalEngagementTab({ filters }) {
+  const { data, loading, error } = useApi(`/api/implementation/milestones${buildParams(filters)}`);
+  const weekly = data?.weekly || [];
+  const parentVals = weekly.map((w) => w.parent_present_pct).filter((v) => v != null);
+  const parentGapWide = parentVals.length >= 2 && (Math.max(...parentVals) - Math.min(...parentVals) > 40);
+  const avgParentNoReportPct = weekly.length ? Math.round((10 * sumBy(weekly, "parent_no_report_pct")) / weekly.length) / 10 : null;
+
+  return (
+    <div>
+      {!loading && !error && weekly.length === 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <Insight tone="neutral">
+            <b>No milestone reports for this filter.</b> The live business-plan-report table only has BOOTCAMP_3, BOOTCAMP_4, and MINI_BOOTCAMP_3 data so far — no BOOTCAMP_5 rows yet. {filters.cohort ? `Switch the cohort filter off "${filters.cohort}"` : "Try narrowing the cohort filter"} to see it.
+          </Insight>
+        </div>
+      )}
       <Card
         title="Parents present, by week"
         subtitle="Number of parents recorded as present that Friday, against everyone who reported a pitch score that week. parent_engagement is unreported for a large share of rows in every cohort — shown as its own share below, not folded into 'absent'."
@@ -5250,9 +5264,12 @@ const GUIDE_PAGES = [
   { group: "Implementation", page: "Youth Experience", tone: "sample", navGroup: "impl", navTab: "nps",
     summary: "Weekly NPS trend (Programme / Venue / Meals).",
     what: "Programme / Venue / Meals NPS weekly trend. Still placeholder data." },
+  { group: "Implementation", page: "Parental Engagement", tone: "real", navGroup: "impl", navTab: "parental",
+    summary: "Parents present by week, vs. an unreported share.",
+    what: "Number of parents recorded as present each Friday, against every youth who reported a pitch score that week — and the share with no parent-engagement answer recorded at all, shown separately rather than folded into 'absent'. Shares the same live business-plan-report table as Milestones (BOOTCAMP_3/4 and MINI_BOOTCAMP_3 only, no BOOTCAMP_5 rows yet), but broken out as its own tab since it's a distinct stakeholder concern from pitch quality." },
   { group: "Product Design", page: "Milestones", tone: "real", navGroup: "product", navTab: "milestones",
     summary: "Weekly pitch quality, below/meets/exceeds, by venue.",
-    what: "Weekly business-pitch milestone distribution (below / meets / exceeds expectations), completion rate, parental-attendance rate, and a per-venue top/bottom-5 ranking by cumulative % exceeding. Backed by the live silver business-plan-report table — BOOTCAMP_3/4 and MINI_BOOTCAMP_3 only, no BOOTCAMP_5 rows yet." },
+    what: "Weekly business-pitch milestone distribution (below / meets / exceeds expectations), completion rate, and a district rollup plus a full ranked venue list (cumulative % exceeding, drillable by district then venue). Backed by the live silver business-plan-report table — BOOTCAMP_3/4 and MINI_BOOTCAMP_3 only, no BOOTCAMP_5 rows yet. Parental engagement moved to its own Implementation tab." },
   { group: "Field Operations", page: "Venue", tone: "sample", navGroup: "fops", navTab: "venue",
     summary: "Compliance rate by venue.",
     what: "Compliance rate by venue. Still placeholder data." },
@@ -5335,7 +5352,7 @@ function GuideTab({ navigate }) {
         <KpiTile label="Guide" value="You are here" sub="No live data — a reference page." tone="pii" />
         <KpiTile label="Executive Summary" value="1 page" sub="The whole funnel at a glance, plus gender split and recommendations." onClick={navigate ? () => navigate("es", "es-main") : undefined} />
         <KpiTile label="Recruitment" value="5 pages" sub="Awareness, Mobilisation, Acquisition, Mobilisers, TAM Analysis." onClick={navigate ? () => navigate("rec") : undefined} />
-        <KpiTile label="Implementation" value="5 pages" sub="Retention, Attendance, Retention Calls, Trainer Quality, Youth Experience." onClick={navigate ? () => navigate("impl") : undefined} />
+        <KpiTile label="Implementation" value="6 pages" sub="Retention, Attendance, Retention Calls, Trainer Quality, Youth Experience, Parental Engagement." onClick={navigate ? () => navigate("impl") : undefined} />
         <KpiTile label="Product Design" value="1 page" sub="Milestones." onClick={navigate ? () => navigate("product") : undefined} />
         <KpiTile label="Field Operations" value="2 pages" sub="Venue, Transport." onClick={navigate ? () => navigate("fops") : undefined} />
       </Grid>
@@ -5435,6 +5452,7 @@ const NAV = [
     { key: "retcalls", label: "Retention Calls", render: (f) => <RetentionCallsTab filters={f} /> },
     { key: "train", label: "Trainer Quality", render: (f) => <TrainersTab filters={f} /> },
     { key: "nps", label: "Youth Experience", render: (f) => <NpsTab filters={f} /> },
+    { key: "parental", label: "Parental Engagement", render: (f) => <ParentalEngagementTab filters={f} /> },
   ]},
   { key: "product", group: "Product Design", tabs: [
     { key: "milestones", label: "Milestones", render: (f) => <MilestonesTab filters={f} /> },
@@ -5916,12 +5934,29 @@ async function buildMilestonesExport(filters) {
     sections: [
       xSection("Pitch quality by week", "week_number", "Week", [
         xCol("completion_pct", "Completion %", { format: fmtPct }), xCol("below_pct", "Below %", { format: fmtPct }),
-        xCol("meet_pct", "Meets %", { format: fmtPct }), xCol("exceed_pct", "Exceeds %", { format: fmtPct }), xCol("parent_present_pct", "Parent present %", { format: fmtPct }),
+        xCol("meet_pct", "Meets %", { format: fmtPct }), xCol("exceed_pct", "Exceeds %", { format: fmtPct }),
       ], data.weekly || []),
       xSection("Milestone quality, by district", "district", "District", [xCol("exceed_pct", "% exceeding", { format: fmtPct })], districtRows),
       xSection("Venue milestone performance", "venue", "Venue", [
         xTextCol("district", "District"), xCol("avg_youth_per_week", "Youth/wk"), xCol("completion_pct", "Completion %", { format: fmtPct }), xCol("exceed_pct", "% Exceeds", { format: fmtPct }),
       ], byVenue),
+    ],
+  };
+}
+
+// Same MILESTONES-backed weekly fetch as buildMilestonesExport (parent
+// engagement lives on the same table), kept as its own export builder since
+// Parental Engagement is now its own Implementation tab, not a Milestones
+// section.
+async function buildParentalEngagementExport(filters) {
+  const data = await apiGet(`/api/implementation/milestones${buildParams(filters)}`);
+  return {
+    label: "Parental Engagement",
+    sections: [
+      xSection("Parents present, by week", "week_number", "Week", [
+        xCol("total_youth", "Reported that week"), xCol("parent_present", "# Parents present"), xCol("parent_present_pct", "% Present", { format: fmtPct }),
+        xCol("parent_no_report", "# Not reported"), xCol("parent_no_report_pct", "% Not reported", { format: fmtPct }),
+      ], data.weekly || []),
     ],
   };
 }
@@ -5972,6 +6007,7 @@ const EXPORT_BUILDERS = {
   retcalls: buildRetentionCallsExport,
   train: buildTrainerQualityExport,
   nps: buildNpsExport,
+  parental: buildParentalEngagementExport,
   milestones: buildMilestonesExport,
   venue: buildVenueExport,
   transport: buildTransportExport,
