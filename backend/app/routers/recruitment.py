@@ -46,6 +46,7 @@ from app.core.tables import (
     AWARENESS_ELIGIBLE_TARGET_BC5,
     target_measure_where,
     canonical_parish_sql,
+    canonical_venue_sql,
     PARISH_TARGETS_BC5,
 )
 
@@ -1110,15 +1111,26 @@ def mobilisation_heatmap(
     total. by_parish's target is similarly combined: mobilisation_target
     (acquisition side) + that parish's own treatment-target share of
     PARISH_TARGETS_BC5's eligible target (awareness side, BC5-only — that
-    table has no cohort column). by_venue has no such blend available —
-    awareness-stage records (AWARENESS_KYC/AWARENESS_SUMMARY) carry no venue
-    at all, only district/parish, so venue rows stay call-center-only.
+    table has no cohort column).
+
+    by_venue carries auto_confirmed/auto_confirmed_female/treatment_target
+    too, but — unlike by_parish — these are NOT blended into confirmed/
+    target/reached, which stay call-center-only. Awareness-stage records
+    carry no venue at all, only district/parish, so the figure is really the
+    venue's PARISH total, repeated on every venue in that parish; blending it
+    into confirmed/target would double- (or triple-, ...) count that parish's
+    real number if a caller summed by_venue's rows. It's exposed purely so
+    the frontend can show it for structural parity with by_parish's
+    Auto-confirmed block, clearly labeled as parish-level.
 
     by_venue's assigned/target come from a live per-venue query where the
     cohort's target measure carries venue_name (confirmed for BOOTCAMP_5's
     'venue_targets'); where it doesn't, target falls back to the hardcoded
-    VENUE_MOBILISATION_TARGET (see tables.py) and assigned stays 0 (that list
-    has no "assigned" concept).
+    VENUE_MOBILISATION_TARGET (see tables.py, including its VENUE_NAME_ALIASES
+    for live spelling variants) and assigned stays 0 (that list has no
+    "assigned" concept). If that still comes out 0 and the venue is the only
+    one in its parish, target falls back once more to that parish's own
+    (BC5-corrected) target — see the loop below.
 
     Both levels are scoped to only districts/parishes with a real target row
     for this cohort (not the union with the actual/reached data) — confirmed
@@ -1140,14 +1152,17 @@ def mobilisation_heatmap(
     # Grouped by parish + venue, NOT agent_district — see the district_by_parish
     # note further down for why (agent_district is the calling agent's own
     # location, not reliable for the youth/venue's real district).
-    # UPPER(venue_name) on both this and venue_targets_sql below — the actual
-    # side's venue_name casing doesn't match the target side's (e.g. "BUSIMO
-    # PRIMARY SCHOOL" vs "Busimo Primary School" for the same real venue,
-    # confirmed live 2026-08-04). Without normalising, the two sides join as
-    # two separate rows instead of one, splitting a venue's real numbers
-    # apart rather than combining them.
+    # canonical_venue_sql(venue_name) on both this and venue_targets_sql below
+    # — the actual side's venue_name casing/spelling doesn't always match the
+    # target side's (e.g. "BUSIMO PRIMARY SCHOOL" vs "Busimo Primary School"
+    # for the same real venue, confirmed live 2026-08-04; three further
+    # spelling variants confirmed live 2026-08-05, see VENUE_NAME_ALIASES).
+    # Without normalising both sides the same way, they join as two separate
+    # rows instead of one, splitting a venue's real numbers apart (one row
+    # with assigned/target, the other with reached/confirmed) rather than
+    # combining them.
     by_venue_sql = f"""
-    SELECT {canonical_parish_sql("venue_parish")} AS parish, UPPER(venue_name) AS venue,
+    SELECT {canonical_parish_sql("venue_parish")} AS parish, {canonical_venue_sql("venue_name")} AS venue,
            SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed,
            SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS confirmed_female
     FROM {DAILY_ACQUISITION_SUMMARY}
@@ -1198,7 +1213,7 @@ def mobilisation_heatmap(
     # by_venue falls back to the hardcoded VENUE_MOBILISATION_TARGET below
     # (target only — that list has no "assigned" concept).
     venue_targets_sql = f"""
-    SELECT UPPER(agent_district) AS district, {canonical_parish_sql("venue_parish")} AS parish, UPPER(venue_name) AS venue,
+    SELECT UPPER(agent_district) AS district, {canonical_parish_sql("venue_parish")} AS parish, {canonical_venue_sql("venue_name")} AS venue,
            SUM(preload_youth) AS assigned, SUM(mobilisation_target) AS target
     FROM {DAILY_ACQUISITION_TARGETS_DEDUPED}
     WHERE {targets_where} AND venue_name IS NOT NULL
@@ -1357,6 +1372,9 @@ def mobilisation_heatmap(
     # by_venue_sql's own IS NOT NULL filter already excludes them.
     actual_by_venue = {(r["parish"], r["venue"]): r for r in by_venue if r["parish"] in district_by_parish}
     all_venue_keys = sorted(set(targets_by_venue) | set(actual_by_venue))
+    venues_per_parish = {}
+    for p, _ in all_venue_keys:
+        venues_per_parish[p] = venues_per_parish.get(p, 0) + 1
     by_venue_final = []
     for key in all_venue_keys:
         p, v = key
@@ -1366,8 +1384,22 @@ def mobilisation_heatmap(
             assigned, target = t.get("assigned") or 0, t.get("target") or 0
         else:
             assigned, target = 0, venue_mobilisation_target(v) or 0
+        d = district_by_parish.get(p) or (t or {}).get("district")
+        # A venue's own live target can be 0 even when a real per-parish
+        # target exists — confirmed live 2026-08-05: NAKIBENGO WARD/Busenda
+        # Primary School's DAILY_ACQUISITION_TARGETS_DEDUPED row has
+        # mobilisation_target literally 0, but targets_by_parish (already
+        # BC5-corrected via _mobilisation_target_by_parish_bc5 above) has 17
+        # for that parish. Only applied when the parish has exactly one
+        # venue, so the parish figure maps 1:1 onto it instead of being an
+        # approximation split across siblings.
+        if not target and venues_per_parish.get(p) == 1:
+            parish_target = (targets_by_parish.get((d, p)) or {}).get("target")
+            if parish_target:
+                target = parish_target
+        auto = auto_by_parish.get((d, p), {})
         by_venue_final.append({
-            "district": district_by_parish.get(p) or (t or {}).get("district"),
+            "district": d,
             "parish": p,
             "venue": v,
             "assigned": assigned,
@@ -1375,6 +1407,17 @@ def mobilisation_heatmap(
             "reached": a.get("reached") or 0,
             "confirmed": a.get("confirmed") or 0,
             "confirmed_female": a.get("confirmed_female") or 0,
+            # Parish-level, NOT venue-specific — awareness-stage records
+            # carry no venue at all (see this function's docstring), so a
+            # parish with more than one venue shows the SAME auto-confirmed
+            # number on each of its venues. Shown for structural parity with
+            # by_parish's Auto-confirmed block; deliberately NOT blended into
+            # confirmed/target/reached above (which stay call-center-only),
+            # since summing those across a parish's venues would otherwise
+            # double- (or triple-, ...) count that parish's real number.
+            "auto_confirmed": auto.get("n") or 0,
+            "auto_confirmed_female": auto.get("nf") or 0,
+            "treatment_target": treatment_target_by_parish.get((d, p), 0),
         })
 
     return {"by_venue": by_venue_final, "by_district": by_district, "by_parish": by_parish}
