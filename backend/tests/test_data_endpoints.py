@@ -37,7 +37,7 @@ def test_filters_shape(as_staff, mock_run_query):
 
 def test_overview_funnel_orders_and_computes_pct(as_staff, mock_run_query):
     def side_effect(sql, params, role):
-        if AWARENESS_SUMMARY in sql:
+        if AWARENESS_KYC in sql:
             return [{"registered": 100, "interested": 80, "eligible": 0}]
         return [{}]
     mock_run_query.set_side_effect(side_effect)
@@ -57,7 +57,7 @@ def test_overview_funnel_orders_and_computes_pct(as_staff, mock_run_query):
 
 def test_overview_kpis_rates(as_staff, mock_run_query):
     def side_effect(sql, params, role):
-        if AWARENESS_SUMMARY in sql:
+        if AWARENESS_KYC in sql:
             return [{"registered": 0, "interested": 100, "eligible": 75}]
         return [{}]
     mock_run_query.set_side_effect(side_effect)
