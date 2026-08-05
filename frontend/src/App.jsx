@@ -11,7 +11,7 @@
 import { createContext, Fragment, isValidElement, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, ComposedChart, AreaChart, Area, XAxis, YAxis,
-  CartesianGrid, Tooltip, Legend, Cell,
+  CartesianGrid, Tooltip, Legend, Cell, LabelList,
 } from "recharts";
 import { DEMO, DEMO_FILTERS } from "./demoData";
 
@@ -4875,9 +4875,9 @@ function milestoneColor(pct) {
 const MILESTONE_METRIC_LABEL = { exceed_pct: "% Exceeding expectations", completion_pct: "% Completed" };
 
 // District rollup for Milestones — a straight average of each venue's own
-// exceed_pct/completion_pct (not volume-weighted by youth count), matching
-// the reference design's "Milestone performance by district" table and its
-// per-metric district drill exactly.
+// exceed_pct/completion_pct (not volume-weighted by youth count). Feeds the
+// full venue table's per-metric drill, the District x Week header drill,
+// and the district comparison drill.
 function milestoneDistrictRollup(venueRows) {
   const byDistrict = {};
   venueRows.forEach((v) => {
@@ -5019,6 +5019,49 @@ function weekVariance(rows, entityKey, entityValue) {
   });
 }
 
+// One GroupedDataTable column-group per week, % Meet + % Exceed only -- for
+// the Cohort comparison table, where the read is specifically "is quality
+// (meeting/exceeding) rising or falling week on week", not the full
+// activated/completed/below breakdown.
+function weekColumnGroupsMeetExceed(weekNumbers) {
+  return weekNumbers.map((w, i) => ({
+    label: `Week ${w}`,
+    color: WEEK_GROUP_COLORS[i % WEEK_GROUP_COLORS.length],
+    columns: [
+      { key: `w${w}_meet_pct`, label: "% Meet", align: "right", render: fmtPct },
+      { key: `w${w}_exceed_pct`, label: "% Exceed", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+    ],
+  }));
+}
+
+// Per-cohort trend: change in % exceeding expectations from that cohort's
+// first reported week to its latest -- the "does quality improve or drop"
+// read the Cohort comparison table's trailing column shows.
+function cohortQualityTrend(rows) {
+  return distinctValues(rows, "cohort").map((cohort) => {
+    const weeks = rows.filter((r) => r.cohort === cohort).sort((a, b) => a.week_number - b.week_number);
+    const first = weeks[0], last = weeks[weeks.length - 1];
+    const trend = first && last && first !== last && first.exceed_pct != null && last.exceed_pct != null
+      ? Math.round((last.exceed_pct - first.exceed_pct) * 10) / 10
+      : null;
+    return { cohort, weeks_reported: weeks.length, trend };
+  });
+}
+
+// Inside-segment percentage label for the Weekly Overall Performance
+// horizontal stacked bar -- hidden below a minimum pixel width so thin
+// slices (e.g. a near-zero "Not completed" share) don't render clipped,
+// overlapping text.
+function stackedPctLabel(props) {
+  const { x, y, width, height, value } = props;
+  if (value == null || width < 26) return null;
+  return (
+    <text x={x + width / 2} y={y + height / 2} dy={4} textAnchor="middle" fontSize={10.5} fontWeight={700} fill={C.ink}>
+      {fmtPct(value)}
+    </text>
+  );
+}
+
 function MilestonesTab({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/milestones${buildParams(filters)}`);
@@ -5048,6 +5091,15 @@ function MilestonesTab({ filters }) {
   const districtWeekRows = data?.by_district_week || [];
   const matchedVenueWeek = q ? (data?.by_venue_week || []).filter((v) => (v.venue || "").toLowerCase().includes(q)) : (data?.by_venue_week || []);
   const districtNames = distinctValues(districtWeekRows, "district");
+
+  // Cohort x week -- deliberately NOT scoped by the venue search (cohorts
+  // aren't venues) and ignores the page's own cohort filter server-side (see
+  // _milestones_where's include_cohort=False), so every cohort with data in
+  // this table shows up side by side regardless of which one is selected.
+  const cohortWeekRows = data?.by_cohort_week || [];
+  const cohortPivot = pivotByWeek(cohortWeekRows, "cohort");
+  const cohortTrends = cohortQualityTrend(cohortWeekRows);
+  const cohortComparisonRows = cohortPivot.map((r) => ({ ...r, trend: cohortTrends.find((t) => t.cohort === r.cohort)?.trend ?? null }));
 
   // Venue x Week is paginated 10 venues at a time (one row per venue, not
   // per venue-week) rather than a scroll-all-rows container, so pivot first
@@ -5089,34 +5141,58 @@ function MilestonesTab({ filters }) {
     ? Math.round((peakWeek.exceed_pct - firstWeek.exceed_pct) * 10) / 10
     : null;
 
-  // District rollup off the search-matched venues — feeds the "Milestone
-  // performance by district" table and both the row-click (district+venue,
+  // Weekly Overall Performance chart data -- adds not_completed_pct (the
+  // complement of completion_pct) so the four stacked segments (Not
+  // Completed / Below / Meet / Exceed) always sum to 100%.
+  const weeklyChart = weekly.map((w) => ({
+    ...w,
+    not_completed_pct: w.completion_pct != null ? Math.round((100 - w.completion_pct) * 10) / 10 : null,
+  }));
+
+  // First reported week vs latest -- "does quality improve or drop by week"
+  // read for the insight under the Weekly Overall Performance chart (a
+  // straight endpoints comparison, distinct from `climbed`'s peak-vs-first
+  // read used in the story section further down).
+  const overallQualityTrend = firstWeek && latest && firstWeek !== latest && firstWeek.exceed_pct != null && latest.exceed_pct != null
+    ? Math.round((latest.exceed_pct - firstWeek.exceed_pct) * 10) / 10
+    : null;
+
+  // District rollup off the search-matched venues — feeds the venue table's
+  // per-metric drill and both the row-click (district+venue,
   // both metrics) and column-header (one metric, by district then venue)
   // drills, same rollup either way.
   const districtRollup = milestoneDistrictRollup(matchedVenues).sort((a, b) => (b.avg_exceed_pct ?? -1) - (a.avg_exceed_pct ?? -1));
 
-  // Click a venue row or a district row -> that district's venues, both
-  // metrics shown (openAt skips the root district picker when a specific
-  // district is already known, same pattern as the Attendance/Retention
-  // district->venue drills).
-  function openDistrictDrill(district) {
-    const rootRows = districtRollup.map((d) => ({ district: d.district, exceed_pct: d.avg_exceed_pct, completion_pct: d.avg_completion_pct }));
-    const rootRow = rootRows.find((r) => r.district === district) || { district, exceed_pct: null, completion_pct: null };
-    drill.openAt({
-      title: "Milestone quality — by district",
+  // Click a week's bar in the Weekly Overall Performance chart -> pick a
+  // grain (District / Venue / Gender), then see that week's completion &
+  // quality broken down that way. Root rows carry no metrics of their own
+  // (just the grain picker) -- shared `columns` with the child level means
+  // they render as "—", same tradeoff as the comparison drills' root-level
+  // delta columns below.
+  function openWeekBreakdownDrill(weekNumber) {
+    const toRows = (rows, nameKey) => rows
+      .filter((r) => r.week_number === weekNumber)
+      .map((r) => ({ name: r[nameKey], completion_pct: r.completion_pct, exceed_pct: r.exceed_pct, meet_pct: r.meet_pct, below_pct: r.below_pct }))
+      .sort((a, b) => (b.exceed_pct ?? -1) - (a.exceed_pct ?? -1));
+    const byGrain = {
+      District: toRows(districtWeekRows, "district"),
+      Venue: toRows(data?.by_venue_week || [], "venue"),
+      Gender: toRows(data?.by_gender_week || [], "gender"),
+    };
+    drill.open({
+      title: `Week ${weekNumber} — completion & quality`,
       tone: "real", tagLabel: "REAL",
-      rootKey: "district", rootLabel: "District",
+      rootKey: "grain", rootLabel: "Breakdown",
       columns: [
-        { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
         { key: "completion_pct", label: "% Completed", align: "right", render: fmtPct },
+        { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+        { key: "meet_pct", label: "% Meets", align: "right", render: fmtPct },
+        { key: "below_pct", label: "% Below", align: "right", render: (v) => <span style={{ color: v <= 5 ? C.green : v <= 10 ? C.gold : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
       ],
-      rootRows,
-      childKey: "venue", childLabel: "Venue",
-      getChildRows: (root) => matchedVenues
-        .filter((v) => v.district === root.district)
-        .map((v) => ({ venue: v.venue, exceed_pct: v.exceed_pct, completion_pct: v.completion_pct }))
-        .sort((a, b) => (b.exceed_pct ?? -1) - (a.exceed_pct ?? -1)),
-    }, rootRow);
+      rootRows: [{ grain: "District" }, { grain: "Venue" }, { grain: "Gender" }],
+      childKey: "name", childLabel: "Group",
+      getChildRows: (root) => byGrain[root.grain] || [],
+    });
   }
 
   // Column-header click on the full venue table -> that ONE metric, by
@@ -5221,23 +5297,18 @@ function MilestonesTab({ filters }) {
         />
       </Grid>
 
-      <ExecBand num="◆" title="Milestone performance by district" />
+      <ExecBand num="◆" title="Cohort comparison" />
       <Card
-        title="Milestone performance by district"
-        subtitle="Venues, youth/week, and average pitch quality per district — a straight average across that district's venues, not weighted by youth count. Click a district for its venues."
+        title="Cohort comparison — quality by week"
+        subtitle={`% meeting and % exceeding expectations, every week reported, side by side across cohorts — regardless of the cohort filter above, so the "does quality rise or fall" read isn't collapsed to a single cohort. "${MILESTONE_METRIC_LABEL.exceed_pct}" trend column compares each cohort's first reported week to its latest.`}
         chip="REAL"
       >
-        <State loading={loading} error={error} empty={!loading && districtRollup.length === 0}>
-          <DataTable
-            columns={[
-              { key: "district", label: "District" },
-              { key: "venues", label: "Venues", align: "right", render: fmtNum },
-              { key: "youth", label: "Youth/wk (sum)", align: "right", render: fmtNum },
-              { key: "avg_exceed_pct", label: "Avg % Exceeding", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
-              { key: "avg_completion_pct", label: "Avg % Completed", align: "right", render: (v) => <span style={{ color: v >= 85 ? C.green : v >= 70 ? C.gold : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
-            ]}
-            rows={districtRollup}
-            onRowClick={(d) => openDistrictDrill(d.district)}
+        <State loading={loading} error={error} empty={!loading && cohortComparisonRows.length === 0}>
+          <GroupedDataTable
+            leading={[{ key: "cohort", label: "Cohort" }]}
+            groups={weekColumnGroupsMeetExceed(weekNumbersIn(cohortWeekRows))}
+            trailing={[{ key: "trend", label: "Δ Quality (1st→latest wk)", align: "right", render: renderMilestoneDelta }]}
+            rows={cohortComparisonRows}
           />
         </State>
       </Card>
@@ -5256,19 +5327,42 @@ function MilestonesTab({ filters }) {
         </State>
       </Card>
 
-      <Card title="Milestone quality" subtitle="Share of youth below / meeting / exceeding expectations, captured every Friday." chip="REAL">
+      <Card
+        title="Weekly Overall Performance"
+        subtitle="Every week's completion and quality split, all youth reported that week. Click a bar to drill into that week by district, venue, or gender."
+        chip="REAL"
+      >
         <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+          <ResponsiveContainer width="100%" height={Math.max(180, weeklyChart.length * 70)}>
+            <BarChart data={weeklyChart} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-              <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
-              <Tooltip /><Legend />
-              <Bar dataKey="below_pct" name="Below" stackId="w" fill={C.coral} />
-              <Bar dataKey="meet_pct" name="Meets" stackId="w" fill={C.gold} />
-              <Bar dataKey="exceed_pct" name="Exceeds" stackId="w" fill={C.green} radius={[4, 4, 0, 0]} />
+              <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey="week_number" tickFormatter={(v) => `Week ${v}`} tick={{ fontSize: 12 }} width={70} />
+              <Tooltip formatter={(v, name) => [fmtPct(v), name]} labelFormatter={(v) => `Week ${v}`} />
+              <Legend />
+              <Bar dataKey="not_completed_pct" name="Not Completed" stackId="w" fill={C.muted} cursor="pointer" onClick={(_, i) => openWeekBreakdownDrill(weeklyChart[i].week_number)}>
+                <LabelList dataKey="not_completed_pct" content={stackedPctLabel} />
+              </Bar>
+              <Bar dataKey="below_pct" name="Below" stackId="w" fill={C.coral} cursor="pointer" onClick={(_, i) => openWeekBreakdownDrill(weeklyChart[i].week_number)}>
+                <LabelList dataKey="below_pct" content={stackedPctLabel} />
+              </Bar>
+              <Bar dataKey="meet_pct" name="Meets" stackId="w" fill={C.gold} cursor="pointer" onClick={(_, i) => openWeekBreakdownDrill(weeklyChart[i].week_number)}>
+                <LabelList dataKey="meet_pct" content={stackedPctLabel} />
+              </Bar>
+              <Bar dataKey="exceed_pct" name="Exceeds" stackId="w" fill={C.green} radius={[0, 4, 4, 0]} cursor="pointer" onClick={(_, i) => openWeekBreakdownDrill(weeklyChart[i].week_number)}>
+                <LabelList dataKey="exceed_pct" content={stackedPctLabel} />
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
+
+          {overallQualityTrend != null && (
+            <div style={{ marginTop: 10 }}>
+              <Insight tone={overallQualityTrend > 0 ? "pos" : overallQualityTrend < 0 ? "risk" : "neutral"}>
+                <b>{overallQualityTrend > 0 ? "Quality improves" : overallQualityTrend < 0 ? "Quality drops" : "Quality is flat"} across the {weekly.length} weeks reported.</b> Share exceeding expectations moves from {fmtPct(firstWeek.exceed_pct)} (Week {firstWeek.week_number}) to {fmtPct(latest.exceed_pct)} (Week {latest.week_number}) — a {overallQualityTrend > 0 ? "+" : ""}{overallQualityTrend}pp {overallQualityTrend >= 0 ? "improvement" : "decline"}{weekOverWeek != null && weekOverWeek < 0 && overallQualityTrend > 0 ? `, though the most recent week (Week ${latest.week_number}) dipped ${Math.abs(weekOverWeek)}pp from the week before` : ""}.
+              </Insight>
+            </div>
+          )}
+
           <div style={{ overflowX: "auto", marginTop: 14 }}>
             <DataTable
               columns={[
@@ -5278,6 +5372,8 @@ function MilestonesTab({ filters }) {
                 { key: "completion_pct", label: "% Completed", align: "right", render: fmtPct },
                 { key: "below", label: "# Below", align: "right", render: fmtNum },
                 { key: "below_pct", label: "% Below", align: "right", render: (v) => <span style={{ color: v <= 5 ? C.green : v <= 10 ? C.gold : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
+                { key: "meet", label: "# Meet", align: "right", render: fmtNum },
+                { key: "meet_pct", label: "% Meet", align: "right", render: fmtPct },
                 { key: "exceed", label: "# Exceeds", align: "right", render: fmtNum },
                 { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
               ]}

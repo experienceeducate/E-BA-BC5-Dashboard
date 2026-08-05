@@ -449,6 +449,33 @@ export const DEMO = {
       { venue: "Bubonghe Kwagala Maize Milling Hall", district: "BUGWERI", week_number: 3, total_youth: 84, completed: 84, completion_pct: 100, below: 2, below_pct: 2.4, meet: 25, meet_pct: 29.8, exceed: 57, exceed_pct: 67.9 },
       { venue: "Bubonghe Kwagala Maize Milling Hall", district: "BUGWERI", week_number: 4, total_youth: 82, completed: 81, completion_pct: 98.8, below: 6, below_pct: 7.3, meet: 40, meet_pct: 48.8, exceed: 36, exceed_pct: 43.9 },
     ],
+    // Feeds the Weekly Overall Performance chart's by-gender drill.
+    by_gender_week: [
+      { gender: "FEMALE", week_number: 1, total_youth: 290, completed: 290, completion_pct: 100, below: 38, below_pct: 13.1, meet: 175, meet_pct: 60.3, exceed: 77, exceed_pct: 26.6 },
+      { gender: "FEMALE", week_number: 2, total_youth: 282, completed: 282, completion_pct: 100, below: 24, below_pct: 8.5, meet: 168, meet_pct: 59.6, exceed: 90, exceed_pct: 31.9 },
+      { gender: "FEMALE", week_number: 3, total_youth: 278, completed: 278, completion_pct: 100, below: 18, below_pct: 6.5, meet: 155, meet_pct: 55.8, exceed: 105, exceed_pct: 37.8 },
+      { gender: "FEMALE", week_number: 4, total_youth: 274, completed: 272, completion_pct: 99.3, below: 30, below_pct: 10.9, meet: 165, meet_pct: 60.2, exceed: 77, exceed_pct: 28.1 },
+      { gender: "MALE", week_number: 1, total_youth: 200, completed: 200, completion_pct: 100, below: 22, below_pct: 11, meet: 115, meet_pct: 57.5, exceed: 63, exceed_pct: 31.5 },
+      { gender: "MALE", week_number: 2, total_youth: 193, completed: 193, completion_pct: 100, below: 14, below_pct: 7.3, meet: 108, meet_pct: 56, exceed: 71, exceed_pct: 36.8 },
+      { gender: "MALE", week_number: 3, total_youth: 187, completed: 187, completion_pct: 100, below: 10, below_pct: 5.3, meet: 100, meet_pct: 53.5, exceed: 77, exceed_pct: 41.2 },
+      { gender: "MALE", week_number: 4, total_youth: 184, completed: 183, completion_pct: 99.5, below: 22, below_pct: 12, meet: 105, meet_pct: 57.1, exceed: 56, exceed_pct: 30.4 },
+    ],
+    // Deliberately ignores the cohort filter (see the live endpoint's
+    // include_cohort=False) -- every cohort shows side by side for the
+    // Cohort comparison table, so quality trend can be compared across
+    // cohorts rather than collapsed to one.
+    by_cohort_week: [
+      { cohort: "BOOTCAMP_4", week_number: 1, total_youth: 490, completed: 490, completion_pct: 100, below: 60, below_pct: 12.2, meet: 290, meet_pct: 59.2, exceed: 140, exceed_pct: 28.6 },
+      { cohort: "BOOTCAMP_4", week_number: 2, total_youth: 475, completed: 475, completion_pct: 100, below: 38, below_pct: 8, meet: 276, meet_pct: 58.1, exceed: 161, exceed_pct: 33.9 },
+      { cohort: "BOOTCAMP_4", week_number: 3, total_youth: 465, completed: 465, completion_pct: 100, below: 28, below_pct: 6, meet: 255, meet_pct: 54.8, exceed: 182, exceed_pct: 39.1 },
+      { cohort: "BOOTCAMP_4", week_number: 4, total_youth: 458, completed: 455, completion_pct: 99.3, below: 52, below_pct: 11.4, meet: 270, meet_pct: 59, exceed: 133, exceed_pct: 29},
+      { cohort: "BOOTCAMP_3", week_number: 1, total_youth: 210, completed: 210, completion_pct: 100, below: 45, below_pct: 21.4, meet: 120, meet_pct: 57.1, exceed: 45, exceed_pct: 21.4 },
+      { cohort: "BOOTCAMP_3", week_number: 2, total_youth: 205, completed: 205, completion_pct: 100, below: 38, below_pct: 18.5, meet: 118, meet_pct: 57.6, exceed: 49, exceed_pct: 23.9 },
+      { cohort: "BOOTCAMP_3", week_number: 3, total_youth: 198, completed: 198, completion_pct: 100, below: 30, below_pct: 15.2, meet: 112, meet_pct: 56.6, exceed: 56, exceed_pct: 28.3 },
+      { cohort: "BOOTCAMP_3", week_number: 4, total_youth: 195, completed: 190, completion_pct: 97.4, below: 40, below_pct: 20.5, meet: 108, meet_pct: 55.4, exceed: 42, exceed_pct: 21.5 },
+      { cohort: "MINI_BOOTCAMP_3", week_number: 1, total_youth: 95, completed: 95, completion_pct: 100, below: 12, below_pct: 12.6, meet: 58, meet_pct: 61.1, exceed: 25, exceed_pct: 26.3 },
+      { cohort: "MINI_BOOTCAMP_3", week_number: 2, total_youth: 92, completed: 92, completion_pct: 100, below: 9, below_pct: 9.8, meet: 55, meet_pct: 59.8, exceed: 28, exceed_pct: 30.4 },
+    ],
   },
 
   // Scores are on the 0-5 observation scale and ratings use the reference

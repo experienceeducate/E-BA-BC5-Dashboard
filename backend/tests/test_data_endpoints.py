@@ -570,10 +570,13 @@ def test_milestones_does_not_default_to_active_cohorts(as_staff, mock_run_query)
     """No BOOTCAMP_5 rows exist in this table yet -- defaulting to
     ACTIVE_COHORTS (like most of this dashboard) would show nothing. With no
     cohort param, the query must carry no bootcamp_cycle restriction at all,
-    not silently narrow to BC4/BC5."""
+    not silently narrow to BC4/BC5. by_cohort_week is excluded from this
+    join -- it legitimately SELECTs bootcamp_cycle as its own grouping
+    dimension (see test_milestones_by_cohort_week_ignores_selected_cohort_filter
+    for the WHERE-clause-specific check on that query)."""
     mock_run_query.set_rows([])
     as_staff.get("/api/implementation/milestones")
-    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls if "GROUP BY cohort, week_number" not in c["sql"])
     assert "bootcamp_cycle" not in all_sql
 
 
@@ -620,3 +623,56 @@ def test_milestones_district_week_and_venue_week_zero_total_youth_returns_null_p
     r = as_staff.get("/api/implementation/milestones")
     assert r.json()["by_district_week"][0]["exceed_pct"] is None
     assert r.json()["by_venue_week"][0]["completion_pct"] is None
+
+
+def test_milestones_by_gender_week_shape_and_percentages(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "GROUP BY gender, week_number" in sql:
+            return [{"gender": "FEMALE", "week_number": 1, "total_youth": 100,
+                      "below": 10, "meet": 40, "exceed": 50, "completed": 100}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/milestones")
+    assert r.status_code == 200
+    g = r.json()["by_gender_week"][0]
+    assert g["gender"] == "FEMALE"
+    assert g["exceed_pct"] == 50.0
+    assert g["completion_pct"] == 100.0
+
+
+def test_milestones_by_gender_week_respects_cohort_filter(as_staff, mock_run_query):
+    """Unlike by_cohort_week, by_gender_week feeds the weekly performance
+    chart's drill and so must stay scoped to whatever cohort the page filter
+    has selected."""
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/milestones", params={"cohort": "BOOTCAMP_4"})
+    gender_week_sql = next(c["sql"] for c in mock_run_query.calls if "GROUP BY gender, week_number" in c["sql"])
+    assert "bootcamp_cycle" in gender_week_sql
+
+
+def test_milestones_by_cohort_week_shape_and_percentages(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "GROUP BY cohort, week_number" in sql:
+            return [{"cohort": "BOOTCAMP_4", "week_number": 1, "total_youth": 2737,
+                      "below": 386, "meet": 1388, "exceed": 963, "completed": 2737}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/milestones")
+    assert r.status_code == 200
+    c = r.json()["by_cohort_week"][0]
+    assert c["cohort"] == "BOOTCAMP_4"
+    assert c["exceed_pct"] == round(100 * 963 / 2737, 1)
+    assert c["meet_pct"] == round(100 * 1388 / 2737, 1)
+
+
+def test_milestones_by_cohort_week_ignores_selected_cohort_filter(as_staff, mock_run_query):
+    """by_cohort_week's whole purpose is comparing cohorts against each other
+    -- it must never be narrowed to whichever single cohort the page filter
+    has selected, unlike every other grain this endpoint returns. (The SELECT
+    clause always projects `bootcamp_cycle AS cohort`, so this checks the
+    WHERE-clause parameter, not just the substring "bootcamp_cycle".)"""
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/milestones", params={"cohort": "BOOTCAMP_4"})
+    call = next(c for c in mock_run_query.calls if "GROUP BY cohort, week_number" in c["sql"])
+    assert "@mscw_cohort" not in call["sql"]
+    assert not any(getattr(p, "name", "") == "mscw_cohort" for p in call["params"])
