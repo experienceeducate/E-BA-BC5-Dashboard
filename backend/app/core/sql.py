@@ -77,21 +77,26 @@ def build_where(
     return clause, params
 
 
-def cohort_clause(cohort, prefix: str):
+def cohort_clause(cohort, prefix: str, column: str = "cohort"):
     """
     Returns (clause, params) for a cohort filter (BC2..BC5), or (None, []) if no
     cohort was supplied. Accepts a single string (equality) or a list (IN UNNEST).
     Caller splices the clause into a WHERE/AND chain.
+
+    `column` lets callers point at a real table's actual cohort column (e.g.
+    "bootcamp_cycle") when it differs from the scaffold's "cohort" — same
+    fixed-literal-set-by-the-caller rule as build_where's district_col/
+    gender_col/venue_col.
     """
     if not cohort:
         return None, []
     if isinstance(cohort, (list, tuple)):
         return (
-            f"COALESCE(cohort, 'Unknown') IN UNNEST(@{prefix}_cohort)",
+            f"COALESCE({column}, 'Unknown') IN UNNEST(@{prefix}_cohort)",
             [_array(f"{prefix}_cohort", "STRING", list(cohort))],
         )
     return (
-        f"COALESCE(cohort, 'Unknown') = @{prefix}_cohort",
+        f"COALESCE({column}, 'Unknown') = @{prefix}_cohort",
         [_scalar(f"{prefix}_cohort", "STRING", cohort)],
     )
 

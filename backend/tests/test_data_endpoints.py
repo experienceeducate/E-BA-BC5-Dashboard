@@ -439,3 +439,111 @@ def test_awareness_kyc_questions_sql_has_no_limit(as_staff, mock_run_query):
     as_staff.get("/api/recruitment/awareness-kyc")
     questions_sql = next(c["sql"] for c in mock_run_query.calls if "open_questions" in c["sql"])
     assert "LIMIT" not in questions_sql.upper()
+
+
+# --- Milestones (Product Design) ----------------------------------------------
+# Backed by the live silver eba_bootcamp_business_plan_reports. below/meet/
+# exceed thresholds are the recruitment/M&E team's own reference query (see
+# MILESTONE_PERFORMANCE_CATEGORY_SQL, tables.py): Weeks 1-3 use a 1-3/4-6/7-9
+# scale, Week 4 uses 1-8/9-15/16-20 -- confirmed against live data, 2026-08-05,
+# that every Week 1-3 row scores 0-9 and every Week 4 row scores 0-20.
+
+def test_milestones_weekly_percentages_use_total_youth(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "week_number" in sql and "GROUP BY week_number" in sql:
+            return [{
+                "week_number": 1, "total_youth": 200,
+                "below": 80, "meet": 70, "exceed": 40, "completed": 190,
+                "parent_present": 60, "parent_absent": 40, "parent_no_report": 100,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/milestones")
+    assert r.status_code == 200
+    w = r.json()["weekly"][0]
+    assert w["below_pct"] == 40.0
+    assert w["meet_pct"] == 35.0
+    assert w["exceed_pct"] == 20.0
+    assert w["completion_pct"] == 95.0
+    assert w["parent_present_pct"] == 30.0
+    assert w["parent_no_report_pct"] == 50.0
+
+
+def test_milestones_weekly_zero_total_youth_returns_null_pct(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "week_number" in sql and "GROUP BY week_number" in sql:
+            return [{"week_number": 1, "total_youth": 0, "below": 0, "meet": 0, "exceed": 0,
+                      "completed": 0, "parent_present": 0, "parent_absent": 0, "parent_no_report": 0}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/milestones")
+    w = r.json()["weekly"][0]
+    assert w["below_pct"] is None
+    assert w["completion_pct"] is None
+
+
+def test_milestones_by_venue_percentages_use_total_reports_not_total_youth(as_staff, mock_run_query):
+    """Regression guard: a venue's total_youth is a one-time distinct
+    headcount, but below/meet/exceed/completed are summed across every week
+    reported -- dividing by total_youth instead of total_reports (row count)
+    can exceed 100% (confirmed against live data: e.g. a real venue with
+    total_youth=221 but completed=306 across its 4 weeks)."""
+    def side_effect(sql, params, role):
+        if "GROUP BY venue, district" in sql:
+            return [{
+                "venue": "Bugadde primary school", "district": "MAYUGE",
+                "total_reports": 451, "total_youth": 221,
+                "below": 255, "meet": 51, "exceed": 0, "completed": 306,
+                "weeks_reported": 4,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/milestones")
+    assert r.status_code == 200
+    v = r.json()["by_venue"][0]
+    assert v["completion_pct"] == round(100 * 306 / 451, 1)
+    assert v["completion_pct"] < 100
+    assert v["avg_youth_per_week"] == round(221 / 4, 1)
+
+
+def test_milestones_uses_bootcamp_cycle_not_cohort_column(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/implementation/milestones", params={"cohort": "BOOTCAMP_4"})
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "bootcamp_cycle" in all_sql
+    assert "COALESCE(cohort," not in all_sql
+
+
+def test_milestones_no_not_test_data_filter(as_staff, mock_run_query):
+    """eba_bootcamp_business_plan_reports has no is_test_data column --
+    splicing in NOT_TEST_DATA (used by every other endpoint in this router
+    via _filter_extra) would break the query."""
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/milestones")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "is_test_data" not in all_sql
+
+
+def test_milestones_accepts_district_gender_venue(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/implementation/milestones",
+        params={"district": "BUGIRI", "gender": "FEMALE", "venue": "Bugiri primary school"},
+    )
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "youth_district" in all_sql
+    assert "youth_gender" in all_sql
+    assert "venue_name" in all_sql
+
+
+def test_milestones_does_not_default_to_active_cohorts(as_staff, mock_run_query):
+    """No BOOTCAMP_5 rows exist in this table yet -- defaulting to
+    ACTIVE_COHORTS (like most of this dashboard) would show nothing. With no
+    cohort param, the query must carry no bootcamp_cycle restriction at all,
+    not silently narrow to BC4/BC5."""
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/milestones")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "bootcamp_cycle" not in all_sql

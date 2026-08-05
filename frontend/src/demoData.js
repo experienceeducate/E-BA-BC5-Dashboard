@@ -408,12 +408,23 @@ export const DEMO = {
     ],
   },
 
+  // Mirrors the live endpoint's shape (below_pct/meet_pct/exceed_pct are of
+  // total_youth that week; by_venue's below/meet/exceed are raw counts
+  // summed across every week reported, its own pct fields are of
+  // total_reports — see MILESTONE_PERFORMANCE_CATEGORY_SQL, tables.py).
   "/api/implementation/milestones": {
     weekly: [
-      { week_number: 1, below: 60, meet: 240, exceed: 100, completion_pct: 92, parent_present_pct: 58 },
-      { week_number: 2, below: 45, meet: 260, exceed: 120, completion_pct: 94, parent_present_pct: 61 },
-      { week_number: 3, below: 38, meet: 255, exceed: 140, completion_pct: 95, parent_present_pct: 63 },
-      { week_number: 4, below: 30, meet: 250, exceed: 155, completion_pct: 96, parent_present_pct: 65 },
+      { week_number: 1, below: 60, meet: 240, exceed: 100, below_pct: 15, meet_pct: 60, exceed_pct: 25, completion_pct: 92, parent_present_pct: 58, parent_no_report_pct: 30 },
+      { week_number: 2, below: 45, meet: 260, exceed: 120, below_pct: 10.7, meet_pct: 61.9, exceed_pct: 28.6, completion_pct: 94, parent_present_pct: 61, parent_no_report_pct: 25 },
+      { week_number: 3, below: 38, meet: 255, exceed: 140, below_pct: 8.8, meet_pct: 59.3, exceed_pct: 32.6, completion_pct: 95, parent_present_pct: 63, parent_no_report_pct: 20 },
+      { week_number: 4, below: 30, meet: 250, exceed: 155, below_pct: 6.9, meet_pct: 57.8, exceed_pct: 35.9, completion_pct: 96, parent_present_pct: 65, parent_no_report_pct: 18 },
+    ],
+    by_venue: [
+      { venue: "Bright future primary school", district: "BUGIRI", below: 8, meet: 76, exceed: 69, completion_pct: 100, exceed_pct: 45.1, avg_youth_per_week: 9.8 },
+      { venue: "Bubonghe Kwagala Maize Milling Hall", district: "BUGWERI", below: 24, meet: 109, exceed: 203, completion_pct: 100, exceed_pct: 60.4, avg_youth_per_week: 21.2 },
+      { venue: "Bugiri primary school", district: "BUGIRI", below: 14, meet: 138, exceed: 179, completion_pct: 100, exceed_pct: 54.1, avg_youth_per_week: 21.8 },
+      { venue: "Bugadde primary school", district: "MAYUGE", below: 255, meet: 51, exceed: 0, completion_pct: 67.8, exceed_pct: 0, avg_youth_per_week: 55.3 },
+      { venue: "Bufulubi Secondary school", district: "MAYUGE", below: 245, meet: 55, exceed: 16, completion_pct: 95.8, exceed_pct: 5, avg_youth_per_week: 22 },
     ],
   },
 
