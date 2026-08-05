@@ -454,6 +454,33 @@ ACQUISITION_CALL_LOG = f"{_SILVER}.eba_bootcamp_acquisition"
 # name here rather than the cross-cohort mart's renamed version.
 BC5_ACQUISITION_CALLS = f"{_SILVER}.eba_bc5_acquisition"
 
+# Weekly per-youth business-plan pitch record — backs the Product Design >
+# Milestones page. `week` is a STRING ('Week 1'..'Week 4'); `business_plan_score`
+# uses TWO DIFFERENT SCALES for the same column depending on week — confirmed
+# against every row live, 2026-08-05: Weeks 1-3 are always 0-9, Week 4 is
+# always 0-20. No BOOTCAMP_5 rows exist yet (BOOTCAMP_3/4 + MINI_BOOTCAMP_3
+# only) — callers should NOT default to ACTIVE_COHORTS here, unlike most of
+# this dashboard, since that would show nothing.
+MILESTONES = f"{_SILVER}.eba_bootcamp_business_plan_reports"
+
+# below/meet/exceed thresholds and the "completed" definition are the
+# recruitment/M&E team's own reference query (not derived by this dashboard):
+#   Weeks 1-3: score 1-3 below, 4-6 meet, 7-9 exceed
+#   Week 4:    score 1-8 below, 9-15 meet, 16-20 exceed
+#   score 0 (any week) is left unclassified (NULL) -- no pitch attempt to grade,
+#   distinct from a genuinely low score
+# "completed" a milestone = business_plan_score >= 1, not the table's own
+# `completed` boolean column — the reference query ignores that column too.
+MILESTONE_PERFORMANCE_CATEGORY_SQL = """CASE
+      WHEN week = 'Week 4' AND business_plan_score BETWEEN 1 AND 8 THEN 'below'
+      WHEN week = 'Week 4' AND business_plan_score BETWEEN 9 AND 15 THEN 'meet'
+      WHEN week = 'Week 4' AND business_plan_score >= 16 THEN 'exceed'
+      WHEN week IN ('Week 1', 'Week 2', 'Week 3') AND business_plan_score BETWEEN 1 AND 3 THEN 'below'
+      WHEN week IN ('Week 1', 'Week 2', 'Week 3') AND business_plan_score BETWEEN 4 AND 6 THEN 'meet'
+      WHEN week IN ('Week 1', 'Week 2', 'Week 3') AND business_plan_score BETWEEN 7 AND 9 THEN 'exceed'
+      ELSE NULL
+    END"""
+
 
 def resolve_active_cohorts(requested: list = None) -> list:
     """The cycles a live-table query should scope to: `requested` (the
@@ -495,7 +522,6 @@ ATTENDANCE_DAILY     = f"{_GOLD}.eba_attendance_daily"        # TODO: confirm �
 ATTENDANCE_LESSON    = f"{_GOLD}.eba_attendance_lesson"       # TODO: confirm — per-lesson attendance %
 RETENTION_VENUE      = f"{_GOLD}.eba_retention_venue"         # TODO: confirm — acquired/activated/retained per venue
 TRAINER_QUALITY      = f"{_GOLD}.eba_trainer_quality"         # TODO: confirm — trainer observation scores
-MILESTONES           = f"{_GOLD}.eba_milestones"             # TODO: confirm — weekly pitch milestone completion
 YOUTH_NPS            = f"{_GOLD}.eba_youth_experience_nps"    # TODO: confirm — programme/venue/meals NPS by week
 MEALS                = f"{_GOLD}.eba_meals"                   # TODO: confirm — meals served & quality per venue
 VENUE_COMPLIANCE     = f"{_GOLD}.eba_venue_compliance"        # TODO: confirm — venue compliance reports

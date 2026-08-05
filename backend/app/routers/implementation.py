@@ -18,6 +18,7 @@ from app.core.sql import build_where, cohort_clause
 from app.core.tables import (
     ATTENDANCE_DAILY,
     MILESTONES,
+    MILESTONE_PERFORMANCE_CATEGORY_SQL,
     YOUTH_NPS,
     NOT_TEST_DATA,
     SITE_FUNNEL_METRICS,
@@ -510,48 +511,122 @@ def trainer_detail(
     }
 
 
+def _milestones_where(district, gender, venue, cohort, prefix):
+    # No NOT_TEST_DATA here (unlike _filter_extra) -- this table has no
+    # is_test_data column. Cohort filters bootcamp_cycle directly rather than
+    # defaulting to ACTIVE_COHORTS -- no BOOTCAMP_5 rows exist in this table
+    # yet, so that default would show nothing (see MILESTONES in tables.py).
+    extra = []
+    coh_clause, coh_params = cohort_clause(cohort, prefix=prefix, column="bootcamp_cycle")
+    if coh_clause:
+        extra.append((coh_clause, coh_params))
+    return build_where(
+        districts=district, gender=gender, venues=venue,
+        extra=extra, prefix=prefix,
+        district_col="youth_district", gender_col="youth_gender", venue_col="venue_name",
+    )
+
+
 @router.get("/api/implementation/milestones")
 def milestones(
     user: User = Depends(current_user),
-    venue: List[str] = Query(default=[]),
-    cohort: List[str] = Query(default=[]),
+    district: List[str] = Query(default=[]),
+    gender:   Optional[str] = Query(None),
+    venue:    List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
 ):
-    """Weekly pitch milestone distribution (below / meet / exceed) & completion,
-    plus a per-venue rollup (cumulative % exceeding, avg youth/week)."""
-    where, params = build_where(venues=venue, extra=_filter_extra(cohort, "ms"), prefix="ms")
+    """Weekly business-pitch milestone distribution (below/meet/exceed),
+    completion, and parent-engagement, plus a per-venue rollup (cumulative
+    over every week reported).
+
+    Backed by the live silver MILESTONES table (see tables.py for the
+    recruitment/M&E team's own scoring rubric — MILESTONE_PERFORMANCE_CATEGORY_SQL
+    — and why "completed" means business_plan_score >= 1, not the table's own
+    `completed` column).
+
+    below_pct/meet_pct/exceed_pct/completion_pct are all of total_youth (every
+    distinct youth counted in that row), not just those with a classifiable
+    score — a youth scoring 0 that week is real (they didn't grade), not
+    missing, so it's left to show up as a shortfall in the percentages rather
+    than silently excluded from the denominator. parent_present_pct is
+    similarly of total_youth, with parent_no_report_pct broken out
+    separately (parent_engagement is NULL for a large share of rows in every
+    cohort) — same "don't fold an unreported share into a real category"
+    approach as the Awareness Overview RCT card's Unassigned bucket.
+    """
+    where, params = _milestones_where(district, gender, venue, cohort, "ms")
     sql = f"""
-    SELECT week_number,
-           SUM(below) AS below, SUM(meet) AS meet, SUM(exceed) AS exceed,
-           AVG(completion_pct) AS completion_pct, AVG(parent_present_pct) AS parent_present_pct
-    FROM {MILESTONES}
-    WHERE {where}
+    WITH classified AS (
+      SELECT
+        youth_id,
+        SAFE_CAST(REGEXP_EXTRACT(week, r'(\\d+)') AS INT64) AS week_number,
+        business_plan_score,
+        parent_engagement,
+        {MILESTONE_PERFORMANCE_CATEGORY_SQL} AS performance_category
+      FROM {MILESTONES}
+      WHERE {where}
+    )
+    SELECT
+      week_number,
+      COUNT(DISTINCT youth_id) AS total_youth,
+      COUNTIF(performance_category = 'below') AS below,
+      COUNTIF(performance_category = 'meet') AS meet,
+      COUNTIF(performance_category = 'exceed') AS exceed,
+      COUNTIF(business_plan_score >= 1) AS completed,
+      COUNTIF(parent_engagement = TRUE) AS parent_present,
+      COUNTIF(parent_engagement = FALSE) AS parent_absent,
+      COUNTIF(parent_engagement IS NULL) AS parent_no_report
+    FROM classified
     GROUP BY week_number
     ORDER BY week_number
     """
     weekly = database.run_query(sql, params, role=user.role)
     for w in weekly:
-        total = (w.get("below") or 0) + (w.get("meet") or 0) + (w.get("exceed") or 0)
+        total = w.get("total_youth") or 0
         w["below_pct"] = round(100 * (w.get("below") or 0) / total, 1) if total else None
         w["meet_pct"] = round(100 * (w.get("meet") or 0) / total, 1) if total else None
         w["exceed_pct"] = round(100 * (w.get("exceed") or 0) / total, 1) if total else None
+        w["completion_pct"] = round(100 * (w.get("completed") or 0) / total, 1) if total else None
+        w["parent_present_pct"] = round(100 * (w.get("parent_present") or 0) / total, 1) if total else None
+        w["parent_no_report_pct"] = round(100 * (w.get("parent_no_report") or 0) / total, 1) if total else None
 
-    venue_where, venue_params = build_where(venues=venue, extra=_filter_extra(cohort, "msv"), prefix="msv")
+    venue_where, venue_params = _milestones_where(district, gender, venue, cohort, "msv")
     venue_sql = f"""
-    SELECT venue, UPPER(district) AS district,
-           SUM(below) AS below, SUM(meet) AS meet, SUM(exceed) AS exceed,
-           AVG(completion_pct) AS completion_pct,
-           COUNT(DISTINCT week_number) AS weeks_reported
-    FROM {MILESTONES}
-    WHERE {venue_where}
+    WITH classified AS (
+      SELECT
+        youth_id, venue_name AS venue, UPPER(youth_district) AS district, week,
+        business_plan_score,
+        {MILESTONE_PERFORMANCE_CATEGORY_SQL} AS performance_category
+      FROM {MILESTONES}
+      WHERE {venue_where}
+    )
+    SELECT
+      venue, district,
+      COUNT(*) AS total_reports,
+      COUNT(DISTINCT youth_id) AS total_youth,
+      COUNTIF(performance_category = 'below') AS below,
+      COUNTIF(performance_category = 'meet') AS meet,
+      COUNTIF(performance_category = 'exceed') AS exceed,
+      COUNTIF(business_plan_score >= 1) AS completed,
+      COUNT(DISTINCT week) AS weeks_reported
+    FROM classified
     GROUP BY venue, district
     ORDER BY venue
     """
     by_venue = database.run_query(venue_sql, venue_params, role=user.role)
     for v in by_venue:
-        total = (v.get("below") or 0) + (v.get("meet") or 0) + (v.get("exceed") or 0)
+        # Percentages are of total_reports (row count, summed across every
+        # week reported) -- total_youth is a one-time distinct headcount, so
+        # dividing a cross-week SUM by it can exceed 100% (a youth graded in
+        # all 4 weeks gets counted 4x in the numerator, once in that
+        # denominator). avg_youth_per_week is the one place total_youth (the
+        # headcount) is actually the right number to use.
+        reports = v.get("total_reports") or 0
+        youth = v.get("total_youth") or 0
         weeks = v.get("weeks_reported") or 0
-        v["exceed_pct"] = round(100 * (v.get("exceed") or 0) / total, 1) if total else None
-        v["avg_youth_per_week"] = round(total / weeks, 1) if weeks else None
+        v["exceed_pct"] = round(100 * (v.get("exceed") or 0) / reports, 1) if reports else None
+        v["completion_pct"] = round(100 * (v.get("completed") or 0) / reports, 1) if reports else None
+        v["avg_youth_per_week"] = round(youth / weeks, 1) if weeks else None
 
     return {"weekly": weekly, "by_venue": by_venue}
 

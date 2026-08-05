@@ -4781,6 +4781,7 @@ function MilestonesTab({ filters }) {
 
   const parentVals = weekly.map((w) => w.parent_present_pct).filter((v) => v != null);
   const parentGapWide = parentVals.length >= 2 && (Math.max(...parentVals) - Math.min(...parentVals) > 40);
+  const avgParentNoReportPct = weekly.length ? Math.round((10 * sumBy(weekly, "parent_no_report_pct")) / weekly.length) / 10 : null;
 
   // Climb-then-reverse narrative — same read as the reference design's "Wk1
   // 35% -> Wk3 59% -> Wk4 26%", but built off whichever week actually peaks
@@ -4799,7 +4800,7 @@ function MilestonesTab({ filters }) {
     }).sort((a, b) => (b.exceed_pct || 0) - (a.exceed_pct || 0));
     drill.openAt({
       title: "Milestone quality — by district",
-      tone: "sim", tagLabel: "SAMPLE",
+      tone: "real", tagLabel: "REAL",
       rootKey: "district", rootLabel: "District",
       columns: [{ key: "exceed_pct", label: "% exceeding", align: "right", render: fmtPct }],
       rootRows,
@@ -4810,19 +4811,26 @@ function MilestonesTab({ filters }) {
 
   return (
     <div>
+      {!loading && !error && weekly.length === 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <Insight tone="neutral">
+            <b>No milestone reports for this filter.</b> The live business-plan-report table only has BOOTCAMP_3, BOOTCAMP_4, and MINI_BOOTCAMP_3 data so far — no BOOTCAMP_5 rows yet. {filters.cohort ? `Switch the cohort filter off "${filters.cohort}"` : "Try narrowing the cohort filter"} to see it.
+          </Insight>
+        </div>
+      )}
       <Grid cols={4}>
-        <KpiTile label="Weeks reported" value={String(weekly.length)} sub="Friday milestone captures, this cohort" tag="SAMPLE" tone="sim" />
-        <KpiTile label="Latest completion" value={fmtPct(latest?.completion_pct)} sub={latest ? `Week ${latest.week_number}` : undefined} tag="SAMPLE" tone="sim" />
-        <KpiTile label="Peak quality week" value={peakWeek ? `Week ${peakWeek.week_number}` : "—"} sub={peakWeek ? `${fmtPct(peakWeek.exceed_pct)} exceeding expectations` : undefined} tag="SAMPLE" tone="sim" />
+        <KpiTile label="Weeks reported" value={String(weekly.length)} sub="Friday milestone captures, this cohort" tag="REAL" tone="real" />
+        <KpiTile label="Latest completion" value={fmtPct(latest?.completion_pct)} sub={latest ? `Week ${latest.week_number}` : undefined} tag="REAL" tone="real" />
+        <KpiTile label="Peak quality week" value={peakWeek ? `Week ${peakWeek.week_number}` : "—"} sub={peakWeek ? `${fmtPct(peakWeek.exceed_pct)} exceeding expectations` : undefined} tag="REAL" tone="real" />
         <KpiTile
           label="Latest vs prior week"
           value={weekOverWeek == null ? "—" : <span style={{ color: weekOverWeek >= 0 ? C.green : C.coral }}>{weekOverWeek > 0 ? "+" : ""}{weekOverWeek}pp</span>}
           sub="share exceeding expectations, week-on-week"
-          tag="SAMPLE" tone="sim"
+          tag="REAL" tone="real"
         />
       </Grid>
 
-      <Card title="Pitch quality by week" subtitle="Share of youth below / meeting / exceeding expectations, captured every Friday." chip="SAMPLE" chipTone="sim">
+      <Card title="Pitch quality by week" subtitle="Share of youth below / meeting / exceeding expectations, captured every Friday." chip="REAL">
         <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
@@ -4839,7 +4847,7 @@ function MilestonesTab({ filters }) {
       </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="Quality trajectory" subtitle="Exceeding vs below expectations, week on week." chip="SAMPLE" chipTone="sim">
+        <Card title="Quality trajectory" subtitle="Exceeding vs below expectations, week on week." chip="REAL">
           <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
             <ResponsiveContainer width="100%" height={240}>
               <LineChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
@@ -4853,17 +4861,22 @@ function MilestonesTab({ filters }) {
             </ResponsiveContainer>
           </State>
         </Card>
-        <Card title="Parent engagement present (%)" subtitle="Share of youth with a parent engaged that week." chip="SAMPLE" chipTone="sim">
+        <Card
+          title="Parent engagement present (%)"
+          subtitle="Share of all youth that week with a parent recorded as present — not just of those with a recorded answer, since parent_engagement is unreported for a large share of rows in every cohort. That no-report share is shown alongside, not folded into 'absent'."
+          chip="REAL"
+        >
           <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
             <ResponsiveContainer width="100%" height={240}>
               <BarChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
                 <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
-                <Tooltip />
-                <Bar dataKey="parent_present_pct" name="Parent present %" radius={[4, 4, 0, 0]}>
+                <Tooltip /><Legend />
+                <Bar dataKey="parent_present_pct" name="Present %" radius={[4, 4, 0, 0]}>
                   {weekly.map((w, i) => <Cell key={i} fill={(w.parent_present_pct ?? 0) < 10 ? "#D8CFB8" : C.gold} />)}
                 </Bar>
+                <Bar dataKey="parent_no_report_pct" name="Not reported %" fill={C.muted} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </State>
@@ -4872,8 +4885,8 @@ function MilestonesTab({ filters }) {
 
       <Card
         title="Venue milestone performance — top & bottom 5"
-        subtitle={`Ranked by share of youth exceeding pitch expectations, cumulative across weeks reported. ${fmtNum(byVenue.length)} venue${byVenue.length === 1 ? "" : "s"}${cohortAvgExceed != null ? `; cohort average ${fmtPct(cohortAvgExceed)} exceeding` : ""}. Click a row for the district breakdown.`}
-        chip="SAMPLE" chipTone="sim"
+        subtitle={`Ranked by share of pitches exceeding expectations, cumulative across weeks reported. ${fmtNum(byVenue.length)} venue${byVenue.length === 1 ? "" : "s"}${cohortAvgExceed != null ? `; cohort average ${fmtPct(cohortAvgExceed)} exceeding` : ""}. Click a row for the district breakdown.`}
+        chip="REAL"
       >
         <State loading={loading} error={error} empty={!loading && venuesRanked.length === 0}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
@@ -4939,7 +4952,7 @@ function MilestonesTab({ filters }) {
         )}
         {parentGapWide && (
           <Insight tone="warn">
-            <b>Fix the parent-engagement capture.</b> Reported parent presence swings from {fmtPct(Math.min(...parentVals))} to {fmtPct(Math.max(...parentVals))} across weeks — that's a data-capture gap, not real absence. Standardising the Friday capture would turn parent engagement into a metric the team can actually manage.
+            <b>Fix the parent-engagement capture.</b> Reported parent presence swings from {fmtPct(Math.min(...parentVals))} to {fmtPct(Math.max(...parentVals))} across weeks{avgParentNoReportPct != null ? `, while an average ${fmtPct(avgParentNoReportPct)} of youth each week have no parent-engagement answer recorded at all` : ""} — {avgParentNoReportPct != null && avgParentNoReportPct > 30 ? "that no-report share, not real absence, is driving most of the swing" : "that's a data-capture gap, not real absence"}. Standardising the Friday capture would turn parent engagement into a metric the team can actually manage.
           </Insight>
         )}
       </div>
@@ -5053,9 +5066,9 @@ const GUIDE_PAGES = [
   { group: "Implementation", page: "Youth Experience", tone: "sample", navGroup: "impl", navTab: "nps",
     summary: "Weekly NPS trend (Programme / Venue / Meals).",
     what: "Programme / Venue / Meals NPS weekly trend. Still placeholder data." },
-  { group: "Product Design", page: "Milestones", tone: "sample", navGroup: "product", navTab: "milestones",
+  { group: "Product Design", page: "Milestones", tone: "real", navGroup: "product", navTab: "milestones",
     summary: "Weekly pitch quality, below/meets/exceeds, by venue.",
-    what: "Weekly business-pitch milestone distribution (below / meets / exceeds expectations), completion rate, parental-attendance rate, and a per-venue top/bottom-5 ranking by cumulative % exceeding. Still placeholder data — the underlying table isn't confirmed against live BigQuery yet." },
+    what: "Weekly business-pitch milestone distribution (below / meets / exceeds expectations), completion rate, parental-attendance rate, and a per-venue top/bottom-5 ranking by cumulative % exceeding. Backed by the live silver business-plan-report table — BOOTCAMP_3/4 and MINI_BOOTCAMP_3 only, no BOOTCAMP_5 rows yet." },
   { group: "Field Operations", page: "Venue", tone: "sample", navGroup: "fops", navTab: "venue",
     summary: "Compliance rate by venue.",
     what: "Compliance rate by venue. Still placeholder data." },
