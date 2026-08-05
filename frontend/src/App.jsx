@@ -1210,13 +1210,20 @@ function withEligibilityRate(r) {
 function groupParishRowsByDistrict(parishRows) {
   const byDistrict = {};
   parishRows.forEach((r) => {
-    if (!byDistrict[r.district]) byDistrict[r.district] = { district: r.district, registered: 0, interested: 0, eligible: 0, eligible_female: 0, target: 0, usesHardcodedTarget: false };
+    if (!byDistrict[r.district]) {
+      byDistrict[r.district] = {
+        district: r.district, registered: 0, interested: 0, eligible: 0, eligible_female: 0, target: 0, usesHardcodedTarget: false,
+        eligible_treatment: 0, eligible_control: 0,
+      };
+    }
     const d = byDistrict[r.district];
     d.registered += r.reached || 0;
     d.interested += r.interested || 0;
     d.eligible += r.eligible || 0;
     d.eligible_female += r.eligible_female || 0;
     d.target += r.target || 0;
+    d.eligible_treatment += r.eligible_treatment || 0;
+    d.eligible_control += r.eligible_control || 0;
     if (r.target_source === "hardcoded") d.usesHardcodedTarget = true;
   });
   return Object.values(byDistrict)
@@ -1663,7 +1670,7 @@ function AwarenessOverviewPage({ filters }) {
         </Card>
       </div>
 
-      <Card title="District comparison — vs. registration target" subtitle="Reached, interested, eligible, target and female share by district — narrows to the exact parish you search for, rolled up by district. Click a score card to filter by category — color shows status throughout." chip="REAL">
+      <Card title="District comparison — vs. registration target" subtitle="Reached, interested, eligible (with its Treatment/Control RCT split), target and female share by district — narrows to the exact parish you search for, rolled up by district. Click a score card to filter by category — color shows status throughout." chip="REAL">
         <State loading={parish.loading} error={parish.error} empty={!parish.loading && districtRowsWithCat.length === 0}>
           <CategoryFilterTiles counts={districtCatCounts} active={districtCat} onChange={setDistrictCat} entityLabelPlural="districts" />
           <DataTable
@@ -1672,6 +1679,8 @@ function AwarenessOverviewPage({ filters }) {
               { key: "registered", label: "Reached", align: "right", render: (v) => fmtNum(v) },
               { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
               { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+              { key: "eligible_treatment", label: "Treatment", align: "right", render: (v) => fmtNum(v) },
+              { key: "eligible_control", label: "Control", align: "right", render: (v) => fmtNum(v) },
               {
                 key: "target", label: "Target", align: "right",
                 render: (v, r) => <span title={r.usesHardcodedTarget ? "Includes the hardcoded BC5 planning target for at least one parish in this district" : undefined}>{fmtNum(v)}{r.usesHardcodedTarget ? " *" : ""}</span>,
@@ -1689,7 +1698,7 @@ function AwarenessOverviewPage({ filters }) {
         </State>
       </Card>
 
-      <Card title="Parish Performance" subtitle="Reached, interested, target, eligible and % female per parish. Click a score card to filter by category — color shows status throughout." chip="REAL">
+      <Card title="Parish Performance" subtitle="Reached, interested, eligible (with its Treatment/Control RCT split), target and % female per parish. Click a score card to filter by category — color shows status throughout." chip="REAL">
         <State loading={parish.loading} error={parish.error} empty={!parish.loading && parishRowsWithCat.length === 0}>
           <CategoryFilterTiles counts={parishCatCounts} active={parishCat} onChange={(c) => { setParishCat(c); setParishPage(0); }} entityLabelPlural="parishes" />
           {filteredParishRows.length === 0 ? (
@@ -1703,6 +1712,8 @@ function AwarenessOverviewPage({ filters }) {
                   { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
                   { key: "interested", label: "Interested", align: "right", render: (v) => fmtNum(v) },
                   { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
+                  { key: "eligible_treatment", label: "Treatment", align: "right", render: (v) => fmtNum(v) },
+                  { key: "eligible_control", label: "Control", align: "right", render: (v) => fmtNum(v) },
                   {
                     key: "target", label: "Target", align: "right",
                     render: (v, r) => <span title={r.target_source === "hardcoded" ? "Hardcoded BC5 planning target" : undefined}>{fmtNum(v)}{r.target_source === "hardcoded" ? " *" : ""}</span>,
@@ -5621,11 +5632,14 @@ async function buildAwarenessExport(filters) {
     sections: [
       xSection("District comparison", "district", "District", [
         xCol("registered", "Reached"), xCol("interested", "Interested"), xCol("eligible", "Eligible"),
+        xCol("eligible_treatment", "Treatment"), xCol("eligible_control", "Control"),
         xCol("target", "Target"), xCol("pct_female", "% Female", { format: fmtPct }),
       ], districtRows),
       xSection("Parish detail", "parish", "Parish", [
         xTextCol("district", "District"), xCol("reached", "Reached"), xCol("interested", "Interested"),
-        xCol("eligible", "Eligible"), xCol("eligible_female", "Eligible (F)"), xCol("target", "Target"), xCol("pct_female", "% Female", { format: fmtPct }),
+        xCol("eligible", "Eligible"), xCol("eligible_female", "Eligible (F)"),
+        xCol("eligible_treatment", "Treatment"), xCol("eligible_control", "Control"),
+        xCol("target", "Target"), xCol("pct_female", "% Female", { format: fmtPct }),
       ], parishRows),
       xSection("Gender by funnel stage", "stage", "Stage", [
         xCol("female", "Female"), xCol("male", "Male"), xCol("pct_female", "% Female", { format: fmtPct }),
