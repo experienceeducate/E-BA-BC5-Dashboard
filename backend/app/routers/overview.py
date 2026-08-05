@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query
 from app.auth import current_user, User
 from app.core import database  # module import — required for the run_query test seam
 from app.core.database import _array, _scalar
-from app.core.sql import build_where, cohort_clause
+from app.core.sql import build_where, cohort_clause, normalized_parish_sql
 from app.core.tables import (
     RECRUITMENT_FUNNEL,
     FUNNEL_STAGES,
@@ -624,7 +624,7 @@ def cohort_comparison(user: User = Depends(current_user)):
            SUM(total_interested_youth) AS interested,
            SUM(total_eligible_youth) AS eligible,
            SUM(total_eligible_female) AS eligible_female,
-           COUNT(DISTINCT youth_parish) AS parishes
+           COUNT(DISTINCT {normalized_parish_sql()}) AS parishes
     FROM {AWARENESS_SUMMARY}
     WHERE bootcamp_cycle IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
     GROUP BY bootcamp_cycle

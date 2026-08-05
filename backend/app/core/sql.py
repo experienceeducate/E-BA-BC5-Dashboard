@@ -143,3 +143,38 @@ def multiselect_array_sql(column: str) -> str:
       WHEN STARTS_WITH(TRIM({column}), '"') THEN JSON_EXTRACT_STRING_ARRAY(CONCAT('[', {column}, ']'))
       ELSE [{column}]
     END"""
+
+
+# Known misspellings of a canonical parish name that exist as distinct
+# literal values in the live data (confirmed against both AWARENESS_SUMMARY
+# and AWARENESS_KYC, 2026-08-04) -- MAYUGE's MAIRINYA parish also appears as
+# "MAYIRINYA" throughout, splitting what should be one parish's actuals,
+# targets, and RCT split across two rows in every by-parish rollup. Extend
+# this map if more are confirmed; each entry is a literal, never user input.
+PARISH_NAME_CORRECTIONS = {
+    "MAYIRINYA": "MAIRINYA",
+}
+
+
+def normalized_parish_sql(column: str = "youth_parish") -> str:
+    """
+    Upper-cases/trims a parish column and folds known misspellings
+    (PARISH_NAME_CORRECTIONS) onto their canonical name, so e.g. MAYUGE's
+    MAIRINYA parish rolls up as one row everywhere instead of splitting into
+    "MAIRINYA" and "MAYIRINYA" -- including against AWARENESS_ELIGIBLE_TARGET_BC5,
+    whose hardcoded sheet already spells it "MAIRINYA", so actuals recorded
+    under the "MAYIRINYA" misspelling were previously failing to match their
+    target row at all.
+
+    `column` is a fixed literal set by the caller (a real column name), never
+    user input, so splicing it in is safe -- same rule as build_where's
+    district_col/gender_col/venue_col.
+    """
+    cases = "\n      ".join(
+        f"WHEN UPPER(TRIM({column})) = '{wrong}' THEN '{right}'"
+        for wrong, right in PARISH_NAME_CORRECTIONS.items()
+    )
+    return f"""CASE
+      {cases}
+      ELSE UPPER(TRIM({column}))
+    END"""

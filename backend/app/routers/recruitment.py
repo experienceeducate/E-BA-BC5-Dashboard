@@ -13,7 +13,7 @@ from app.auth import current_user, User
 from app.core import database  # module import — required for the run_query test seam
 from app.core.database import _array, _scalar
 from app.core.pii import mask_name, youth_id
-from app.core.sql import build_where, cohort_clause, multiselect_array_sql
+from app.core.sql import build_where, cohort_clause, multiselect_array_sql, normalized_parish_sql
 from app.core.tables import (
     RECRUITMENT_FUNNEL,
     MOBILISER_PERF,
@@ -195,7 +195,7 @@ def awareness_parish(
     actual_sql = f"""
     SELECT
       UPPER(youth_district) AS district,
-      youth_parish AS parish,
+      {normalized_parish_sql()} AS parish,
       SUM(total_registered_youth) AS reached,
       SUM(total_registered_female) AS reached_female,
       SUM(total_registered_male) AS reached_male,
@@ -217,7 +217,7 @@ def awareness_parish(
     GROUP BY district, parish
     """
     target_sql = f"""
-    SELECT UPPER(youth_district) AS district, youth_parish AS parish, SUM(registration_target) AS target
+    SELECT UPPER(youth_district) AS district, {normalized_parish_sql()} AS parish, SUM(registration_target) AS target
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND youth_parish IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_TARGET}'
     GROUP BY district, parish
@@ -327,7 +327,7 @@ def awareness_mobiliser_detail(
       mobilizer_id,
       mobilizer_name AS mobiliser_name,
       UPPER(youth_district) AS district,
-      youth_parish AS parish,
+      {normalized_parish_sql()} AS parish,
       SUM(total_registered_youth) AS reached,
       SUM(total_eligible_youth) AS eligible,
       SUM(total_eligible_female) AS eligible_female,
@@ -509,7 +509,7 @@ def awareness_eligible_target(
         district_col="youth_district",
     )
     actual_sql = f"""
-    SELECT UPPER(youth_district) AS district, youth_parish AS parish, COUNT(*) AS actual
+    SELECT UPPER(youth_district) AS district, {normalized_parish_sql()} AS parish, COUNT(*) AS actual
     FROM {AWARENESS_KYC}
     WHERE {where} AND elligible = TRUE AND youth_parish IS NOT NULL
     GROUP BY district, parish
@@ -1223,7 +1223,7 @@ def personas(
     )
     sql = f"""
     SELECT youth_phone, youth_name, youth_gender AS gender, youth_age AS age,
-           UPPER(youth_district) AS district, youth_parish AS parish,
+           UPPER(youth_district) AS district, {normalized_parish_sql()} AS parish,
            youth_village AS village, youth_level_of_education AS education,
            income_past_2_weeks AS income, recruitment_channel AS channel
     FROM {AWARENESS_KYC}
