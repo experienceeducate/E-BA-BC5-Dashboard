@@ -4788,11 +4788,36 @@ function milestoneColor(pct) {
   return pct >= 50 ? C.green : pct >= 30 ? C.gold : C.coral;
 }
 
+const MILESTONE_METRIC_LABEL = { exceed_pct: "% Exceeding expectations", completion_pct: "% Completed" };
+
+// District rollup for Milestones — a straight average of each venue's own
+// exceed_pct/completion_pct (not volume-weighted by youth count), matching
+// the reference design's "Milestone performance by district" table and its
+// per-metric district drill exactly.
+function milestoneDistrictRollup(venueRows) {
+  const byDistrict = {};
+  venueRows.forEach((v) => {
+    const d = byDistrict[v.district] || (byDistrict[v.district] = { district: v.district, venues: 0, youth: 0, exceedSum: 0, completionSum: 0 });
+    d.venues += 1;
+    d.youth += v.avg_youth_per_week || 0;
+    d.exceedSum += v.exceed_pct || 0;
+    d.completionSum += v.completion_pct || 0;
+  });
+  return Object.values(byDistrict).map((d) => ({
+    district: d.district,
+    venues: d.venues,
+    youth: Math.round(d.youth),
+    avg_exceed_pct: d.venues ? Math.round((10 * d.exceedSum) / d.venues) / 10 : null,
+    avg_completion_pct: d.venues ? Math.round((10 * d.completionSum) / d.venues) / 10 : null,
+  }));
+}
+
 function MilestonesTab({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/milestones${buildParams(filters)}`);
   const weekly = data?.weekly || [];
   const byVenue = data?.by_venue || [];
+  const [venueSearch, setVenueSearch] = useState("");
 
   const latest = weekly[weekly.length - 1];
   const prior = weekly.length > 1 ? weekly[weekly.length - 2] : null;
@@ -4800,12 +4825,26 @@ function MilestonesTab({ filters }) {
     ? Math.round((latest.exceed_pct - prior.exceed_pct) * 10) / 10
     : null;
   const peakWeek = weekly.reduce((best, w) => (w.exceed_pct != null && (best == null || w.exceed_pct > best.exceed_pct) ? w : best), null);
+  const youthTracked = weekly[0]?.total_youth ?? null;
 
-  const venuesRanked = [...byVenue].filter((v) => v.exceed_pct != null).sort((a, b) => b.exceed_pct - a.exceed_pct);
+  // Search narrows the venue table, the district rollup, and both drills —
+  // same "one card's filter box scopes everything on the page" convention
+  // as Awareness Overview/Mobilisers.
+  const q = venueSearch.trim().toLowerCase();
+  const matchedVenues = q ? byVenue.filter((v) => (v.venue || "").toLowerCase().includes(q)) : byVenue;
+
+  const venuesRanked = [...matchedVenues].filter((v) => v.exceed_pct != null).sort((a, b) => b.exceed_pct - a.exceed_pct);
   const top5 = venuesRanked.slice(0, 5);
   const bottom5 = venuesRanked.slice(-5).reverse();
   const cohortAvgExceed = venuesRanked.length ? Math.round((10 * sumBy(venuesRanked, "exceed_pct")) / venuesRanked.length) / 10 : null;
   const spread = top5[0] && bottom5[0] ? Math.round((top5[0].exceed_pct - bottom5[0].exceed_pct) * 10) / 10 : null;
+
+  // The 3 lowest-exceeding venues, flagged as a coaching-priority list
+  // distinct from the top/bottom-5 read below — no per-venue "below
+  // expectations" figure exists on its own, so lowest-%-exceeding is the
+  // closest real proxy for that risk, same read as the reference design.
+  const riskVenues = [...venuesRanked].sort((a, b) => (a.exceed_pct ?? 0) - (b.exceed_pct ?? 0)).slice(0, 3);
+  const riskNames = new Set(riskVenues.map((v) => v.venue));
 
   // District skew across the top/bottom 5 — mirrors the reference design's
   // "the bottom skews Bugweri" read, but computed from whatever the live
@@ -4829,22 +4868,56 @@ function MilestonesTab({ filters }) {
     ? Math.round((peakWeek.exceed_pct - firstWeek.exceed_pct) * 10) / 10
     : null;
 
-  // Row click on a venue -> jump straight into that venue's district (openAt
-  // skips the root district picker since the row already names one), same
-  // pattern as the Attendance/Retention district->venue drills.
-  function openVenueDistrictDrill(v) {
-    const rootRows = groupByDistrict(byVenue, ["below", "meet", "exceed"], {
-      exceed_pct: (d) => { const t = (d.below || 0) + (d.meet || 0) + (d.exceed || 0); return t ? Math.round((1000 * d.exceed) / t) / 10 : null; },
-    }).sort((a, b) => (b.exceed_pct || 0) - (a.exceed_pct || 0));
+  // District rollup off the search-matched venues — feeds the "Milestone
+  // performance by district" table and both the row-click (district+venue,
+  // both metrics) and column-header (one metric, by district then venue)
+  // drills, same rollup either way.
+  const districtRollup = milestoneDistrictRollup(matchedVenues).sort((a, b) => (b.avg_exceed_pct ?? -1) - (a.avg_exceed_pct ?? -1));
+
+  // Click a venue row or a district row -> that district's venues, both
+  // metrics shown (openAt skips the root district picker when a specific
+  // district is already known, same pattern as the Attendance/Retention
+  // district->venue drills).
+  function openDistrictDrill(district) {
+    const rootRows = districtRollup.map((d) => ({ district: d.district, exceed_pct: d.avg_exceed_pct, completion_pct: d.avg_completion_pct }));
+    const rootRow = rootRows.find((r) => r.district === district) || { district, exceed_pct: null, completion_pct: null };
     drill.openAt({
       title: "Milestone quality — by district",
       tone: "real", tagLabel: "REAL",
       rootKey: "district", rootLabel: "District",
-      columns: [{ key: "exceed_pct", label: "% exceeding", align: "right", render: fmtPct }],
+      columns: [
+        { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+        { key: "completion_pct", label: "% Completed", align: "right", render: fmtPct },
+      ],
       rootRows,
       childKey: "venue", childLabel: "Venue",
-      getChildRows: (root) => byVenue.filter((r) => r.district === root.district).sort((a, b) => (b.exceed_pct || 0) - (a.exceed_pct || 0)),
-    }, { district: v.district });
+      getChildRows: (root) => matchedVenues
+        .filter((v) => v.district === root.district)
+        .map((v) => ({ venue: v.venue, exceed_pct: v.exceed_pct, completion_pct: v.completion_pct }))
+        .sort((a, b) => (b.exceed_pct ?? -1) - (a.exceed_pct ?? -1)),
+    }, rootRow);
+  }
+
+  // Column-header click on the full venue table -> that ONE metric, by
+  // district then venue — mirrors the reference design's per-metric
+  // district->venue drill exactly (district rows are a straight average of
+  // venues, not volume-weighted — see milestoneDistrictRollup).
+  function openMilestoneMetricDrill(metricKey) {
+    const rootRows = [...districtRollup]
+      .map((d) => ({ district: d.district, [metricKey]: metricKey === "exceed_pct" ? d.avg_exceed_pct : d.avg_completion_pct }))
+      .sort((a, b) => (b[metricKey] ?? -1) - (a[metricKey] ?? -1));
+    drill.open({
+      title: `${MILESTONE_METRIC_LABEL[metricKey]} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [{ key: metricKey, label: MILESTONE_METRIC_LABEL[metricKey], align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> }],
+      rootRows,
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => matchedVenues
+        .filter((v) => v.district === root.district)
+        .map((v) => ({ venue: v.venue, [metricKey]: v[metricKey] }))
+        .sort((a, b) => (b[metricKey] ?? -1) - (a[metricKey] ?? -1)),
+    });
   }
 
   return (
@@ -4856,7 +4929,20 @@ function MilestonesTab({ filters }) {
           </Insight>
         </div>
       )}
-      <Grid cols={4}>
+
+      <input
+        type="text"
+        value={venueSearch}
+        onChange={(e) => setVenueSearch(e.target.value)}
+        placeholder="Search venue…"
+        style={{ width: "100%", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5, marginBottom: 4 }}
+      />
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
+        Narrows the district rollup and the venue table below, and the drills opened from either.
+      </div>
+
+      <Grid cols={5}>
+        <KpiTile label="Youth tracked" value={fmtNum(youthTracked)} sub={firstWeek ? `Week ${firstWeek.week_number}, this filter` : undefined} tag="REAL" tone="real" />
         <KpiTile label="Weeks reported" value={String(weekly.length)} sub="Friday milestone captures, this cohort" tag="REAL" tone="real" />
         <KpiTile label="Latest completion" value={fmtPct(latest?.completion_pct)} sub={latest ? `Week ${latest.week_number}` : undefined} tag="REAL" tone="real" />
         <KpiTile label="Peak quality week" value={peakWeek ? `Week ${peakWeek.week_number}` : "—"} sub={peakWeek ? `${fmtPct(peakWeek.exceed_pct)} exceeding expectations` : undefined} tag="REAL" tone="real" />
@@ -4868,7 +4954,28 @@ function MilestonesTab({ filters }) {
         />
       </Grid>
 
-      <Card title="Pitch quality by week" subtitle="Share of youth below / meeting / exceeding expectations, captured every Friday." chip="REAL">
+      <ExecBand num="◆" title="Milestone performance by district" />
+      <Card
+        title="Milestone performance by district"
+        subtitle="Venues, youth/week, and average pitch quality per district — a straight average across that district's venues, not weighted by youth count. Click a district for its venues."
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && districtRollup.length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "venues", label: "Venues", align: "right", render: fmtNum },
+              { key: "youth", label: "Youth/wk (sum)", align: "right", render: fmtNum },
+              { key: "avg_exceed_pct", label: "Avg % Exceeding", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+              { key: "avg_completion_pct", label: "Avg % Completed", align: "right", render: (v) => <span style={{ color: v >= 85 ? C.green : v >= 70 ? C.gold : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
+            ]}
+            rows={districtRollup}
+            onRowClick={(d) => openDistrictDrill(d.district)}
+          />
+        </State>
+      </Card>
+
+      <Card title="Milestone quality" subtitle="Share of youth below / meeting / exceeding expectations, captured every Friday." chip="REAL">
         <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
@@ -4881,79 +4988,76 @@ function MilestonesTab({ filters }) {
               <Bar dataKey="exceed_pct" name="Exceeds" stackId="w" fill={C.green} radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
+          <div style={{ overflowX: "auto", marginTop: 14 }}>
+            <DataTable
+              columns={[
+                { key: "week_number", label: "Week", render: (v) => `Week ${v}` },
+                { key: "total_youth", label: "Reported", align: "right", render: fmtNum },
+                { key: "completed", label: "# Completed", align: "right", render: fmtNum },
+                { key: "completion_pct", label: "% Completed", align: "right", render: fmtPct },
+                { key: "below", label: "# Below", align: "right", render: fmtNum },
+                { key: "below_pct", label: "% Below", align: "right", render: (v) => <span style={{ color: v <= 5 ? C.green : v <= 10 ? C.gold : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
+                { key: "exceed", label: "# Exceeds", align: "right", render: fmtNum },
+                { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+              ]}
+              rows={weekly}
+            />
+          </div>
         </State>
       </Card>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="Quality trajectory" subtitle="Exceeding vs below expectations, week on week." chip="REAL">
-          <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-                <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip /><Legend />
-                <Line type="monotone" dataKey="exceed_pct" name="Exceeds %" stroke={C.green} strokeWidth={2} />
-                <Line type="monotone" dataKey="below_pct" name="Below %" stroke={C.coral} strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
-          </State>
-        </Card>
-        <Card
-          title="Parent engagement present (%)"
-          subtitle="Share of all youth that week with a parent recorded as present — not just of those with a recorded answer, since parent_engagement is unreported for a large share of rows in every cohort. That no-report share is shown alongside, not folded into 'absent'."
-          chip="REAL"
-        >
-          <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-                <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
-                <Tooltip /><Legend />
-                <Bar dataKey="parent_present_pct" name="Present %" radius={[4, 4, 0, 0]}>
-                  {weekly.map((w, i) => <Cell key={i} fill={(w.parent_present_pct ?? 0) < 10 ? "#D8CFB8" : C.gold} />)}
-                </Bar>
-                <Bar dataKey="parent_no_report_pct" name="Not reported %" fill={C.muted} radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </State>
-        </Card>
-      </div>
+      <Card title="Quality trajectory" subtitle="Exceeding vs below expectations, week on week." chip="REAL">
+        <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip /><Legend />
+              <Line type="monotone" dataKey="exceed_pct" name="Exceeds %" stroke={C.green} strokeWidth={2} />
+              <Line type="monotone" dataKey="below_pct" name="Below %" stroke={C.coral} strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+          <div style={{ overflowX: "auto", marginTop: 14 }}>
+            <DataTable
+              columns={[
+                { key: "week_number", label: "Week", render: (v) => `Week ${v}` },
+                { key: "exceed", label: "# Exceeds", align: "right", render: fmtNum },
+                { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+                { key: "below", label: "# Below", align: "right", render: fmtNum },
+                { key: "below_pct", label: "% Below", align: "right", render: fmtPct },
+              ]}
+              rows={weekly}
+            />
+          </div>
+        </State>
+      </Card>
+
+      {riskVenues.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <Insight tone="warn">
+            <b>{riskVenues.length} venues flagged for lowest pitch quality:</b> {riskVenues.map((v) => `${v.venue} (${v.district}, ${fmtPct(v.exceed_pct)} exceeding)`).join(", ")}. No per-venue "below expectations" figure alone is tracked — this flag uses each venue's lowest share exceeding expectations as the coaching-priority signal, so read it as a priority list rather than an exact below-expectations count.
+          </Insight>
+        </div>
+      )}
 
       <Card
-        title="Venue milestone performance — top & bottom 5"
-        subtitle={`Ranked by share of pitches exceeding expectations, cumulative across weeks reported. ${fmtNum(byVenue.length)} venue${byVenue.length === 1 ? "" : "s"}${cohortAvgExceed != null ? `; cohort average ${fmtPct(cohortAvgExceed)} exceeding` : ""}. Click a row for the district breakdown.`}
+        title={`Venue milestone performance — all ${fmtNum(venuesRanked.length)} venue${venuesRanked.length === 1 ? "" : "s"}`}
+        subtitle={`Every venue, ranked by share of pitches exceeding expectations, cumulative across weeks reported.${cohortAvgExceed != null ? ` Cohort average ${fmtPct(cohortAvgExceed)} exceeding.` : ""} Flagged rows (⚠) are the lowest-exceeding venues. Click a column header to drill by district, then venue.`}
         chip="REAL"
       >
         <State loading={loading} error={error} empty={!loading && venuesRanked.length === 0}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.green, marginBottom: 6 }}>▲ Top 5 venues</div>
-              <DataTable
-                columns={[
-                  { key: "venue", label: "Venue" },
-                  { key: "district", label: "District" },
-                  { key: "avg_youth_per_week", label: "Youth/wk", align: "right", render: (v) => fmtNum(v) },
-                  { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
-                ]}
-                rows={top5}
-                onRowClick={openVenueDistrictDrill}
-              />
-            </div>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.coral, marginBottom: 6 }}>▼ Bottom 5 venues</div>
-              <DataTable
-                columns={[
-                  { key: "venue", label: "Venue" },
-                  { key: "district", label: "District" },
-                  { key: "avg_youth_per_week", label: "Youth/wk", align: "right", render: (v) => fmtNum(v) },
-                  { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
-                ]}
-                rows={bottom5}
-                onRowClick={openVenueDistrictDrill}
-              />
-            </div>
+          <div style={{ maxHeight: 360, overflowY: "auto" }}>
+            <DataTable
+              columns={[
+                { key: "venue", label: "Venue", render: (v, r) => (riskNames.has(r.venue) ? `⚠ ${v}` : v) },
+                { key: "district", label: "District" },
+                { key: "avg_youth_per_week", label: "Youth/wk", align: "right", render: fmtNum },
+                { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span>, onHeaderClick: () => openMilestoneMetricDrill("exceed_pct") },
+                { key: "completion_pct", label: "% Completed", align: "right", render: fmtPct, onHeaderClick: () => openMilestoneMetricDrill("completion_pct") },
+              ]}
+              rows={venuesRanked}
+            />
           </div>
         </State>
       </Card>
@@ -4990,10 +5094,52 @@ function MilestonesTab({ filters }) {
         )}
         {parentGapWide && (
           <Insight tone="warn">
-            <b>Fix the parent-engagement capture.</b> Reported parent presence swings from {fmtPct(Math.min(...parentVals))} to {fmtPct(Math.max(...parentVals))} across weeks{avgParentNoReportPct != null ? `, while an average ${fmtPct(avgParentNoReportPct)} of youth each week have no parent-engagement answer recorded at all` : ""} — {avgParentNoReportPct != null && avgParentNoReportPct > 30 ? "that no-report share, not real absence, is driving most of the swing" : "that's a data-capture gap, not real absence"}. Standardising the Friday capture would turn parent engagement into a metric the team can actually manage.
+            <b>Fix the parent-engagement capture.</b> Reported parent presence swings from {fmtPct(Math.min(...parentVals))} to {fmtPct(Math.max(...parentVals))} across weeks — {avgParentNoReportPct != null && avgParentNoReportPct > 30 ? "a large share of that swing is unreported weeks, not real absence" : "that's a data-capture gap, not real absence"}. See "Parental engagement" below for the week-by-week detail.
           </Insight>
         )}
       </div>
+
+      <ExecBand num="◆" title="Parental engagement" />
+      <Card
+        title="Parents present, by week"
+        subtitle="Number of parents recorded as present that Friday, against everyone who reported a pitch score that week. parent_engagement is unreported for a large share of rows in every cohort — shown as its own share below, not folded into 'absent'."
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
+              <Tooltip /><Legend />
+              <Bar dataKey="parent_present_pct" name="Present %" radius={[4, 4, 0, 0]}>
+                {weekly.map((w, i) => <Cell key={i} fill={(w.parent_present_pct ?? 0) < 10 ? "#D8CFB8" : C.gold} />)}
+              </Bar>
+              <Bar dataKey="parent_no_report_pct" name="Not reported %" fill={C.muted} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ overflowX: "auto", marginTop: 14 }}>
+            <DataTable
+              columns={[
+                { key: "week_number", label: "Week", render: (v) => `Week ${v}` },
+                { key: "total_youth", label: "Reported that week", align: "right", render: fmtNum },
+                { key: "parent_present", label: "# Parents present", align: "right", render: fmtNum },
+                { key: "parent_present_pct", label: "% Present", align: "right", render: fmtPct },
+                { key: "parent_no_report", label: "# Not reported", align: "right", render: fmtNum },
+                { key: "parent_no_report_pct", label: "% Not reported", align: "right", render: fmtPct },
+              ]}
+              rows={weekly}
+            />
+          </div>
+        </State>
+      </Card>
+      {parentGapWide && (
+        <div style={{ marginTop: 14 }}>
+          <Insight tone="warn">
+            <b>Standardise the Friday capture.</b> Present-share swings from {fmtPct(Math.min(...parentVals))} to {fmtPct(Math.max(...parentVals))} week to week{avgParentNoReportPct != null ? `, while an average ${fmtPct(avgParentNoReportPct)} of youth each week have no parent-engagement answer recorded at all` : ""} — a real behavioural shift that large, that fast, is unlikely; whoever records this on Fridays needs a consistent process before the metric is trustworthy.
+          </Insight>
+        </div>
+      )}
     </div>
   );
 }
