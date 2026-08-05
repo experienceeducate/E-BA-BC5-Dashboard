@@ -20,6 +20,7 @@ FULL_TABLE = f"`{PROJECT_ID}`.{DATASET}.{TABLE}"
 
 _GOLD   = f"`{PROJECT_ID}`.gold_eba"
 _SILVER = f"`{PROJECT_ID}`.silver_eba"
+_BRONZE = f"`{PROJECT_ID}`.bronze_eba"
 
 # ─── Live tables (confirmed against real BigQuery schemas) ─────────────────────
 # Cohort values in these tables are "BOOTCAMP_2".."BOOTCAMP_5" / "MINI_BOOTCAMP_3",
@@ -48,19 +49,114 @@ AWARENESS_SUMMARY = f"{_GOLD}.eba_bootcamp_daily_awareness_summary_cleaned"
 # per agent/venue/day. Backs /api/recruitment/mobilisation.
 #
 # ⚠️ Same class of bug as AWARENESS_SUMMARY, but worse: THREE row types under
-# `measure`, confirmed by direct query:
+# `measure`:
 #   - 'daily_aggregates': the real per-day/gender/district/venue rows. Has
 #     reached/acquired but preload_youth is NULL throughout — this table has
 #     NO gender/venue/date breakdown of "assigned".
-#   - 'targets' and 'venue_targets': row-for-row EXACT DUPLICATES of each
-#     other (same district, same preload/reached/target values) — summing
-#     both double-counts. No gender/venue/date dimension on these rows either.
-# Always filter to ONE of these — 'daily_aggregates' for reached/acquired,
-# 'targets' (never 'venue_targets', which would double it again) for
-# preload_youth/mobilisation_target.
+#   - 'targets' and 'venue_targets': NOT simple duplicates of each other —
+#     re-verified live 2026-08-04, correcting an earlier assumption here.
+#     BOOTCAMP_5: same mobilisation_target total (1428) but different
+#     preload_youth (1995 'targets' vs 2073 'venue_targets'), and only
+#     'venue_targets' carries a real venue_name (27/27 vs 0/27) — use
+#     'venue_targets' for BC5 so a venue/parish breakdown is possible.
+#     BOOTCAMP_4: different row counts (30 vs 43) AND different
+#     mobilisation_target totals (3474 vs 4073) — genuinely unresolved which
+#     is correct, so BC4 stays on the original 'targets' choice until
+#     confirmed with the recruitment team; don't change it without checking.
+# Always filter to ONE of these for reached/acquired ('daily_aggregates') and
+# ONE for preload_youth/mobilisation_target (TARGET_MEASURE_BY_COHORT, below).
 DAILY_ACQ_MEASURE_ACTUAL = "daily_aggregates"
 DAILY_ACQ_MEASURE_TARGET = "targets"
 DAILY_ACQUISITION_SUMMARY = f"{_GOLD}.eba_bootcamp_daily_acquisition_summary"
+
+# The 'targets'/'venue_targets' rows are a live per-venue snapshot LOG, not
+# one static row per venue — confirmed 2026-08-05, reading every column:
+# preload_youth/mobilisation_target genuinely never change for a given venue
+# (Iganga's Bugabwe Primary School is preload_youth=192, target=100 on all 15
+# of its 'venue_targets' rows), but total_youth_called/total_youth_reached/
+# total_acquired_youth climb across those same 15 rows as a call-progress
+# counter gets re-appended over time. A plain `SELECT DISTINCT *` does NOT
+# collapse these — the varying progress columns make every row look unique —
+# which is why that was tried and still summed to an inflated total. Only
+# de-duplicating on the columns that identify "this venue's target" (not the
+# whole row) collapses correctly: verified live, this gives back BOOTCAMP_5's
+# already-documented totals exactly (2,073 'venue_targets', 1,995 'targets').
+# 'targets' rows carry no venue_name/venue_parish (see comment above) — the
+# (preload_youth, mobilisation_target) pair is what distinguishes one venue's
+# repeated rows from another's there, so it's included in the dedup key for
+# both measures, not just used as the thing being summed.
+# Use this instead of DAILY_ACQUISITION_SUMMARY for any query that SUMs
+# preload_youth or mobilisation_target; queries reading DAILY_ACQ_MEASURE_ACTUAL
+# rows (reached/confirmed) are unaffected and should keep using the plain table.
+DAILY_ACQUISITION_TARGETS_DEDUPED = f"""(
+    SELECT DISTINCT bootcamp_cycle, measure, agent_district, venue_parish, venue_name,
+           preload_youth, mobilisation_target
+    FROM {DAILY_ACQUISITION_SUMMARY}
+    WHERE measure IN ('{DAILY_ACQ_MEASURE_TARGET}', 'venue_targets')
+)"""
+
+# Which `measure` value a cohort's preload_youth/mobilisation_target queries
+# should use — see the DAILY_ACQUISITION_SUMMARY comment above. Confirmed
+# 2026-08-04 for BOOTCAMP_5 only; every other cohort keeps DEFAULT_TARGET_MEASURE
+# until it gets its own confirmation.
+TARGET_MEASURE_BY_COHORT = {
+    "BOOTCAMP_5": "venue_targets",
+}
+DEFAULT_TARGET_MEASURE = "targets"
+
+
+def target_measure_where(prefix: str, cohorts: list):
+    """(clause, params) OR-ing together `(bootcamp_cycle = X AND measure = Y)`
+    for each cohort in `cohorts`, Y being whichever measure
+    TARGET_MEASURE_BY_COHORT assigns that cohort (or the default). Splice into
+    build_where(extra=[...]) alongside the district filter — do NOT also add
+    active_cohort_clause for the same query, this already scopes the cohorts."""
+    clauses, params = [], []
+    for i, cyc in enumerate(cohorts):
+        measure = TARGET_MEASURE_BY_COHORT.get(cyc, DEFAULT_TARGET_MEASURE)
+        clauses.append(f"(bootcamp_cycle = @{prefix}_c{i} AND measure = @{prefix}_m{i})")
+        params.append(_scalar(f"{prefix}_c{i}", "STRING", cyc))
+        params.append(_scalar(f"{prefix}_m{i}", "STRING", measure))
+    return "(" + " OR ".join(clauses) + ")", params
+
+
+# Per-parish BC5 planning targets from the recruitment team's own sheet — has
+# no cohort/bootcamp_cycle column, it's BC5-only by construction. Richer than
+# AWARENESS_ELIGIBLE_TARGET_BC5 below: carries the same eligible-target number
+# (total_new_recruits_awareness_eligible_target sums to 1428, identical to
+# AWARENESS_ELIGIBLE_TARGET_BC5's total) plus a treatment/control split
+# (pct_new_recruits_treatment/control) to derive from it. Confirmed with the
+# recruitment team 2026-08-04: the acquisition-stage treatment/control target
+# is eligible_target × that pct split (≈802/626) — NOT this table's own
+# new_recruits_treatment_acquisition/control_acquisition columns (640/500),
+# which are a different funnel stage ("arrival"), not acquisition/mobilisation.
+PARISH_TARGETS_BC5 = f"{_BRONZE}.raw_bc5_parish_targets"
+
+# Parish-name spelling variants confirmed live 2026-08-05 in BOTH
+# DAILY_ACQUISITION_SUMMARY (venue_parish) and AWARENESS_KYC (youth_parish) —
+# same real Mayuge parish, inconsistent data entry (e.g. "Family Church Of
+# God"'s target row is filed under the misspelled variant, splitting its
+# preload/target away from that parish's real call-center + auto-confirm
+# activity, which is correctly spelled). Canonical spelling is whichever
+# PARISH_TARGETS_BC5 — the recruitment team's own planning sheet — uses,
+# since every parish-grain rollup ultimately joins against it. Add new
+# entries here as more variants are confirmed; this stays a flat map, not a
+# fuzzy-match, so it never silently merges two genuinely different parishes.
+PARISH_NAME_ALIASES = {
+    "MAIRINYA": "MAYIRINYA",
+}
+
+
+def canonical_parish_sql(col: str) -> str:
+    """UPPER(col), corrected for known spelling variants (PARISH_NAME_ALIASES)
+    — splice in place of a bare `UPPER(col)` in any SELECT/GROUP BY that reads
+    a live parish column, so the same real parish doesn't fragment into two
+    rows across a cross-table rollup."""
+    base = f"UPPER({col})"
+    if not PARISH_NAME_ALIASES:
+        return base
+    whens = " ".join(f"WHEN {base} = '{wrong}' THEN '{right}'" for wrong, right in PARISH_NAME_ALIASES.items())
+    return f"(CASE {whens} ELSE {base} END)"
 
 # Per-venue mobilisation targets — DAILY_ACQUISITION_SUMMARY's 'venue_targets'
 # measure was confirmed above to be an exact duplicate of the district-grain
@@ -336,6 +432,27 @@ CONTROL_CALLS_BC4 = f"{_SILVER}.eba_bc4_control_calls"
 # rows), backing Call Centre Insights' barriers chart. `agent_name` present
 # throughout.
 ACQUISITION_CALL_LOG = f"{_SILVER}.eba_bootcamp_acquisition"
+
+# The SAME 3,010 BOOTCAMP_5 calls as ACQUISITION_CALL_LOG WHERE bootcamp_cycle
+# = 'BOOTCAMP_5' — confirmed live 2026-08-04: identical row count and, column
+# for column, identical values/counts (call_status; interest ↔ attendance_status,
+# just 'yes'/'no'/'maybe' vs 'Yes'/'No'/'Maybe'; decision ↔ decision_consultant;
+# why_interest ↔ non_attendance_reason; questions_feedback ↔ questions). This is
+# BC5's OWN native call-log schema, though — the cross-cohort
+# ACQUISITION_CALL_LOG mart that folds BC2–BC5 into one shape drops two fields
+# entirely for BC5 (blank in ACQUISITION_CALL_LOG, real here):
+#   - `gatekeeper_relationship` — structured (Parent/Spouse/Relative/Other),
+#     640/3010 populated. A direct, much larger-N replacement for inferring
+#     "who is the gatekeeper" from free-text keyword matching.
+#   - `attendance_support_notes` — a coded field (Transport/No support
+#     needed/Follow up calls/Other/Enough information/...), 720/3010
+#     populated. THE real answer to "what support do youth need" — not the
+#     always-empty-for-BC5 `support_needed`/`other_support_details` columns
+#     on either table, and not something to mine out of general call notes.
+# call_centre_insights() uses this table instead of ACQUISITION_CALL_LOG for
+# exactly those two fields' sake, reading every other field under its native
+# name here rather than the cross-cohort mart's renamed version.
+BC5_ACQUISITION_CALLS = f"{_SILVER}.eba_bc5_acquisition"
 
 
 def resolve_active_cohorts(requested: list = None) -> list:
