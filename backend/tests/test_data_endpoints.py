@@ -665,6 +665,31 @@ def test_milestones_by_cohort_week_shape_and_percentages(as_staff, mock_run_quer
     assert c["meet_pct"] == round(100 * 1388 / 2737, 1)
 
 
+def test_milestones_accepts_date_range(as_staff, mock_run_query):
+    """start_date/end_date filter on created_at (the report's own submission
+    timestamp) -- confirmed live to be present on every row -- not the
+    derived week_number, applied to every grain this endpoint returns."""
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/implementation/milestones",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-31"},
+    )
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "DATE(created_at) >=" in all_sql
+    assert "DATE(created_at) <=" in all_sql
+    all_params = [p for c in mock_run_query.calls for p in c["params"]]
+    assert any(getattr(p, "name", "").endswith("_start_date") and p.value == "2026-01-01" for p in all_params)
+    assert any(getattr(p, "name", "").endswith("_end_date") and p.value == "2026-01-31" for p in all_params)
+
+
+def test_milestones_date_range_is_optional(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/milestones")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "created_at" not in all_sql
+
+
 def test_milestones_by_cohort_week_ignores_selected_cohort_filter(as_staff, mock_run_query):
     """by_cohort_week's whole purpose is comparing cohorts against each other
     -- it must never be narrowed to whichever single cohort the page filter

@@ -8,7 +8,7 @@
  * Inline styles only — no CSS framework.
  */
 
-import { createContext, Fragment, isValidElement, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, Fragment, isValidElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, ComposedChart, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, Cell, LabelList,
@@ -4936,18 +4936,21 @@ function distinctValues(rows, key) {
 const WEEK_GROUP_COLORS = [C.teal, C.gold, C.green, C.coral];
 const ENTITY_GROUP_COLORS = [C.teal, C.gold, C.green, C.coral, C.muted];
 
-// One GroupedDataTable column-group per week, headline completion + quality
-// only (no activated/completed counts, no % meet/below) -- so every week
-// reported fits on the page side by side without horizontal scrolling on the
-// Venue x Week matrix, which can run to many more weeks/venues than the
-// District x Week matrix's small, fixed column-group count.
+// One GroupedDataTable column-group per week for the Venue x Week matrix --
+// activated (raw count) plus the full below/meets/exceeds split, now that
+// the standalone "Venue milestone performance" table (which used to carry
+// avg_youth_per_week/exceed/completion on their own) is gone and this is
+// the only per-venue view left.
 function weekColumnGroupsCompact(weekNumbers) {
   return weekNumbers.map((w, i) => ({
     label: `Week ${w}`,
     color: WEEK_GROUP_COLORS[i % WEEK_GROUP_COLORS.length],
     columns: [
+      { key: `w${w}_total_youth`, label: "Activated", align: "right", render: fmtNum },
       { key: `w${w}_completion_pct`, label: "% Complete", align: "right", render: fmtPct },
       { key: `w${w}_exceed_pct`, label: "% Exceed", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+      { key: `w${w}_meet_pct`, label: "% Meet", align: "right", render: fmtPct },
+      { key: `w${w}_below_pct`, label: "% Below", align: "right", render: (v) => <span style={{ color: v <= 5 ? C.green : v <= 10 ? C.gold : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
     ],
   }));
 }
@@ -5062,13 +5065,77 @@ function stackedPctLabel(props) {
   );
 }
 
+// Checkbox-popover multi-select -- e.g. "3 venues selected" -- for filters
+// where the user needs to pick several specific values (venue/district) at
+// once rather than one at a time via a native <select>. Closes on an
+// outside click, same convention as the drill panel's Escape/backdrop close.
+function MultiSelectDropdown({ label, options, selected, onChange, width = 160 }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const toggle = (v) => onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
+  const summary = selected.length === 0 ? `All ${label.toLowerCase()}` : selected.length === 1 ? selected[0] : `${selected.length} ${label.toLowerCase()} selected`;
+
+  return (
+    <div ref={ref} style={{ position: "relative", minWidth: width }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{ width: "100%", textAlign: "left", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5, background: C.white, color: selected.length ? C.ink : C.muted, cursor: "pointer", display: "flex", justifyContent: "space-between", gap: 6 }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary}</span>
+        <span style={{ color: C.muted }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: C.white, border: `1px solid ${C.line}`, borderRadius: 5, boxShadow: "0 4px 14px rgba(0,0,0,.14)", zIndex: 45, maxHeight: 240, overflowY: "auto", minWidth: Math.max(width, 200) }}>
+          {selected.length > 0 && (
+            <div onClick={() => onChange([])} style={{ padding: "7px 10px", fontSize: 11.5, color: C.teal, fontWeight: 700, cursor: "pointer", borderBottom: `1px solid ${C.line}` }}>Clear</div>
+          )}
+          {options.length === 0 && <div style={{ padding: "8px 10px", fontSize: 12, color: C.muted }}>No options</div>}
+          {options.map((opt) => (
+            <label key={opt} style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 10px", fontSize: 12.5, cursor: "pointer" }}>
+              <input type="checkbox" checked={selected.includes(opt)} onChange={() => toggle(opt)} />
+              {opt}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Query-string suffix for the milestones fetch's own date-range filter --
+// separate from buildParams(filters), which only knows district/gender/
+// cohort (the global filter bar's fields) and shouldn't grow a
+// Milestones-specific concept every other tab's fetch would then also carry.
+function withMilestoneDateRange(filters, startDate, endDate) {
+  const base = buildParams(filters);
+  const extra = [];
+  if (startDate) extra.push(`start_date=${encodeURIComponent(startDate)}`);
+  if (endDate) extra.push(`end_date=${encodeURIComponent(endDate)}`);
+  if (!extra.length) return base;
+  return base ? `${base}&${extra.join("&")}` : `?${extra.join("&")}`;
+}
+
 function MilestonesTab({ filters }) {
   const drill = useDrill();
-  const { data, loading, error } = useApi(`/api/implementation/milestones${buildParams(filters)}`);
+  const [venueSearch, setVenueSearch] = useState("");
+  const [selectedVenues, setSelectedVenues] = useState([]);
+  const [selectedDistricts, setSelectedDistricts] = useState([]);
+  const [selectedWeeks, setSelectedWeeks] = useState([]);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [venueWeekPage, setVenueWeekPage] = useState(0);
+
+  const { data, loading, error } = useApi(`/api/implementation/milestones${withMilestoneDateRange(filters, startDate, endDate)}`);
   const weekly = data?.weekly || [];
   const byVenue = data?.by_venue || [];
-  const [venueSearch, setVenueSearch] = useState("");
-  const [venueWeekPage, setVenueWeekPage] = useState(0);
 
   const latest = weekly[weekly.length - 1];
   const prior = weekly.length > 1 ? weekly[weekly.length - 2] : null;
@@ -5078,18 +5145,42 @@ function MilestonesTab({ filters }) {
   const peakWeek = weekly.reduce((best, w) => (w.exceed_pct != null && (best == null || w.exceed_pct > best.exceed_pct) ? w : best), null);
   const youthTracked = weekly[0]?.total_youth ?? null;
 
-  // Search narrows the venue table, the district rollup, and both drills —
-  // same "one card's filter box scopes everything on the page" convention
-  // as Awareness Overview/Mobilisers.
+  // Free-text search matches venue name, district, or week (e.g. "bugiri",
+  // "kirongo", or "week 2"/"2"); the Venues/Districts/Weeks multi-selects
+  // narrow further on top of it (AND, not OR) -- all four combine to scope
+  // the district rollup, Venue x Week, and the drills opened from either,
+  // same "one filter panel scopes everything on the page" convention as
+  // Awareness Overview/Mobilisers.
   const q = venueSearch.trim().toLowerCase();
-  const matchedVenues = q ? byVenue.filter((v) => (v.venue || "").toLowerCase().includes(q)) : byVenue;
+  const matchesText = (venue, district, weekNumber) => {
+    if (!q) return true;
+    if ((venue || "").toLowerCase().includes(q)) return true;
+    if ((district || "").toLowerCase().includes(q)) return true;
+    if (weekNumber != null && (`week ${weekNumber}` === q || `week${weekNumber}` === q || String(weekNumber) === q)) return true;
+    return false;
+  };
+  const matchesVenueDistrict = (venue, district) =>
+    (selectedVenues.length === 0 || selectedVenues.includes(venue)) &&
+    (selectedDistricts.length === 0 || selectedDistricts.includes(district));
+
+  const venueOptions = distinctValues(byVenue, "venue");
+  const districtOptions = distinctValues(byVenue, "district");
+
+  const matchedVenues = byVenue.filter((v) => matchesText(v.venue, v.district, null) && matchesVenueDistrict(v.venue, v.district));
 
   // Single-week grain (unlike byVenue's cumulative-across-weeks rollup) —
   // feeds the District x Week / Venue x Week matrices and the week-over-week
-  // variance drill. Districts aren't venues, so the venue search only
-  // narrows the venue-week grain, same as the venue table itself.
+  // variance drill. Districts aren't venues, so the search/multi-selects
+  // only narrow the venue-week grain, same as matchedVenues above; the week
+  // multi-select only applies here (by_venue is already summed across every
+  // week, so there's no single week_number to filter on).
   const districtWeekRows = data?.by_district_week || [];
-  const matchedVenueWeek = q ? (data?.by_venue_week || []).filter((v) => (v.venue || "").toLowerCase().includes(q)) : (data?.by_venue_week || []);
+  const weekOptions = weekNumbersIn(data?.by_venue_week || []);
+  const matchedVenueWeek = (data?.by_venue_week || []).filter((v) =>
+    matchesText(v.venue, v.district, v.week_number) &&
+    matchesVenueDistrict(v.venue, v.district) &&
+    (selectedWeeks.length === 0 || selectedWeeks.includes(v.week_number))
+  );
   const districtNames = distinctValues(districtWeekRows, "district");
 
   // Cohort x week -- deliberately NOT scoped by the venue search (cohorts
@@ -5113,7 +5204,6 @@ function MilestonesTab({ filters }) {
   const venuesRanked = [...matchedVenues].filter((v) => v.exceed_pct != null).sort((a, b) => b.exceed_pct - a.exceed_pct);
   const top5 = venuesRanked.slice(0, 5);
   const bottom5 = venuesRanked.slice(-5).reverse();
-  const cohortAvgExceed = venuesRanked.length ? Math.round((10 * sumBy(venuesRanked, "exceed_pct")) / venuesRanked.length) / 10 : null;
   const spread = top5[0] && bottom5[0] ? Math.round((top5[0].exceed_pct - bottom5[0].exceed_pct) * 10) / 10 : null;
 
   // The 3 lowest-exceeding venues, flagged as a coaching-priority list
@@ -5121,7 +5211,6 @@ function MilestonesTab({ filters }) {
   // expectations" figure exists on its own, so lowest-%-exceeding is the
   // closest real proxy for that risk, same read as the reference design.
   const riskVenues = [...venuesRanked].sort((a, b) => (a.exceed_pct ?? 0) - (b.exceed_pct ?? 0)).slice(0, 3);
-  const riskNames = new Set(riskVenues.map((v) => v.venue));
 
   // District skew across the top/bottom 5 — mirrors the reference design's
   // "the bottom skews Bugweri" read, but computed from whatever the live
@@ -5157,10 +5246,8 @@ function MilestonesTab({ filters }) {
     ? Math.round((latest.exceed_pct - firstWeek.exceed_pct) * 10) / 10
     : null;
 
-  // District rollup off the search-matched venues — feeds the venue table's
-  // per-metric drill and both the row-click (district+venue,
-  // both metrics) and column-header (one metric, by district then venue)
-  // drills, same rollup either way.
+  // District rollup off the search/filter-matched venues — feeds the
+  // District x Week header drill's root (peer ranking across districts).
   const districtRollup = milestoneDistrictRollup(matchedVenues).sort((a, b) => (b.avg_exceed_pct ?? -1) - (a.avg_exceed_pct ?? -1));
 
   // Click a week's bar in the Weekly Overall Performance chart -> pick a
@@ -5192,28 +5279,6 @@ function MilestonesTab({ filters }) {
       rootRows: [{ grain: "District" }, { grain: "Venue" }, { grain: "Gender" }],
       childKey: "name", childLabel: "Group",
       getChildRows: (root) => byGrain[root.grain] || [],
-    });
-  }
-
-  // Column-header click on the full venue table -> that ONE metric, by
-  // district then venue — mirrors the reference design's per-metric
-  // district->venue drill exactly (district rows are a straight average of
-  // venues, not volume-weighted — see milestoneDistrictRollup).
-  function openMilestoneMetricDrill(metricKey) {
-    const rootRows = [...districtRollup]
-      .map((d) => ({ district: d.district, [metricKey]: metricKey === "exceed_pct" ? d.avg_exceed_pct : d.avg_completion_pct }))
-      .sort((a, b) => (b[metricKey] ?? -1) - (a[metricKey] ?? -1));
-    drill.open({
-      title: `${MILESTONE_METRIC_LABEL[metricKey]} — by district`,
-      tone: "real", tagLabel: "REAL",
-      rootKey: "district", rootLabel: "District",
-      columns: [{ key: metricKey, label: MILESTONE_METRIC_LABEL[metricKey], align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> }],
-      rootRows,
-      childKey: "venue", childLabel: "Venue",
-      getChildRows: (root) => matchedVenues
-        .filter((v) => v.district === root.district)
-        .map((v) => ({ venue: v.venue, [metricKey]: v[metricKey] }))
-        .sort((a, b) => (b[metricKey] ?? -1) - (a[metricKey] ?? -1)),
     });
   }
 
@@ -5273,15 +5338,35 @@ function MilestonesTab({ filters }) {
         </div>
       )}
 
-      <input
-        type="text"
-        value={venueSearch}
-        onChange={(e) => setVenueSearch(e.target.value)}
-        placeholder="Search venue…"
-        style={{ width: "100%", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5, marginBottom: 4 }}
-      />
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <input
+          type="text"
+          value={venueSearch}
+          onChange={(e) => setVenueSearch(e.target.value)}
+          placeholder="Search venue, district, or week…"
+          style={{ flex: "1 1 240px", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5 }}
+        />
+        <MultiSelectDropdown label="Venues" options={venueOptions} selected={selectedVenues} onChange={setSelectedVenues} />
+        <MultiSelectDropdown label="Districts" options={districtOptions} selected={selectedDistricts} onChange={setSelectedDistricts} />
+        <MultiSelectDropdown
+          label="Weeks"
+          options={weekOptions.map((w) => `Week ${w}`)}
+          selected={selectedWeeks.map((w) => `Week ${w}`)}
+          onChange={(vals) => setSelectedWeeks(vals.map((v) => Number(v.replace("Week ", ""))))}
+          width={130}
+        />
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 4 }}>
+        <span style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Report date range</span>
+        <input type="date" value={startDate} max={endDate || undefined} onChange={(e) => setStartDate(e.target.value)} style={{ fontSize: 12, padding: "6px 8px", border: `1px solid ${C.line}`, borderRadius: 5, color: C.text }} />
+        <span style={{ fontSize: 11, color: C.muted }}>to</span>
+        <input type="date" value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} style={{ fontSize: 12, padding: "6px 8px", border: `1px solid ${C.line}`, borderRadius: 5, color: C.text }} />
+        {(startDate || endDate) && (
+          <button onClick={() => { setStartDate(""); setEndDate(""); }} style={PAGER_BTN}>Clear dates</button>
+        )}
+      </div>
       <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
-        Narrows the district rollup and the venue table below, and the drills opened from either.
+        Narrows the district rollup, Venue × Week, and the drills opened from either. The date range refetches by each report's own submission date, not the week it was captured for.
       </div>
 
       <Grid cols={5}>
@@ -5419,29 +5504,8 @@ function MilestonesTab({ filters }) {
       )}
 
       <Card
-        title={`Venue milestone performance — all ${fmtNum(venuesRanked.length)} venue${venuesRanked.length === 1 ? "" : "s"}`}
-        subtitle={`Every venue, ranked by share of pitches exceeding expectations, cumulative across weeks reported.${cohortAvgExceed != null ? ` Cohort average ${fmtPct(cohortAvgExceed)} exceeding.` : ""} Flagged rows (⚠) are the lowest-exceeding venues. Click a column header to drill by district, then venue.`}
-        chip="REAL"
-      >
-        <State loading={loading} error={error} empty={!loading && venuesRanked.length === 0}>
-          <div style={{ maxHeight: 360, overflowY: "auto" }}>
-            <DataTable
-              columns={[
-                { key: "venue", label: "Venue", render: (v, r) => (riskNames.has(r.venue) ? `⚠ ${v}` : v) },
-                { key: "district", label: "District" },
-                { key: "avg_youth_per_week", label: "Youth/wk", align: "right", render: fmtNum },
-                { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span>, onHeaderClick: () => openMilestoneMetricDrill("exceed_pct") },
-                { key: "completion_pct", label: "% Completed", align: "right", render: fmtPct, onHeaderClick: () => openMilestoneMetricDrill("completion_pct") },
-              ]}
-              rows={venuesRanked}
-            />
-          </div>
-        </State>
-      </Card>
-
-      <Card
         title="Venue × Week"
-        subtitle={`% completed and % exceeding, every week reported, side by side (each week's own denominator, not cumulative). ${venueWeekPageSize} venues per page. Click a venue to see how it compares with the others, then drill into its own week-over-week change.`}
+        subtitle={`Activated and the below/meets/exceeds split, every week reported, side by side (each week's own denominator, not cumulative). ${venueWeekPageSize} venues per page. Click a venue to see how it compares with the others, then drill into its own week-over-week change.`}
         chip="REAL"
       >
         <State loading={loading} error={error} empty={!loading && matchedVenueWeek.length === 0}>
