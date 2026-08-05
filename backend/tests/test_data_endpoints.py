@@ -542,3 +542,48 @@ def test_milestones_does_not_default_to_active_cohorts(as_staff, mock_run_query)
     as_staff.get("/api/implementation/milestones")
     all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
     assert "bootcamp_cycle" not in all_sql
+
+
+def test_milestones_by_district_week_percentages_use_total_youth(as_staff, mock_run_query):
+    """Unlike by_venue (cumulative across weeks), by_district_week is already
+    single-week grain -- total_youth is a safe same-week denominator here,
+    no total_reports correction needed."""
+    def side_effect(sql, params, role):
+        if "GROUP BY district, week_number" in sql:
+            return [{"district": "BUGIRI", "week_number": 1, "total_youth": 1675,
+                      "below": 221, "meet": 823, "exceed": 631, "completed": 1675}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/milestones")
+    assert r.status_code == 200
+    d = r.json()["by_district_week"][0]
+    assert d["exceed_pct"] == round(100 * 631 / 1675, 1)
+    assert d["completion_pct"] == 100.0
+
+
+def test_milestones_by_venue_week_shape_and_percentages(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "GROUP BY venue, district, week_number" in sql:
+            return [{"venue": "Nkaiza Primary school", "district": "BUGIRI", "week_number": 1,
+                      "total_youth": 86, "below": 0, "meet": 6, "exceed": 80, "completed": 86}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/milestones")
+    assert r.status_code == 200
+    v = r.json()["by_venue_week"][0]
+    assert v["venue"] == "Nkaiza Primary school"
+    assert v["exceed_pct"] == round(100 * 80 / 86, 1)
+    assert v["completion_pct"] == 100.0
+
+
+def test_milestones_district_week_and_venue_week_zero_total_youth_returns_null_pct(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "GROUP BY district, week_number" in sql:
+            return [{"district": "BUGIRI", "week_number": 1, "total_youth": 0, "below": 0, "meet": 0, "exceed": 0, "completed": 0}]
+        if "GROUP BY venue, district, week_number" in sql:
+            return [{"venue": "V", "district": "BUGIRI", "week_number": 1, "total_youth": 0, "below": 0, "meet": 0, "exceed": 0, "completed": 0}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/milestones")
+    assert r.json()["by_district_week"][0]["exceed_pct"] is None
+    assert r.json()["by_venue_week"][0]["completion_pct"] is None

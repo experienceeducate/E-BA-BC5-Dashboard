@@ -426,6 +426,29 @@ export const DEMO = {
       { venue: "Bugadde primary school", district: "MAYUGE", below: 255, meet: 51, exceed: 0, completion_pct: 67.8, exceed_pct: 0, avg_youth_per_week: 55.3 },
       { venue: "Bufulubi Secondary school", district: "MAYUGE", below: 245, meet: 55, exceed: 16, completion_pct: 95.8, exceed_pct: 5, avg_youth_per_week: 22 },
     ],
+    // Single-week grain (unlike by_venue's cumulative rollup above) -- feeds
+    // the District x Week / Venue x Week matrices and the week-over-week
+    // variance drill.
+    by_district_week: [
+      { district: "BUGIRI", week_number: 1, total_youth: 300, completed: 300, completion_pct: 100, below: 40, below_pct: 13.3, meet: 150, meet_pct: 50, exceed: 110, exceed_pct: 36.7 },
+      { district: "BUGIRI", week_number: 2, total_youth: 290, completed: 290, completion_pct: 100, below: 20, below_pct: 6.9, meet: 130, meet_pct: 44.8, exceed: 140, exceed_pct: 48.3 },
+      { district: "BUGIRI", week_number: 3, total_youth: 285, completed: 285, completion_pct: 100, below: 10, below_pct: 3.5, meet: 110, meet_pct: 38.6, exceed: 165, exceed_pct: 57.9 },
+      { district: "BUGIRI", week_number: 4, total_youth: 280, completed: 279, completion_pct: 99.6, below: 35, below_pct: 12.5, meet: 155, meet_pct: 55.4, exceed: 90, exceed_pct: 32.1 },
+      { district: "BUGWERI", week_number: 1, total_youth: 190, completed: 190, completion_pct: 100, below: 30, below_pct: 15.8, meet: 100, meet_pct: 52.6, exceed: 60, exceed_pct: 31.6 },
+      { district: "BUGWERI", week_number: 2, total_youth: 185, completed: 185, completion_pct: 100, below: 18, below_pct: 9.7, meet: 85, meet_pct: 45.9, exceed: 82, exceed_pct: 44.3 },
+      { district: "BUGWERI", week_number: 3, total_youth: 180, completed: 180, completion_pct: 100, below: 8, below_pct: 4.4, meet: 65, meet_pct: 36.1, exceed: 107, exceed_pct: 59.4 },
+      { district: "BUGWERI", week_number: 4, total_youth: 178, completed: 176, completion_pct: 98.9, below: 28, below_pct: 15.7, meet: 105, meet_pct: 59, exceed: 45, exceed_pct: 25.3 },
+    ],
+    by_venue_week: [
+      { venue: "Bright future primary school", district: "BUGIRI", week_number: 1, total_youth: 40, completed: 40, completion_pct: 100, below: 2, below_pct: 5, meet: 22, meet_pct: 55, exceed: 16, exceed_pct: 40 },
+      { venue: "Bright future primary school", district: "BUGIRI", week_number: 2, total_youth: 39, completed: 39, completion_pct: 100, below: 1, below_pct: 2.6, meet: 18, meet_pct: 46.2, exceed: 20, exceed_pct: 51.3 },
+      { venue: "Bright future primary school", district: "BUGIRI", week_number: 3, total_youth: 38, completed: 38, completion_pct: 100, below: 1, below_pct: 2.6, meet: 15, meet_pct: 39.5, exceed: 22, exceed_pct: 57.9 },
+      { venue: "Bright future primary school", district: "BUGIRI", week_number: 4, total_youth: 38, completed: 38, completion_pct: 100, below: 4, below_pct: 10.5, meet: 23, meet_pct: 60.5, exceed: 11, exceed_pct: 28.9 },
+      { venue: "Bubonghe Kwagala Maize Milling Hall", district: "BUGWERI", week_number: 1, total_youth: 88, completed: 88, completion_pct: 100, below: 5, below_pct: 5.7, meet: 40, meet_pct: 45.5, exceed: 43, exceed_pct: 48.9 },
+      { venue: "Bubonghe Kwagala Maize Milling Hall", district: "BUGWERI", week_number: 2, total_youth: 85, completed: 85, completion_pct: 100, below: 3, below_pct: 3.5, meet: 30, meet_pct: 35.3, exceed: 52, exceed_pct: 61.2 },
+      { venue: "Bubonghe Kwagala Maize Milling Hall", district: "BUGWERI", week_number: 3, total_youth: 84, completed: 84, completion_pct: 100, below: 2, below_pct: 2.4, meet: 25, meet_pct: 29.8, exceed: 57, exceed_pct: 67.9 },
+      { venue: "Bubonghe Kwagala Maize Milling Hall", district: "BUGWERI", week_number: 4, total_youth: 82, completed: 81, completion_pct: 98.8, below: 6, below_pct: 7.3, meet: 40, meet_pct: 48.8, exceed: 36, exceed_pct: 43.9 },
+    ],
   },
 
   // Scores are on the 0-5 observation scale and ratings use the reference
