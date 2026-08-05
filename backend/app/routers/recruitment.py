@@ -770,7 +770,15 @@ def awareness_forecast(
     cohort:   List[str] = Query(default=[]),
 ):
     """Daily registration trend vs target, with a simple pace-to-target
-    projection, for the Awareness tab's Forecast sub-page."""
+    projection, for the Awareness tab's Forecast sub-page.
+
+    `target` is an ELIGIBLE-youth quota where it comes from the hardcoded
+    AWARENESS_ELIGIBLE_TARGET_BC5 sheet (per that constant's comment in
+    tables.py), but the live registration_target fallback (districts the
+    sheet doesn't cover) is, per its name, a raw-registration quota. So pace/
+    gap/days-to-target/%-of-target compare against `eligible` for a
+    hardcoded-target district and `registered` for a live-target one — never
+    blend the two bases together."""
     where, params = build_where(
         districts=district,
         extra=[active_cohort_clause("awf", requested=cohort)], prefix="awf",
@@ -810,8 +818,10 @@ def awareness_forecast(
     # registration_target where it has data for that district — see the note
     # at that constant and at awareness_parish() above, which does the same
     # thing at parish grain.
-    district_registered_sql = f"""
-    SELECT UPPER(youth_district) AS district, SUM(total_registered_youth) AS registered
+    district_stats_sql = f"""
+    SELECT UPPER(youth_district) AS district,
+           SUM(total_registered_youth) AS registered,
+           SUM(total_eligible_youth) AS eligible
     FROM {AWARENESS_SUMMARY}
     WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
     GROUP BY district
@@ -837,28 +847,48 @@ def awareness_forecast(
     }
     target = sum(district_target.values())
 
+    district_stats = {r["district"]: r for r in database.run_query(district_stats_sql, params, role=user.role)}
+
+    # The hardcoded sheet's target is an ELIGIBLE-youth quota, the live
+    # registration_target fallback is a raw-registration one — so which
+    # figure counts as "actual" against `target` depends on which source
+    # that district's target came from (see docstring). Summed per-district
+    # rather than using the global `registered`/`eligible` totals above, so a
+    # district filter mixing both source types still adds up correctly.
+    def _actual_for(d):
+        stats = district_stats.get(d, {})
+        is_hardcoded = d in hardcoded_district_target
+        return (stats.get("eligible") or 0) if is_hardcoded else (stats.get("registered") or 0)
+
+    all_districts = set(district_stats) | set(district_target)
+    actual_for_target = sum(_actual_for(d) for d in all_districts)
+
     n_days = len(daily)
-    avg_daily_rate = (registered / n_days) if n_days else None
-    remaining = max(target - registered, 0)
+    avg_daily_rate = (actual_for_target / n_days) if n_days else None
+    remaining = max(target - actual_for_target, 0)
     days_to_target = (
         round(remaining / avg_daily_rate) if avg_daily_rate else None
     )
     eligibility_rate = round(100 * eligible / interested, 1) if interested else None
 
-    district_registered = {r["district"]: r.get("registered") or 0 for r in database.run_query(district_registered_sql, params, role=user.role)}
     by_district = []
-    for d in set(district_registered) | set(district_target):
-        d_registered = district_registered.get(d, 0)
+    for d in all_districts:
+        stats = district_stats.get(d, {})
+        d_registered = stats.get("registered") or 0
+        d_eligible = stats.get("eligible") or 0
         d_target = district_target.get(d, 0)
-        d_rate = (d_registered / n_days) if n_days else None
-        d_gap = max(d_target - d_registered, 0)
+        d_source = "hardcoded" if d in hardcoded_district_target else ("live" if d_target else None)
+        d_actual = _actual_for(d)
+        d_rate = (d_actual / n_days) if n_days else None
+        d_gap = max(d_target - d_actual, 0)
         by_district.append({
             "district": d,
             "registered": d_registered,
+            "eligible": d_eligible,
             "target": d_target,
-            "target_source": "hardcoded" if d in hardcoded_district_target else ("live" if d_target else None),
+            "target_source": d_source,
             "gap": d_gap,
-            "pct_of_target": round(100 * d_registered / d_target, 1) if d_target else None,
+            "pct_of_target": round(100 * d_actual / d_target, 1) if d_target else None,
             "avg_daily_rate": round(d_rate, 1) if d_rate is not None else None,
             "days_to_target": round(d_gap / d_rate) if d_rate else None,
         })
@@ -871,6 +901,11 @@ def awareness_forecast(
         "eligible_to_date": eligible,
         "eligibility_rate": eligibility_rate,
         "target": target,
+        # Progress/pace against `target` in mixed-basis districts — eligible
+        # where hardcoded, registered where live (see docstring). Use this,
+        # not registered_to_date/eligible_to_date, for anything measured
+        # against `target`.
+        "actual_to_date_for_target": actual_for_target,
         "n_days": n_days,
         "avg_daily_rate": round(avg_daily_rate, 1) if avg_daily_rate is not None else None,
         "days_to_target": days_to_target,
