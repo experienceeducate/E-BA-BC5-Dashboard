@@ -111,7 +111,15 @@ def _stage_counts(district, gender, role, cohort=None):
     female/male columns and filters the other two tables' per-row gender
     column; when omitted all three return their unfiltered totals. `cohort`
     restricts bootcamp_cycle to the requested selection (see
-    resolve_active_cohorts) instead of the full ACTIVE_COHORTS set."""
+    resolve_active_cohorts) instead of the full ACTIVE_COHORTS set.
+
+    Returns (stages, call_center_confirmed) — the second element is the
+    call-center-only "confirmed" count (mo_row's total_acquired_youth,
+    BEFORE auto_confirmed is added on). `stages["Confirmed"]` blends in the
+    2.5-week auto-confirm pilot, which never goes through Reached at all —
+    dividing the blended Confirmed by the unblended Reached can read above
+    100% (verified live), so any Confirmed/Reached-style rate must use this
+    call-center-only figure instead of stages["Confirmed"]."""
     g = (gender or "").strip().lower()
     if g == "female":
         reg_col, int_col, elig_col = "total_registered_female", "total_interested_female", "total_eligible_female"
@@ -175,7 +183,7 @@ def _stage_counts(district, gender, role, cohort=None):
     """
     sf = (database.run_query(sf_sql, sf_params, role=role) or [{}])[0]
 
-    return {
+    stages = {
         "Registered": aw.get("registered") or 0,
         "Interested": aw.get("interested") or 0,
         "Eligible":   aw.get("eligible") or 0,
@@ -187,6 +195,8 @@ def _stage_counts(district, gender, role, cohort=None):
         "Activated":  sf.get("activated") or 0,
         "Retained":   sf.get("retained") or 0,
     }
+    call_center_confirmed = mo_row.get("confirmed") or 0
+    return stages, call_center_confirmed
 
 
 @router.get("/api/filters")
@@ -255,7 +265,7 @@ def overview_funnel(
     cohort:   List[str] = Query(default=[]),
 ):
     """Stage-by-stage funnel counts with % of previous stage and youth lost."""
-    by_stage = _stage_counts(district, gender, user.role, cohort)
+    by_stage, _ = _stage_counts(district, gender, user.role, cohort)
     ordered = sorted(
         ({"stage": s, "count": c} for s, c in by_stage.items()),
         key=lambda r: _STAGE_ORDER.get(r["stage"], 999),
@@ -283,17 +293,24 @@ def overview_kpis(
     cohort:   List[str] = Query(default=[]),
 ):
     """Headline conversion KPIs derived from the funnel counts."""
-    by_stage = _stage_counts(district, gender, user.role, cohort)
+    by_stage, call_center_confirmed = _stage_counts(district, gender, user.role, cohort)
 
     def rate(numerator, denominator):
         n, d = by_stage.get(numerator, 0), by_stage.get(denominator, 0)
         return round(100 * n / d, 1) if d else None
 
+    # mobilisation_rate is call-center Confirmed ÷ call-center Reached, NOT
+    # the blended by_stage["Confirmed"] ÷ Assigned — see _stage_counts'
+    # docstring for why blending the auto-confirm pilot in here can read
+    # above 100%.
+    reached = by_stage.get("Reached") or 0
+    mobilisation_rate = round(100 * call_center_confirmed / reached, 1) if reached else None
+
     return {
         "counts": by_stage,
         "rates": {
             "eligibility_rate":  rate("Eligible", "Interested"),
-            "mobilisation_rate": rate("Confirmed", "Assigned"),
+            "mobilisation_rate": mobilisation_rate,
             "acquisition_rate":  rate("Acquired", "Confirmed"),
             "activation_rate":   rate("Activated", "Acquired"),
             "retention_rate":    rate("Retained", "Activated"),
@@ -449,7 +466,7 @@ def stage_progress(
     their target is implied from docs/metrics.yaml's rate targets (90%/85%)
     applied to their own denominator — flagged via `target_is_implied`.
     """
-    by_stage = _stage_counts(district, gender, user.role, cohort)
+    by_stage, _ = _stage_counts(district, gender, user.role, cohort)
 
     aw_where, aw_params = build_where(
         districts=district, extra=[active_cohort_clause("spaw", requested=cohort)], prefix="spaw",
@@ -705,13 +722,18 @@ def cohort_comparison(user: User = Depends(current_user)):
         assigned = four_week_assigned + acf.get("n", 0)
         target = moa.get("target") or 0
         reached = r.get("reached") or 0
-        confirmed = (r.get("confirmed") or 0) + acf.get("n", 0)
+        call_center_confirmed = r.get("confirmed") or 0
+        confirmed = call_center_confirmed + acf.get("n", 0)
         confirmed_female = (r.get("confirmed_female") or 0) + acf.get("n_female", 0)
         mobilisation_detail.append({
             "cohort": r["bootcamp_cycle"],
             "assigned": assigned,
             "reach_rate": round(100 * reached / four_week_assigned, 1) if four_week_assigned else None,
-            "mobilisation_rate": round(100 * confirmed / assigned, 1) if assigned else None,
+            # Call-center-only Confirmed ÷ Reached — NOT the blended `confirmed`
+            # (which adds the 2.5-week auto-confirm pilot, never counted in
+            # Reached) ÷ `assigned`, which can read above 100%. See
+            # _stage_counts' docstring for the same distinction.
+            "mobilisation_rate": round(100 * call_center_confirmed / reached, 1) if reached else None,
             "progress_pct": round(100 * confirmed / target, 1) if target else None,
             "pct_female": round(100 * confirmed_female / confirmed, 1) if confirmed else None,
         })

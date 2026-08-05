@@ -2303,11 +2303,14 @@ function AwarenessKycPage({ filters }) {
 // direct read off the awareness-forecast/awareness-parish responses.
 function buildForecastInsights(data, byDistrict) {
   const insights = [];
-  const progressPct = data?.target ? Math.round(1000 * (data.registered_to_date || 0) / data.target) / 10 : null;
+  // `target` is an eligible-youth quota where hardcoded, a raw-registration
+  // quota where live-fallback (see awareness_forecast's docstring) — so
+  // progress compares against actual_to_date_for_target, not a fixed
+  // registered/eligible column.
+  const progressPct = data?.target ? Math.round(1000 * (data.actual_to_date_for_target || 0) / data.target) / 10 : null;
 
   if (progressPct != null) {
-    const tone = progressPct >= 95 ? "pos" : progressPct >= 75 ? "warn" : "risk";
-    insights.push({ tone, text: <>Registered <b>{fmtNum(data.registered_to_date)}</b> of the <b>{fmtNum(data.target)}</b> target — <b>{fmtPct(progressPct)}</b> of the way there.</> });
+    insights.push({ tone: progressPct >= 95 ? "pos" : progressPct >= 75 ? "warn" : "risk", text: <><b>{fmtNum(data.actual_to_date_for_target)}</b> of the <b>{fmtNum(data.target)}</b> target — <b>{fmtPct(progressPct)}</b> of the way there.</> });
   }
 
   if (data?.days_to_target != null && data?.avg_daily_rate) {
@@ -2366,32 +2369,41 @@ function AwarenessForecastPage({ filters }) {
     return { event_date: d.event_date, eligible_cum: eligCum, target: data?.target ?? null };
   });
 
-  const progressPct = data?.target ? Math.round(1000 * (data.registered_to_date || 0) / data.target) / 10 : null;
+  // Target is an eligible-youth quota where hardcoded (AWARENESS_ELIGIBLE_TARGET_BC5),
+  // a raw-registration quota where live-fallback — progress/gap/pace all
+  // compare against whichever basis applies (backend already picks the right
+  // one per district into `actual`/actual_to_date_for_target).
+  const progressPct = data?.target ? Math.round(1000 * (data.actual_to_date_for_target || 0) / data.target) / 10 : null;
 
   const districtRows = byDistrict.map((d) => ({ ...d, category: categorizeRate(d.pct_of_target) }));
 
   const parishRows = (parishData.data?.parishes || []).map((p) => {
     const registered = p.reached || 0;
+    const eligible = p.eligible || 0;
+    const isHardcoded = p.target_source === "hardcoded";
+    const actual = isHardcoded ? eligible : registered;
     const target = p.target || 0;
-    const gap = Math.max(target - registered, 0);
-    const rate = data?.n_days ? registered / data.n_days : null;
+    const gap = Math.max(target - actual, 0);
+    const rate = data?.n_days ? actual / data.n_days : null;
     return {
       district: p.district,
       parish: p.parish,
       registered,
+      eligible,
       target,
       target_source: p.target_source,
       gap,
-      pct_of_target: target ? Math.round(1000 * registered / target) / 10 : null,
+      pct_of_target: target ? Math.round(1000 * actual / target) / 10 : null,
       days_to_target: rate ? Math.round(gap / rate) : null,
     };
   });
 
   const forecastColumns = [
     { key: "registered", label: "Registered", align: "right", render: (v) => fmtNum(v) },
+    { key: "eligible", label: "Eligible", align: "right", render: (v) => fmtNum(v) },
     {
       key: "target", label: "Target", align: "right",
-      render: (v, r) => <span title={r.target_source === "hardcoded" ? "Hardcoded BC5 planning target" : r.target_source === "live" ? "Live registration_target" : undefined}>{fmtNum(v)}{r.target_source === "hardcoded" ? " *" : ""}</span>,
+      render: (v, r) => <span title={r.target_source === "hardcoded" ? "Hardcoded BC5 planning target — an eligible-youth quota" : r.target_source === "live" ? "Live registration_target — a raw-registration quota" : undefined}>{fmtNum(v)}{r.target_source === "hardcoded" ? " *" : ""}</span>,
     },
     { key: "gap", label: "Gap", align: "right", render: (v) => fmtNum(v) },
     { key: "days_to_target", label: "Days to target", align: "right", render: (v) => (v == null ? "—" : v <= 0 ? "Met" : `${fmtNum(v)} d`) },
@@ -2414,16 +2426,17 @@ function AwarenessForecastPage({ filters }) {
   return (
     <div>
       <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
-        Registration pace against target — daily trend, progress by district, and days-to-target at the
-        current pace. Target prefers the hardcoded BC5 planning sheet where it has data for a district/
-        parish (marked *), falling back to the live registration_target elsewhere. Click a district row
-        to drill into its parishes.
+        Pace against target — daily trend, progress by district, and days-to-target at the current pace.
+        Target prefers the hardcoded BC5 planning sheet where it has data for a district/parish (marked *,
+        an eligible-youth quota), falling back to the live registration_target elsewhere (a raw-registration
+        quota) — progress/gap/pace below compare against whichever basis applies. Click a district row to
+        drill into its parishes.
       </p>
 
       <Grid cols={4}>
         <KpiTile label="Registered to date" value={fmtNum(data?.registered_to_date)} tag="REAL" />
         <KpiTile label="Registration target" value={fmtNum(data?.target)} tag="REAL" />
-        <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(progressPct)] }}>{fmtPct(progressPct)}</span>} sub="registered ÷ target" tag="DERIVED" tone="sim" />
+        <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(progressPct)] }}>{fmtPct(progressPct)}</span>} sub="eligible or registered ÷ target" tag="DERIVED" tone="sim" />
         <KpiTile label="Days to target" value={data?.days_to_target ?? "—"} sub={`at current pace · ${fmtNum(data?.avg_daily_rate)}/day`} tag="DERIVED" tone="sim" />
         <KpiTile label="Eligible to date" value={fmtNum(data?.eligible_to_date)} sub={`of ${fmtNum(data?.interested_to_date)} interested`} tag="REAL" />
         <KpiTile label="Eligibility rate" value={<span style={{ color: rateColor(data?.eligibility_rate, "eligibility_rate") }}>{fmtPct(data?.eligibility_rate)}</span>} sub={`eligible ÷ interested · ${RATE_TARGETS.eligibility_rate.good}% target`} tag="DERIVED" tone="sim" />
@@ -2435,6 +2448,22 @@ function AwarenessForecastPage({ filters }) {
           {buildForecastInsights(data || {}, byDistrict).map((ins, i) => <Insight key={i} tone={ins.tone}>{ins.text}</Insight>)}
         </div>
       </State>
+
+      <Card title="Daily trend — reached vs eligible" subtitle="Youth reached (registered) and eligible each day — not cumulative, so a slow day reads as a dip rather than a flattening curve" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Legend onClick={(e) => toggleSeries(e.dataKey)} formatter={legendFormatter} wrapperStyle={{ cursor: "pointer" }} />
+              <Bar name="Reached" dataKey="registered" fill={C.teal} radius={[3, 3, 0, 0]} hide={!!hiddenSeries.registered} />
+              <Bar name="Eligible" dataKey="eligible" fill={C.gold} radius={[3, 3, 0, 0]} hide={!!hiddenSeries.eligible} />
+            </BarChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
 
       <Card title="Daily trend — eligible youth vs target (cumulative)" subtitle="Running total of eligible youth against the registration target (hardcoded BC5 sheet where available, live registration_target elsewhere) — stands in for the reference design's eligible-youth target line" chip="REAL">
         <State loading={loading} error={error} empty={!loading && daily.length === 0}>
@@ -2458,7 +2487,7 @@ function AwarenessForecastPage({ filters }) {
         </State>
       </Card>
 
-      <Card title="Days to target, by district" subtitle="Registered vs target at current pace — click a district to see its parishes" chip="REAL">
+      <Card title="Days to target, by district" subtitle="Eligible or registered (whichever the target's basis is) vs target at current pace — click a district to see its parishes" chip="REAL">
         <State loading={loading} error={error} empty={!loading && districtRows.length === 0}>
           <DataTable
             columns={[{ key: "district", label: "District" }, ...forecastColumns]}
@@ -5575,14 +5604,19 @@ async function buildAwarenessExport(filters) {
     return { stage: label, female: f, male: m, pct_female: t ? Math.round((1000 * f) / t) / 10 : null };
   });
 
+  // Target is an eligible-youth quota where hardcoded, a raw-registration
+  // quota where live — compare against whichever basis applies (matches
+  // awareness_forecast's by_district and AwarenessForecastPage's parishRows).
   const nDays = forecast.n_days;
   const forecastByDistrict = (forecast.by_district || []);
   const forecastByParish = parishRows.map((p) => {
-    const registered = p.reached || 0, target = p.target || 0, gap = Math.max(target - registered, 0);
-    const rate = nDays ? registered / nDays : null;
+    const registered = p.reached || 0, eligible = p.eligible || 0;
+    const actual = p.target_source === "hardcoded" ? eligible : registered;
+    const target = p.target || 0, gap = Math.max(target - actual, 0);
+    const rate = nDays ? actual / nDays : null;
     return {
-      district: p.district, parish: p.parish, registered, target, gap,
-      pct_of_target: target ? Math.round((1000 * registered) / target) / 10 : null,
+      district: p.district, parish: p.parish, registered, eligible, target, gap,
+      pct_of_target: target ? Math.round((1000 * actual) / target) / 10 : null,
       days_to_target: rate ? Math.round(gap / rate) : null,
     };
   });
@@ -5635,10 +5669,10 @@ async function buildAwarenessExport(filters) {
       ], mobiliserDetail.detail || []),
       xSection("Daily registration trend", "event_date", "Date", [xCol("eligible", "Eligible")], forecast.daily || []),
       xSection("Days to target, by district", "district", "District", [
-        xCol("registered", "Registered"), xCol("target", "Target"), xCol("gap", "Gap"), xCol("days_to_target", "Days to target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
+        xCol("registered", "Registered"), xCol("eligible", "Eligible"), xCol("target", "Target"), xCol("gap", "Gap"), xCol("days_to_target", "Days to target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
       ], forecastByDistrict),
       xSection("Days to target, by parish", "parish", "Parish", [
-        xTextCol("district", "District"), xCol("registered", "Registered"), xCol("target", "Target"), xCol("gap", "Gap"), xCol("days_to_target", "Days to target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
+        xTextCol("district", "District"), xCol("registered", "Registered"), xCol("eligible", "Eligible"), xCol("target", "Target"), xCol("gap", "Gap"), xCol("days_to_target", "Days to target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
       ], forecastByParish),
     ],
   };
