@@ -20,9 +20,9 @@ from app.core.tables import (
     NOT_TEST_DATA,
     ACTIVE_COHORTS,
     AWARENESS_SUMMARY,
-    AWARENESS_MEASURE_ACTUAL,
     AWARENESS_MEASURE_TARGET,
     DAILY_ACQUISITION_SUMMARY,
+    DAILY_ACQUISITION_TARGETS_DEDUPED,
     DAILY_ACQ_MEASURE_ACTUAL,
     DAILY_ACQ_MEASURE_TARGET,
     SITE_FUNNEL_METRICS,
@@ -37,7 +37,11 @@ from app.core.tables import (
     AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT,
     active_cohort_clause,
     resolve_active_cohorts,
+    target_measure_where,
+    TARGET_MEASURE_BY_COHORT,
+    DEFAULT_TARGET_MEASURE,
 )
+from app.routers.recruitment import _auto_confirmed_count
 
 router = APIRouter()
 
@@ -55,63 +59,26 @@ def _filter_extra(cohort, prefix):
     return extra
 
 
-def _auto_confirmed_count(district, gender, role, cohort=None):
-    """Youth auto-confirmed by policy as part of a cohort's short-cycle
-    ("2.5-week") pilot — bypassing DAILY_ACQUISITION_SUMMARY's call-center
-    reach/confirm process entirely, so added on top of that table's confirmed
-    count, never looked up inside it. Summed across resolve_active_cohorts(cohort)
-    (the requested cohort filter, or every cycle in ACTIVE_COHORTS when none is
-    given); each cycle's pilot is scoped by whichever mechanism tables.py has
-    on file for it — BOOTCAMP_4 by subcounty (AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT),
-    BOOTCAMP_5 by registration date (AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT,
-    temporary — see tables.py)."""
-    total = 0
-    for cycle in resolve_active_cohorts(cohort):
-        subcounties = AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT.get(cycle)
-        since_date = AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT.get(cycle)
-        if subcounties:
-            where, params = build_where(
-                districts=district, gender=gender,
-                extra=[(f"bootcamp_cycle = @acf_cycle", [_scalar("acf_cycle", "STRING", cycle)])],
-                prefix="acf", district_col="youth_district", gender_col="youth_gender",
-            )
-            sql = f"""
-            SELECT COUNT(*) AS n FROM {AWARENESS_KYC}
-            WHERE {where} AND elligible = TRUE AND is_treatment = TRUE
-              AND UPPER(youth_subcounty) IN UNNEST(@acf_subcounties)
-            """
-            params = params + [_array("acf_subcounties", "STRING", subcounties)]
-            total += (database.run_query(sql, params, role=role) or [{}])[0].get("n") or 0
-        elif since_date:
-            g = (gender or "").strip().lower()
-            reg_col = (
-                "total_registered_female" if g == "female"
-                else "total_registered_male" if g == "male"
-                else "total_registered_youth"
-            )
-            where, params = build_where(
-                districts=district,
-                extra=[(f"bootcamp_cycle = @acfd_cycle", [_scalar("acfd_cycle", "STRING", cycle)])],
-                prefix="acfd", district_col="youth_district",
-            )
-            sql = f"""
-            SELECT SUM({reg_col}) AS n FROM {AWARENESS_SUMMARY}
-            WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
-              AND report_date >= @acfd_since
-            """
-            params = params + [_scalar("acfd_since", "DATE", since_date)]
-            total += (database.run_query(sql, params, role=role) or [{}])[0].get("n") or 0
-    return total
+
+
 
 
 def _stage_counts(district, gender, role, cohort=None):
     """The full Registered..Retained funnel spans three live tables (no single
     fact table covers it) — see app/core/tables.py. Query each and merge by
-    stage. `gender`, when given, filters AWARENESS_SUMMARY by selecting its
-    female/male columns and filters the other two tables' per-row gender
-    column; when omitted all three return their unfiltered totals. `cohort`
-    restricts bootcamp_cycle to the requested selection (see
-    resolve_active_cohorts) instead of the full ACTIVE_COHORTS set.
+    stage. `gender`, when given, filters via build_where's usual gender_col
+    mechanism against AWARENESS_KYC's real per-row gender column, and filters
+    the other two tables' per-row gender column the same way; when omitted
+    all three return their unfiltered totals. `cohort` restricts
+    bootcamp_cycle to the requested selection (see resolve_active_cohorts)
+    instead of the full ACTIVE_COHORTS set.
+
+    Registered/Interested/Eligible are backed by AWARENESS_KYC (silver), not
+    AWARENESS_SUMMARY (gold) — that mart lags live registrations by up to a
+    day (confirmed 2026-08-05: showed far fewer registered than the live
+    per-youth count), which fed straight into Executive Summary's headline
+    numbers and made them diverge from the Recruitment/Mobilisation tabs
+    (already migrated). See the AWARENESS_KYC comment in tables.py.
 
     Returns (stages, call_center_confirmed) — the second element is the
     call-center-only "confirmed" count (mo_row's total_acquired_youth,
@@ -120,35 +87,43 @@ def _stage_counts(district, gender, role, cohort=None):
     dividing the blended Confirmed by the unblended Reached can read above
     100% (verified live), so any Confirmed/Reached-style rate must use this
     call-center-only figure instead of stages["Confirmed"]."""
-    g = (gender or "").strip().lower()
-    if g == "female":
-        reg_col, int_col, elig_col = "total_registered_female", "total_interested_female", "total_eligible_female"
-    elif g == "male":
-        reg_col, int_col, elig_col = "total_registered_male", "total_interested_male", "total_eligible_male"
-    else:
-        reg_col, int_col, elig_col = "total_registered_youth", "total_interested_youth", "total_eligible_youth"
-
     aw_where, aw_params = build_where(
-        districts=district, extra=[active_cohort_clause("scaw", requested=cohort)], prefix="scaw",
-        district_col="youth_district",
+        districts=district, gender=gender,
+        extra=[active_cohort_clause("scaw", requested=cohort)], prefix="scaw",
+        district_col="youth_district", gender_col="youth_gender",
     )
     aw_sql = f"""
-    SELECT SUM({reg_col}) AS registered, SUM({int_col}) AS interested, SUM({elig_col}) AS eligible
-    FROM {AWARENESS_SUMMARY} WHERE {aw_where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+    SELECT COUNT(*) AS registered,
+           COUNTIF(training_interest = TRUE) AS interested,
+           COUNTIF(elligible = TRUE) AS eligible
+    FROM {AWARENESS_KYC} WHERE {aw_where}
     """
     aw = (database.run_query(aw_sql, aw_params, role=role) or [{}])[0]
 
-    # DAILY_ACQUISITION_SUMMARY mixes three `measure` row types (see tables.py):
-    # "assigned" only exists on the district-grain 'targets' rows (no gender
-    # split available); reached/confirmed come from the real 'daily_aggregates'
-    # rows, which are gender-filterable.
+    # DAILY_ACQUISITION_TARGETS_DEDUPED (not the raw DAILY_ACQUISITION_SUMMARY
+    # — see tables.py) for preload_youth: that table's 'targets'/'venue_targets'
+    # rows are a live per-venue snapshot LOG, re-appended over time, so a plain
+    # SUM over the raw table inflates "assigned" (confirmed live: ~5,480 raw
+    # vs 2,073 correctly-deduped for BOOTCAMP_5). "assigned" only exists on
+    # the district-grain 'targets'/'venue_targets' rows (no gender breakdown
+    # available); reached/confirmed come from the real 'daily_aggregates' rows
+    # on the raw table, which ARE gender-filterable and unaffected by the
+    # snapshot-log duplication (only preload_youth/mobilisation_target are).
+    #
+    # target_measure_where (not a hardcoded measure = 'targets') — which
+    # measure carries the real preload_youth/mobilisation_target differs by
+    # cohort (see TARGET_MEASURE_BY_COHORT in tables.py): BOOTCAMP_5's real
+    # figures live on 'venue_targets' (2,073), not 'targets' (1,995, a
+    # different/wrong total for that cohort) — confirmed live 2026-08-05.
+    # This also already scopes the requested cohort(s), so no separate
+    # active_cohort_clause is added (per target_measure_where's docstring).
+    moa_tm_where, moa_tm_params = target_measure_where("scmoa", resolve_active_cohorts(cohort))
     moa_where, moa_params = build_where(
-        districts=district, extra=[active_cohort_clause("scmoa", requested=cohort)], prefix="scmoa",
+        districts=district, extra=[(moa_tm_where, moa_tm_params)], prefix="scmoa",
         district_col="agent_district",
     )
     preload_assigned = (database.run_query(
-        f"SELECT SUM(preload_youth) AS assigned FROM {DAILY_ACQUISITION_SUMMARY} "
-        f"WHERE {moa_where} AND measure = '{DAILY_ACQ_MEASURE_TARGET}'",
+        f"SELECT SUM(preload_youth) AS assigned FROM {DAILY_ACQUISITION_TARGETS_DEDUPED} WHERE {moa_where}",
         moa_params, role=role) or [{}])[0].get("assigned") or 0
 
     mor_where, mor_params = build_where(
@@ -329,6 +304,8 @@ def overview_gender(
     Spans the same three live tables as _stage_counts, but here every stage
     needs both genders side by side rather than a single filtered total, so
     each table is queried once with an explicit female/male breakdown.
+    Registered/Interested/Eligible backed by AWARENESS_KYC (silver), not
+    AWARENESS_SUMMARY (gold) — see the note at _stage_counts above.
     """
     aw_where, aw_params = build_where(
         districts=district, extra=[active_cohort_clause("gnaw", requested=cohort)], prefix="gnaw",
@@ -336,10 +313,13 @@ def overview_gender(
     )
     aw_sql = f"""
     SELECT
-      SUM(total_registered_female) AS registered_f, SUM(total_registered_male) AS registered_m,
-      SUM(total_interested_female) AS interested_f, SUM(total_interested_male) AS interested_m,
-      SUM(total_eligible_female)   AS eligible_f,   SUM(total_eligible_male)   AS eligible_m
-    FROM {AWARENESS_SUMMARY} WHERE {aw_where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+      COUNTIF(UPPER(youth_gender) = 'FEMALE') AS registered_f,
+      COUNTIF(UPPER(youth_gender) = 'MALE') AS registered_m,
+      COUNTIF(training_interest = TRUE AND UPPER(youth_gender) = 'FEMALE') AS interested_f,
+      COUNTIF(training_interest = TRUE AND UPPER(youth_gender) = 'MALE') AS interested_m,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE') AS eligible_f,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'MALE') AS eligible_m
+    FROM {AWARENESS_KYC} WHERE {aw_where}
     """
     aw = (database.run_query(aw_sql, aw_params, role=user.role) or [{}])[0]
 
@@ -391,9 +371,10 @@ def overview_gender(
                 prefix="gnacfd", district_col="youth_district",
             )
             acfd_sql = f"""
-            SELECT SUM(total_registered_female) AS f, SUM(total_registered_male) AS m
-            FROM {AWARENESS_SUMMARY}
-            WHERE {acfd_where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+            SELECT COUNTIF(UPPER(youth_gender) = 'FEMALE') AS f,
+                   COUNTIF(UPPER(youth_gender) = 'MALE') AS m
+            FROM {AWARENESS_KYC}
+            WHERE {acfd_where} AND elligible = TRUE AND is_treatment = TRUE
               AND report_date >= @gnacfd_since
             """
             acfd_params = acfd_params + [_scalar("gnacfd_since", "DATE", since_date)]
@@ -477,15 +458,20 @@ def stage_progress(
         f"WHERE {aw_where} AND data_measure = '{AWARENESS_MEASURE_TARGET}'",
         aw_params, role=user.role) or [{}])[0].get("t") or 0
 
-    # mobilisation_target has no gender breakdown (only the 'targets' rows
-    # carry it, and those have no gender column at all — see tables.py).
+    # mobilisation_target has no gender breakdown (only the 'targets'/
+    # 'venue_targets' rows carry it, and those have no gender column at all
+    # — see tables.py). DAILY_ACQUISITION_TARGETS_DEDUPED, not the raw table
+    # — see the note in _stage_counts above on why a plain SUM over the raw
+    # snapshot-log rows inflates this total. target_measure_where (not a
+    # hardcoded measure = 'targets') — see the same note on why the real
+    # measure differs by cohort.
+    mo_tm_where, mo_tm_params = target_measure_where("spmo", resolve_active_cohorts(cohort))
     mo_where, mo_params = build_where(
-        districts=district, extra=[active_cohort_clause("spmo", requested=cohort)], prefix="spmo",
+        districts=district, extra=[(mo_tm_where, mo_tm_params)], prefix="spmo",
         district_col="agent_district",
     )
     mo_target = (database.run_query(
-        f"SELECT SUM(mobilisation_target) AS t FROM {DAILY_ACQUISITION_SUMMARY} "
-        f"WHERE {mo_where} AND measure = '{DAILY_ACQ_MEASURE_TARGET}'",
+        f"SELECT SUM(mobilisation_target) AS t FROM {DAILY_ACQUISITION_TARGETS_DEDUPED} WHERE {mo_where}",
         mo_params, role=user.role) or [{}])[0].get("t") or 0
 
     sf_where, sf_params = build_where(
@@ -598,14 +584,16 @@ def overview_dropoff(
 def cohort_comparison(user: User = Depends(current_user)):
     """Cycle-by-cycle side-by-side: eligible / acquired / female share / overall
     conversion. Unlike every other overview endpoint this deliberately spans
-    ALL bootcamp cycles (BOOTCAMP_2..4, MINI_BOOTCAMP_3) rather than pinning to
-    ACTIVE_COHORTS — that's the point of a comparison view. registered/eligible
-    come from AWARENESS_SUMMARY, acquired/female share from SITE_FUNNEL_METRICS
-    (no single live table spans both)."""
+    ALL bootcamp cycles (BOOTCAMP_2..5) rather than pinning to ACTIVE_COHORTS
+    — that's the point of a comparison view. registered/eligible come from
+    AWARENESS_KYC (silver, not gold — see the note at _stage_counts; silver
+    has full historical coverage for every cycle gold does, confirmed live
+    2026-08-05), acquired/female share from SITE_FUNNEL_METRICS (no single
+    live table spans both)."""
     aw_sql = f"""
-    SELECT bootcamp_cycle, SUM(total_registered_youth) AS registered, SUM(total_eligible_youth) AS eligible
-    FROM {AWARENESS_SUMMARY}
-    WHERE bootcamp_cycle IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+    SELECT bootcamp_cycle, COUNT(*) AS registered, COUNTIF(elligible = TRUE) AS eligible
+    FROM {AWARENESS_KYC}
+    WHERE bootcamp_cycle IS NOT NULL
     GROUP BY bootcamp_cycle
     """
     aw_by_cycle = {r["bootcamp_cycle"]: r for r in database.run_query(aw_sql, role=user.role)}
@@ -638,14 +626,17 @@ def cohort_comparison(user: User = Depends(current_user)):
     # against its own target and female share).
     aw_detail_sql = f"""
     SELECT bootcamp_cycle,
-           SUM(total_interested_youth) AS interested,
-           SUM(total_eligible_youth) AS eligible,
-           SUM(total_eligible_female) AS eligible_female,
+           COUNTIF(training_interest = TRUE) AS interested,
+           COUNTIF(elligible = TRUE) AS eligible,
+           COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE') AS eligible_female,
            COUNT(DISTINCT {normalized_parish_sql()}) AS parishes
-    FROM {AWARENESS_SUMMARY}
-    WHERE bootcamp_cycle IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+    FROM {AWARENESS_KYC}
+    WHERE bootcamp_cycle IS NOT NULL
     GROUP BY bootcamp_cycle
     """
+    # registration_target has no equivalent on AWARENESS_KYC (silver carries
+    # no per-district/parish target column at all) — stays gold-sourced by
+    # necessity, same exception as stage_progress's aw_target.
     aw_target_sql = f"""
     SELECT bootcamp_cycle, SUM(registration_target) AS target
     FROM {AWARENESS_SUMMARY}
@@ -671,14 +662,32 @@ def cohort_comparison(user: User = Depends(current_user)):
     # assigned/target only exist on the 'targets' rows (district-grain, no
     # gender column); reached/confirmed/confirmed_female come from the real
     # 'daily_aggregates' rows — see the DAILY_ACQUISITION_SUMMARY comment in
-    # tables.py. Summing the table unfiltered double/triple-counts.
+    # tables.py. DAILY_ACQUISITION_TARGETS_DEDUPED, not the raw table — see
+    # the note at _stage_counts above on why a plain SUM over the raw
+    # snapshot-log rows inflates preload_youth/mobilisation_target.
     moa_detail_sql = f"""
     SELECT bootcamp_cycle, SUM(preload_youth) AS assigned, SUM(mobilisation_target) AS target
-    FROM {DAILY_ACQUISITION_SUMMARY}
+    FROM {DAILY_ACQUISITION_TARGETS_DEDUPED}
     WHERE bootcamp_cycle IS NOT NULL AND measure = '{DAILY_ACQ_MEASURE_TARGET}'
     GROUP BY bootcamp_cycle
     """
     moa_by_cycle = {r["bootcamp_cycle"]: r for r in database.run_query(moa_detail_sql, role=user.role)}
+    # Override any cohort whose real preload_youth/mobilisation_target live
+    # on a different measure than the '{DAILY_ACQ_MEASURE_TARGET}' this query
+    # is hardcoded to (see TARGET_MEASURE_BY_COHORT in tables.py) — currently
+    # just BOOTCAMP_5, whose real figures are on 'venue_targets' (confirmed
+    # live 2026-08-05: preload_youth 2,073 there vs 1,995 on 'targets', a
+    # different/wrong total for that cohort).
+    for cyc, measure in TARGET_MEASURE_BY_COHORT.items():
+        if measure == DEFAULT_TARGET_MEASURE:
+            continue
+        row = (database.run_query(
+            f"SELECT SUM(preload_youth) AS assigned, SUM(mobilisation_target) AS target "
+            f"FROM {DAILY_ACQUISITION_TARGETS_DEDUPED} WHERE bootcamp_cycle = @tmc_cycle AND measure = @tmc_measure",
+            [_scalar("tmc_cycle", "STRING", cyc), _scalar("tmc_measure", "STRING", measure)],
+            role=user.role) or [{}])[0]
+        if row.get("assigned") is not None or row.get("target") is not None:
+            moa_by_cycle[cyc] = row
 
     mo_detail_sql = f"""
     SELECT bootcamp_cycle,
@@ -689,9 +698,15 @@ def cohort_comparison(user: User = Depends(current_user)):
     WHERE bootcamp_cycle IS NOT NULL AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'
     GROUP BY bootcamp_cycle
     """
-    # Auto-confirmed pilot-subcounty youth, added onto each cycle's confirmed
-    # count (see _auto_confirmed_count / tables.py) — only cycles listed in
-    # AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT get an adjustment.
+    # Auto-confirmed pilot youth, added onto each cycle's confirmed count —
+    # same per-cycle dispatch as _auto_confirmed_count (subcounty list for
+    # BOOTCAMP_4 via AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT, registration-date
+    # cutoff for BOOTCAMP_5 via AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT — see
+    # tables.py). Previously only the subcounty mechanism was covered here,
+    # silently leaving BOOTCAMP_5's entire 2.5-week pilot population out of
+    # this comparison (unlike _stage_counts/mobilisation(), which already
+    # used the shared, correct helper). The two dicts key disjoint cohorts,
+    # so both loops write into the same auto_confirm_by_cycle without conflict.
     auto_confirm_by_cycle = {}
     for cycle, subcounties in AUTO_CONFIRM_SUBCOUNTIES_BY_COHORT.items():
         acf_sql = f"""
@@ -706,6 +721,19 @@ def cohort_comparison(user: User = Depends(current_user)):
         ]
         acf_row = (database.run_query(acf_sql, acf_params, role=user.role) or [{}])[0]
         auto_confirm_by_cycle[cycle] = {"n": acf_row.get("n") or 0, "n_female": acf_row.get("n_female") or 0}
+    for cycle, since_date in AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT.items():
+        acfd_sql = f"""
+        SELECT COUNT(*) AS n, COUNTIF(UPPER(youth_gender) = 'FEMALE') AS n_female
+        FROM {AWARENESS_KYC}
+        WHERE bootcamp_cycle = @acfdc_cycle AND elligible = TRUE AND is_treatment = TRUE
+          AND report_date >= @acfdc_since
+        """
+        acfd_params = [
+            _scalar("acfdc_cycle", "STRING", cycle),
+            _scalar("acfdc_since", "DATE", since_date),
+        ]
+        acfd_row = (database.run_query(acfd_sql, acfd_params, role=user.role) or [{}])[0]
+        auto_confirm_by_cycle[cycle] = {"n": acfd_row.get("n") or 0, "n_female": acfd_row.get("n_female") or 0}
 
     # Read into fresh locals rather than mutating `r` in place — it may be the
     # exact object cache.py's TTLCache is holding, and an additive mutation
