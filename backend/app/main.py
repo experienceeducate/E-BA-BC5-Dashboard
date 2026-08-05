@@ -3,6 +3,10 @@ E!BA Dashboard Backend (Educate! E!BA Recruitment)
 FastAPI + BigQuery service account auth
 """
 
+import asyncio
+import sys
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -10,7 +14,24 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.config import settings
 
-app = FastAPI(title="E!BA Dashboard API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Guarded against the test suite: tests/conftest.py's `client` fixture
+    # opens TestClient(app) as a context manager per test, which fires this
+    # lifespan — an unguarded warm task would hit the mocked run_query seam
+    # in the background and pollute _RunQueryRecorder.calls that tests assert
+    # against. "pytest" is only ever imported by the test process.
+    task = None
+    if "pytest" not in sys.modules:
+        from app.core.warmup import warm_loop
+        task = asyncio.create_task(warm_loop())
+    yield
+    if task:
+        task.cancel()
+
+
+app = FastAPI(title="E!BA Dashboard API", version="1.0.0", lifespan=lifespan)
 
 # Import after settings so auth.py picks up env vars at import time.
 from app.auth import router as auth_router  # noqa: E402

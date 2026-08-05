@@ -90,18 +90,31 @@ function apiGet(endpoint) {
 }
 
 // ─── Data hook ──────────────────────────────────────────────────────────────────
+// Module-level — survives a component unmount/remount, which is what
+// switching tabs actually does here (pages are conditionally rendered with
+// `{page === "x" && <Page/>}`, not kept alive off-screen). Without this, every
+// tab switch re-triggered a full fetch even when the data was seconds old.
+// 15 minutes matches the backend's own proactive cache warm-up (see
+// app/core/warmup.py) — a cache miss here usually still lands on an
+// already-warm backend cache rather than a cold multi-query BigQuery wait.
+const CLIENT_CACHE_TTL_MS = 15 * 60 * 1000;
+const _apiCache = new Map(); // endpoint -> { data, isDemo, timestamp }
+
 // `pollMs` is opt-in (undefined for every existing caller — identical
 // behavior to before) — pass it for a page that should keep itself current
 // against live BigQuery without a manual reload (e.g. Call Centre Insights,
 // whose free-text classification re-runs over whatever rows exist right
 // now). A poll refresh is silent — no loading spinner, no error card on a
 // transient failure — so it never disrupts someone actively reading the
-// page; only a successful poll replaces the shown data.
+// page; only a successful poll replaces the shown data. The same "silent"
+// path also backs cache revalidation below — a stale-but-present cache entry
+// shows instantly while a background fetch quietly brings it current.
 function useApi(endpoint, { pollMs } = {}) {
-  const [data, setData] = useState(null);
+  const cached = _apiCache.get(endpoint);
+  const [data, setData] = useState(cached?.data ?? null);
   const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [isDemo, setIsDemo] = useState(false);
+  const [loading, setLoading] = useState(!cached);
+  const [isDemo, setIsDemo] = useState(cached?.isDemo ?? false);
 
   useEffect(() => {
     let alive = true;
@@ -126,13 +139,21 @@ function useApi(endpoint, { pollMs } = {}) {
           if (!res.ok) { const err = new Error(`API ${res.status}`); err.status = res.status; throw err; }
           return res.json();
         })
-        .then((json) => { if (alive && json !== null) setData(json); })
+        .then((json) => {
+          if (alive && json !== null) {
+            setData(json);
+            setIsDemo(false);
+            _apiCache.set(endpoint, { data: json, isDemo: false, timestamp: Date.now() });
+          }
+        })
         .catch((e) => {
           if (!alive || background) return;
           // "Not connected to live data" cases — a 503 (upstream BigQuery table
           // missing, i.e. the BC5 feed isn't live) or an unreachable API — fall
           // back to bundled demo data so the panel still shows how it will look.
           // A genuine server error (500, etc.) still surfaces as an error card.
+          // Demo fallback is intentionally NOT cached — keep retrying on the
+          // next mount/poll so it self-heals the moment the backend recovers.
           const demo = DEMO[endpoint.split("?")[0]];
           const disconnected = e.status === 503 || e.status === undefined;
           if (demo && disconnected) { setData(demo); setIsDemo(true); }
@@ -141,7 +162,24 @@ function useApi(endpoint, { pollMs } = {}) {
         .finally(() => { if (alive && !background) setLoading(false); });
     }
 
-    load(false);
+    const entry = _apiCache.get(endpoint);
+    const fresh = entry && (Date.now() - entry.timestamp < CLIENT_CACHE_TTL_MS);
+    if (entry) {
+      // Show cached data immediately, no spinner — a tab switch should never
+      // feel like a fresh page load. The `useState(cached?.data ?? null)`
+      // initializer above already covers first mount; this covers `endpoint`
+      // changing (e.g. a filter change) while the component stays mounted,
+      // which re-runs this effect but not the state initializers — same
+      // intended React<->cache sync point as `load`'s state resets below.
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setData(entry.data);
+      setIsDemo(entry.isDemo);
+      setError(null);
+      setLoading(false);
+      /* eslint-enable react-hooks/set-state-in-effect */
+    }
+    if (!fresh) load(!!entry); // stale-while-revalidate when entry exists; normal foreground load otherwise
+
     if (pollMs) intervalId = setInterval(() => load(true), pollMs);
     return () => { alive = false; if (intervalId) clearInterval(intervalId); };
   }, [endpoint, pollMs]);
