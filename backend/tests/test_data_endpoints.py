@@ -8,7 +8,7 @@ query.
 """
 
 import app.core.pii as pii_module
-from app.core.sql import multiselect_array_sql
+from app.core.sql import multiselect_array_sql, normalized_parish_sql
 from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES
 from app.routers.implementation import TRAINER_COHORTS
 
@@ -331,3 +331,37 @@ def test_awareness_kyc_multiselect_columns_use_multiselect_array_sql(as_staff, m
     for column in ["current_activty", "registration_reasons", "decision_consultation", "bc5_support_required", "open_questions"]:
         assert f"UNNEST(JSON_EXTRACT_STRING_ARRAY({column}))" not in all_sql
         assert f"STARTS_WITH(TRIM({column}), '[')" in all_sql
+
+
+# --- normalized_parish_sql / MAIRINYA-MAYIRINYA merge -------------------------
+# MAYUGE's MAIRINYA parish exists as two distinct literal values in the live
+# data -- "MAIRINYA" and "MAYIRINYA" -- confirmed against both AWARENESS_SUMMARY
+# and AWARENESS_KYC, 2026-08-04, splitting one real parish's actuals/target/
+# RCT split across two rows in every by-parish rollup. The hardcoded BC5
+# target sheet (AWARENESS_ELIGIBLE_TARGET_BC5) already spells it "MAIRINYA",
+# so actuals recorded under "MAYIRINYA" were also failing to match their
+# target row at all.
+
+def test_normalized_parish_sql_folds_known_misspelling():
+    sql = normalized_parish_sql("youth_parish")
+    assert "WHEN UPPER(TRIM(youth_parish)) = 'MAYIRINYA' THEN 'MAIRINYA'" in sql
+    assert "ELSE UPPER(TRIM(youth_parish))" in sql
+
+
+def test_normalized_parish_sql_defaults_to_youth_parish_column():
+    assert "youth_parish" in normalized_parish_sql()
+
+
+def test_awareness_parish_uses_normalized_parish_sql(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/awareness-parish")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "youth_parish AS parish" not in all_sql
+    assert "WHEN UPPER(TRIM(youth_parish)) = 'MAYIRINYA' THEN 'MAIRINYA'" in all_sql
+
+
+def test_awareness_eligible_target_uses_normalized_parish_sql(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/awareness-eligible-target")
+    sql = mock_run_query.calls[0]["sql"]
+    assert "WHEN UPPER(TRIM(youth_parish)) = 'MAYIRINYA' THEN 'MAIRINYA'" in sql
