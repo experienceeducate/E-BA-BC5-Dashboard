@@ -761,8 +761,13 @@ function GroupedDataTable({ leading, groups, trailing, rows, onRowClick }) {
           <tr>
             {(leading || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom" }}>{c.label}</th>)}
             {groups.map((g) => (
-              <th key={g.label} colSpan={g.columns.length} style={{ padding: "6px 10px", borderBottom: `1px solid ${C.line}`, borderLeft: `2px solid ${C.line}`, background: `${g.color}18`, color: g.color, fontWeight: 700, textTransform: "uppercase", fontSize: 10.5, textAlign: "center" }}>
-                {g.label}
+              <th
+                key={g.label}
+                colSpan={g.columns.length}
+                onClick={g.onHeaderClick}
+                style={{ padding: "6px 10px", borderBottom: `1px solid ${C.line}`, borderLeft: `2px solid ${C.line}`, background: `${g.color}18`, color: g.color, fontWeight: 700, textTransform: "uppercase", fontSize: 10.5, textAlign: "center", cursor: g.onHeaderClick ? "pointer" : undefined }}
+              >
+                {g.label}{g.onHeaderClick ? " ›" : ""}
               </th>
             ))}
             {(trailing || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom" }}>{c.label}</th>)}
@@ -4921,21 +4926,72 @@ function weekNumbersIn(rows) {
   return [...new Set(rows.map((r) => r.week_number))].sort((a, b) => a - b);
 }
 
-const WEEK_GROUP_COLORS = [C.teal, C.gold, C.green, C.coral];
+// Distinct, sorted values of a field actually present -- used to build the
+// district column-groups for the transposed District x Week matrix (weeks as
+// rows, districts as column-groups) below.
+function distinctValues(rows, key) {
+  return [...new Set(rows.map((r) => r[key]).filter((v) => v != null))].sort();
+}
 
-// One GroupedDataTable column-group per week, for the District x Week /
-// Venue x Week matrices.
-function weekColumnGroups(weekNumbers) {
+const WEEK_GROUP_COLORS = [C.teal, C.gold, C.green, C.coral];
+const ENTITY_GROUP_COLORS = [C.teal, C.gold, C.green, C.coral, C.muted];
+
+// One GroupedDataTable column-group per week, headline completion + quality
+// only (no activated/completed counts, no % meet/below) -- so every week
+// reported fits on the page side by side without horizontal scrolling on the
+// Venue x Week matrix, which can run to many more weeks/venues than the
+// District x Week matrix's small, fixed column-group count.
+function weekColumnGroupsCompact(weekNumbers) {
   return weekNumbers.map((w, i) => ({
     label: `Week ${w}`,
     color: WEEK_GROUP_COLORS[i % WEEK_GROUP_COLORS.length],
     columns: [
-      { key: `w${w}_total_youth`, label: "Activated", align: "right", render: fmtNum },
-      { key: `w${w}_completed`, label: "Completed", align: "right", render: fmtNum },
       { key: `w${w}_completion_pct`, label: "% Complete", align: "right", render: fmtPct },
       { key: `w${w}_exceed_pct`, label: "% Exceed", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
-      { key: `w${w}_meet_pct`, label: "% Meet", align: "right", render: fmtPct },
-      { key: `w${w}_below_pct`, label: "% Below", align: "right", render: (v) => <span style={{ color: v <= 5 ? C.green : v <= 10 ? C.gold : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
+    ],
+  }));
+}
+
+// Transposed pivot for District x Week -- one row per WEEK (rows), with
+// entity (district) name double-underscore-prefixed fields for each column
+// group, the mirror image of pivotByWeek above (which puts entity on rows
+// and week on column-groups). Kept as its own function rather than a shared
+// "pivot in either direction" helper -- the key-naming scheme differs
+// (w{N}_metric vs {entity}__metric) and each caller only ever needs one
+// direction.
+function pivotWeeksByEntity(rows, entityKey) {
+  const byWeek = {};
+  rows.forEach((r) => {
+    const w = r.week_number;
+    if (!byWeek[w]) byWeek[w] = { week_number: w };
+    const e = byWeek[w];
+    const name = r[entityKey];
+    e[`${name}__total_youth`] = r.total_youth;
+    e[`${name}__completed`] = r.completed;
+    e[`${name}__completion_pct`] = r.completion_pct;
+    e[`${name}__exceed_pct`] = r.exceed_pct;
+    e[`${name}__meet_pct`] = r.meet_pct;
+    e[`${name}__below_pct`] = r.below_pct;
+  });
+  return Object.values(byWeek).sort((a, b) => a.week_number - b.week_number);
+}
+
+// One GroupedDataTable column-group per entity (district), for the
+// transposed District x Week matrix -- the group HEADER is the drill
+// trigger here (not the row, since a row is now a week, not a district),
+// via GroupedDataTable's onHeaderClick support.
+function entityColumnGroups(entityNames, onHeaderClick) {
+  return entityNames.map((name, i) => ({
+    label: name,
+    color: ENTITY_GROUP_COLORS[i % ENTITY_GROUP_COLORS.length],
+    onHeaderClick,
+    columns: [
+      { key: `${name}__total_youth`, label: "Activated", align: "right", render: fmtNum },
+      { key: `${name}__completed`, label: "Completed", align: "right", render: fmtNum },
+      { key: `${name}__completion_pct`, label: "% Complete", align: "right", render: fmtPct },
+      { key: `${name}__exceed_pct`, label: "% Exceed", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
+      { key: `${name}__meet_pct`, label: "% Meet", align: "right", render: fmtPct },
+      { key: `${name}__below_pct`, label: "% Below", align: "right", render: (v) => <span style={{ color: v <= 5 ? C.green : v <= 10 ? C.gold : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
     ],
   }));
 }
@@ -4969,6 +5025,7 @@ function MilestonesTab({ filters }) {
   const weekly = data?.weekly || [];
   const byVenue = data?.by_venue || [];
   const [venueSearch, setVenueSearch] = useState("");
+  const [venueWeekPage, setVenueWeekPage] = useState(0);
 
   const latest = weekly[weekly.length - 1];
   const prior = weekly.length > 1 ? weekly[weekly.length - 2] : null;
@@ -4990,6 +5047,16 @@ function MilestonesTab({ filters }) {
   // narrows the venue-week grain, same as the venue table itself.
   const districtWeekRows = data?.by_district_week || [];
   const matchedVenueWeek = q ? (data?.by_venue_week || []).filter((v) => (v.venue || "").toLowerCase().includes(q)) : (data?.by_venue_week || []);
+  const districtNames = distinctValues(districtWeekRows, "district");
+
+  // Venue x Week is paginated 10 venues at a time (one row per venue, not
+  // per venue-week) rather than a scroll-all-rows container, so pivot first
+  // then page the pivoted, one-row-per-venue result.
+  const pivotedVenueWeek = pivotByWeek(matchedVenueWeek, "venue", ["district"]);
+  const venueWeekPageSize = 10;
+  const venueWeekMaxPage = Math.max(0, Math.ceil(pivotedVenueWeek.length / venueWeekPageSize) - 1);
+  const venueWeekPageClamped = Math.min(venueWeekPage, venueWeekMaxPage);
+  const pagedVenueWeekRows = pivotedVenueWeek.slice(venueWeekPageClamped * venueWeekPageSize, venueWeekPageClamped * venueWeekPageSize + venueWeekPageSize);
 
   const venuesRanked = [...matchedVenues].filter((v) => v.exceed_pct != null).sort((a, b) => b.exceed_pct - a.exceed_pct);
   const top5 = venuesRanked.slice(0, 5);
@@ -5177,15 +5244,14 @@ function MilestonesTab({ filters }) {
 
       <Card
         title="District × Week"
-        subtitle="Every district's week-by-week numbers side by side — activated, completed, and the below/meets/exceeds split, each week's own denominator (not cumulative). Click a district to see how it compares with the others, then drill into its own week-over-week change."
+        subtitle="Every week, side by side across districts — activated, completed, and the below/meets/exceeds split, each week's own denominator (not cumulative). Click a district's header to see how it compares with the others, then drill into its own week-over-week change."
         chip="REAL"
       >
         <State loading={loading} error={error} empty={!loading && districtWeekRows.length === 0}>
           <GroupedDataTable
-            leading={[{ key: "district", label: "District" }]}
-            groups={weekColumnGroups(weekNumbersIn(districtWeekRows))}
-            rows={pivotByWeek(districtWeekRows, "district")}
-            onRowClick={() => openDistrictComparisonDrill()}
+            leading={[{ key: "week_number", label: "Week", render: (v) => `Week ${v}` }]}
+            groups={entityColumnGroups(districtNames, () => openDistrictComparisonDrill())}
+            rows={pivotWeeksByEntity(districtWeekRows, "district")}
           />
         </State>
       </Card>
@@ -5279,17 +5345,22 @@ function MilestonesTab({ filters }) {
 
       <Card
         title="Venue × Week"
-        subtitle="Every venue's week-by-week numbers side by side — activated, completed, and the below/meets/exceeds split, each week's own denominator (not cumulative). Click a venue to see how it compares with the others, then drill into its own week-over-week change."
+        subtitle={`% completed and % exceeding, every week reported, side by side (each week's own denominator, not cumulative). ${venueWeekPageSize} venues per page. Click a venue to see how it compares with the others, then drill into its own week-over-week change.`}
         chip="REAL"
       >
         <State loading={loading} error={error} empty={!loading && matchedVenueWeek.length === 0}>
-          <div style={{ maxHeight: 420, overflowY: "auto" }}>
-            <GroupedDataTable
-              leading={[{ key: "venue", label: "Venue" }, { key: "district", label: "District" }]}
-              groups={weekColumnGroups(weekNumbersIn(matchedVenueWeek))}
-              rows={pivotByWeek(matchedVenueWeek, "venue", ["district"])}
-              onRowClick={() => openVenueComparisonDrill()}
-            />
+          <GroupedDataTable
+            leading={[{ key: "venue", label: "Venue" }, { key: "district", label: "District" }]}
+            groups={weekColumnGroupsCompact(weekNumbersIn(matchedVenueWeek))}
+            rows={pagedVenueWeekRows}
+            onRowClick={() => openVenueComparisonDrill()}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
+            <span>{pivotedVenueWeek.length === 0 ? "0" : venueWeekPageClamped * venueWeekPageSize + 1}–{Math.min(pivotedVenueWeek.length, venueWeekPageClamped * venueWeekPageSize + venueWeekPageSize)} of {pivotedVenueWeek.length} venues</span>
+            <span style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => setVenueWeekPage(Math.max(0, venueWeekPageClamped - 1))} disabled={venueWeekPageClamped === 0} style={{ ...PAGER_BTN, opacity: venueWeekPageClamped === 0 ? 0.5 : 1 }}>‹ Prev</button>
+              <button onClick={() => setVenueWeekPage(Math.min(venueWeekMaxPage, venueWeekPageClamped + 1))} disabled={venueWeekPageClamped === venueWeekMaxPage} style={{ ...PAGER_BTN, opacity: venueWeekPageClamped === venueWeekMaxPage ? 0.5 : 1 }}>Next ›</button>
+            </span>
           </div>
         </State>
       </Card>
