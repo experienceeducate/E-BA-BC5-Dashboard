@@ -511,7 +511,7 @@ def trainer_detail(
     }
 
 
-def _milestones_where(district, gender, venue, cohort, prefix, include_cohort=True):
+def _milestones_where(district, gender, venue, cohort, prefix, include_cohort=True, start_date=None, end_date=None):
     # No NOT_TEST_DATA here (unlike _filter_extra) -- this table has no
     # is_test_data column. Cohort filters bootcamp_cycle directly rather than
     # defaulting to ACTIVE_COHORTS -- no BOOTCAMP_5 rows exist in this table
@@ -520,11 +520,21 @@ def _milestones_where(district, gender, venue, cohort, prefix, include_cohort=Tr
     # used by by_cohort_week, which compares cohorts against each other and
     # so must never be narrowed to whichever single cohort the page filter
     # has selected.
+    #
+    # start_date/end_date filter on created_at -- the report's own submission
+    # timestamp (confirmed live: every row has one, spanning 2025-08-29 to
+    # 2026-05-30) -- not the derived week_number, so a date range narrows to
+    # reports actually submitted in that window regardless of which week they
+    # were captured for.
     extra = []
     if include_cohort:
         coh_clause, coh_params = cohort_clause(cohort, prefix=prefix, column="bootcamp_cycle")
         if coh_clause:
             extra.append((coh_clause, coh_params))
+    if start_date:
+        extra.append((f"DATE(created_at) >= @{prefix}_start_date", [_scalar(f"{prefix}_start_date", "DATE", start_date)]))
+    if end_date:
+        extra.append((f"DATE(created_at) <= @{prefix}_end_date", [_scalar(f"{prefix}_end_date", "DATE", end_date)]))
     return build_where(
         districts=district, gender=gender, venues=venue,
         extra=extra, prefix=prefix,
@@ -539,6 +549,8 @@ def milestones(
     gender:   Optional[str] = Query(None),
     venue:    List[str] = Query(default=[]),
     cohort:   List[str] = Query(default=[]),
+    start_date: Optional[str] = Query(None),
+    end_date:   Optional[str] = Query(None),
 ):
     """Weekly business-pitch milestone distribution (below/meet/exceed),
     completion, and parent-engagement -- programme-wide (weekly), cumulative
@@ -572,7 +584,7 @@ def milestones(
     so total_youth is a safe same-week percentage denominator there too — no
     row-count-vs-headcount correction needed like by_venue's total_reports.
     """
-    where, params = _milestones_where(district, gender, venue, cohort, "ms")
+    where, params = _milestones_where(district, gender, venue, cohort, "ms", start_date=start_date, end_date=end_date)
     sql = f"""
     WITH classified AS (
       SELECT
@@ -608,7 +620,7 @@ def milestones(
         w["parent_present_pct"] = round(100 * (w.get("parent_present") or 0) / total, 1) if total else None
         w["parent_no_report_pct"] = round(100 * (w.get("parent_no_report") or 0) / total, 1) if total else None
 
-    venue_where, venue_params = _milestones_where(district, gender, venue, cohort, "msv")
+    venue_where, venue_params = _milestones_where(district, gender, venue, cohort, "msv", start_date=start_date, end_date=end_date)
     venue_sql = f"""
     WITH classified AS (
       SELECT
@@ -653,7 +665,7 @@ def milestones(
     # matrix tables and the week-over-week variance drill (both computed
     # client-side from this one flat row set, same "one fetch feeds every
     # rollup" approach as the rest of this page).
-    district_week_where, district_week_params = _milestones_where(district, gender, venue, cohort, "msdw")
+    district_week_where, district_week_params = _milestones_where(district, gender, venue, cohort, "msdw", start_date=start_date, end_date=end_date)
     district_week_sql = f"""
     WITH classified AS (
       SELECT
@@ -683,7 +695,7 @@ def milestones(
         d["exceed_pct"] = round(100 * (d.get("exceed") or 0) / total, 1) if total else None
         d["completion_pct"] = round(100 * (d.get("completed") or 0) / total, 1) if total else None
 
-    venue_week_where, venue_week_params = _milestones_where(district, gender, venue, cohort, "msvw")
+    venue_week_where, venue_week_params = _milestones_where(district, gender, venue, cohort, "msvw", start_date=start_date, end_date=end_date)
     venue_week_sql = f"""
     WITH classified AS (
       SELECT
@@ -716,7 +728,7 @@ def milestones(
     # Gender x week -- respects the page's own filters (including cohort),
     # unlike by_cohort_week below. Feeds the weekly performance chart's
     # by-gender drill.
-    gender_week_where, gender_week_params = _milestones_where(district, gender, venue, cohort, "msgw")
+    gender_week_where, gender_week_params = _milestones_where(district, gender, venue, cohort, "msgw", start_date=start_date, end_date=end_date)
     gender_week_sql = f"""
     WITH classified AS (
       SELECT
@@ -750,7 +762,7 @@ def milestones(
     # _milestones_where) so every cohort with data shows up side by side,
     # letting the "does quality improve or drop by week" read be compared
     # across cohorts rather than collapsed to whichever one is selected.
-    cohort_week_where, cohort_week_params = _milestones_where(district, gender, venue, cohort, "mscw", include_cohort=False)
+    cohort_week_where, cohort_week_params = _milestones_where(district, gender, venue, cohort, "mscw", include_cohort=False, start_date=start_date, end_date=end_date)
     cohort_week_sql = f"""
     WITH classified AS (
       SELECT
