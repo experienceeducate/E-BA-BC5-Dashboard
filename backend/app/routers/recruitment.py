@@ -321,33 +321,33 @@ def awareness_parish(
     cohort:   List[str] = Query(default=[]),
 ):
     """Reached/interested/eligible/target/% female at parish grain, for the
-    Awareness tab's "Category detail — by parish" table. Also carries each of
-    those three counts split by gender — real per-parish female/male columns
-    exist on this table (same total_*_female/male columns _stage_counts uses
-    at district grain in overview.py) — so the Funnel Overview page's gender
-    chart/gauges can be genuinely parish-precise when a search narrows to one
-    parish, not just fall back to its containing district.
+    Awareness tab's "Category detail — by parish" table. Backed by the live
+    per-youth AWARENESS_KYC record (silver_eba.eba_bootcamp_awareness), not
+    the gold AWARENESS_SUMMARY mart — that mart lags live registrations by up
+    to a day (confirmed 2026-08-05: showed 1,213 registered when the live
+    per-youth count was already 1,896), which fed straight into every card on
+    this page. Each row is one youth, so reached/interested/eligible and
+    their gender splits are all plain COUNT(*)/COUNTIF(...) instead of
+    summing pre-aggregated columns.
 
     Also carries the RCT Treatment/Control split behind the "Eligible youth —
-    RCT assignment" card, from this same table's total_registered_youth_
-    treatment/control (+ female/male) columns — named after "registered" in
-    the warehouse, but confirmed (2026-08-04, summed by cohort against
-    total_eligible_youth) to actually track arm assignment within the
-    ELIGIBLE population: BOOTCAMP_3's treatment+control sums equal its
-    eligible total exactly (fully randomized), BOOTCAMP_4 covers ~11% of
-    eligible, BOOTCAMP_5 ~84%, BOOTCAMP_2 0% (predates randomization).
-    Exposed here as eligible_treatment(_female/_male) and eligible_control
-    (_female/_male) to name them for what they mean rather than the
-    warehouse's "registered" prefix. The frontend derives Unassigned as
-    eligible minus treatment minus control, per row — same one parish-grain
-    fetch this whole page already relies on, so the RCT card and its drill
-    are automatically as search/filter-scoped as every other card, with no
-    separate query against the per-youth silver table needed.
+    RCT assignment" card, from this same table's per-youth `is_treatment`
+    BOOL column (TRUE/FALSE/NULL = Treatment/Control/Unassigned) — confirmed
+    live 2026-08-05 to match the gold mart's own treatment/control totals
+    exactly for both cohorts that carry it (BOOTCAMP_4: 596/100 vs gold's
+    ~11% of eligible; BOOTCAMP_5: 870/679 vs gold's ~84%), and additionally
+    to only ever be set on rows where elligible = TRUE (so scoping to
+    `elligible = TRUE AND is_treatment = ...` below is belt-and-braces, not a
+    behavior change). BOOTCAMP_2/3 carry no is_treatment data on this table
+    at all (same 0%/fully-randomized-elsewhere gap the gold mart had for
+    those cohorts). Exposed as eligible_treatment(_female/_male) and
+    eligible_control(_female/_male); the frontend derives Unassigned as
+    eligible minus treatment minus control, per row.
 
-    `target` prefers the hardcoded AWARENESS_ELIGIBLE_TARGET_BC5 sheet over
-    the live registration_target where the sheet has data for that parish
-    (see the note at that constant) — `target_source` on each row says which
-    one it came from."""
+    `target` is the hardcoded AWARENESS_ELIGIBLE_TARGET_BC5 sheet only —
+    unlike the gold mart, AWARENESS_KYC carries no per-district/parish target
+    column, so there's no live fallback; `target_source` is "hardcoded" or
+    None, never "live"."""
     where, params = build_where(
         districts=district,
         extra=[active_cohort_clause("awp", requested=cohort)], prefix="awp",
@@ -357,44 +357,31 @@ def awareness_parish(
     SELECT
       UPPER(youth_district) AS district,
       {normalized_parish_sql()} AS parish,
-      SUM(total_registered_youth) AS reached,
-      SUM(total_registered_female) AS reached_female,
-      SUM(total_registered_male) AS reached_male,
-      SUM(total_interested_youth) AS interested,
-      SUM(total_interested_female) AS interested_female,
-      SUM(total_interested_male) AS interested_male,
-      SUM(total_eligible_youth) AS eligible,
-      SUM(total_eligible_female) AS eligible_female,
-      SUM(total_eligible_male) AS eligible_male,
-      ROUND(SAFE_DIVIDE(SUM(total_eligible_female), NULLIF(SUM(total_eligible_youth), 0)) * 100, 1) AS pct_female,
-      SUM(total_registered_youth_treatment) AS eligible_treatment,
-      SUM(total_registered_youth_female_treatment) AS eligible_treatment_female,
-      SUM(total_registered_youth_male_treatment) AS eligible_treatment_male,
-      SUM(total_registered_youth_control) AS eligible_control,
-      SUM(total_registered_youth_female_control) AS eligible_control_female,
-      SUM(total_registered_youth_male_control) AS eligible_control_male
-    FROM {AWARENESS_SUMMARY}
-    WHERE {where} AND youth_parish IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+      COUNT(*) AS reached,
+      COUNTIF(UPPER(youth_gender) = 'FEMALE') AS reached_female,
+      COUNTIF(UPPER(youth_gender) = 'MALE') AS reached_male,
+      COUNTIF(training_interest = TRUE) AS interested,
+      COUNTIF(training_interest = TRUE AND UPPER(youth_gender) = 'FEMALE') AS interested_female,
+      COUNTIF(training_interest = TRUE AND UPPER(youth_gender) = 'MALE') AS interested_male,
+      COUNTIF(elligible = TRUE) AS eligible,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE') AS eligible_female,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'MALE') AS eligible_male,
+      ROUND(SAFE_DIVIDE(COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE'), NULLIF(COUNTIF(elligible = TRUE), 0)) * 100, 1) AS pct_female,
+      COUNTIF(elligible = TRUE AND is_treatment = TRUE) AS eligible_treatment,
+      COUNTIF(elligible = TRUE AND is_treatment = TRUE AND UPPER(youth_gender) = 'FEMALE') AS eligible_treatment_female,
+      COUNTIF(elligible = TRUE AND is_treatment = TRUE AND UPPER(youth_gender) = 'MALE') AS eligible_treatment_male,
+      COUNTIF(elligible = TRUE AND is_treatment = FALSE) AS eligible_control,
+      COUNTIF(elligible = TRUE AND is_treatment = FALSE AND UPPER(youth_gender) = 'FEMALE') AS eligible_control_female,
+      COUNTIF(elligible = TRUE AND is_treatment = FALSE AND UPPER(youth_gender) = 'MALE') AS eligible_control_male
+    FROM {AWARENESS_KYC}
+    WHERE {where} AND youth_parish IS NOT NULL
     GROUP BY district, parish
     """
-    target_sql = f"""
-    SELECT UPPER(youth_district) AS district, {normalized_parish_sql()} AS parish, SUM(registration_target) AS target
-    FROM {AWARENESS_SUMMARY}
-    WHERE {where} AND youth_parish IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_TARGET}'
-    GROUP BY district, parish
-    """
-    target_by_key = {
-        (r["district"], r["parish"]): r["target"]
-        for r in database.run_query(target_sql, params, role=user.role)
-    }
+    rows = database.run_query(actual_sql, params, role=user.role)
 
-    # Prefer the recruitment team's hardcoded BC5 sheet (AWARENESS_ELIGIBLE_TARGET_BC5)
-    # over the live registration_target where it has data — it's the team's most
-    # current planning number. It only covers MAYUGE/IGANGA today, so every other
-    # district/parish still falls back to the live target. Also adds a row (zeroed
-    # actuals) for any hardcoded parish with no awareness activity recorded yet, so
-    # its target isn't silently dropped from the district total before any actuals
-    # land.
+    # Also adds a row (zeroed actuals) for any hardcoded parish with no
+    # awareness activity recorded yet, so its target isn't silently dropped
+    # from the district total before any actuals land.
     requested_districts = {d.upper() for d in district} if district else None
     hardcoded_by_parish = {}
     for row in AWARENESS_ELIGIBLE_TARGET_BC5:
@@ -403,13 +390,12 @@ def awareness_parish(
         key = (row["district"], row["parish"])
         hardcoded_by_parish[key] = hardcoded_by_parish.get(key, 0) + row["target"]
 
-    rows = database.run_query(actual_sql, params, role=user.role)
     seen_keys = set()
     for r in rows:
         key = (r["district"], r["parish"])
         seen_keys.add(key)
-        r["target"] = hardcoded_by_parish.get(key, target_by_key.get(key))
-        r["target_source"] = "hardcoded" if key in hardcoded_by_parish else ("live" if target_by_key.get(key) is not None else None)
+        r["target"] = hardcoded_by_parish.get(key)
+        r["target_source"] = "hardcoded" if key in hardcoded_by_parish else None
     for (d, p), t in hardcoded_by_parish.items():
         if (d, p) in seen_keys:
             continue
@@ -440,7 +426,9 @@ def awareness_mobilisers(
 
     Distinct from /api/recruitment/mobilisers (the Recruitment>Mobilisers tab,
     still a placeholder) — this one is scoped to the awareness stage, where
-    AWARENESS_SUMMARY's mobilizer_name is fully populated.
+    AWARENESS_KYC's mobilizer_name is fully populated (100% for BC5, confirmed
+    live 2026-08-05). Backed by AWARENESS_KYC, not AWARENESS_SUMMARY — see
+    the comment at awareness_parish() above.
     """
     where, params = build_where(
         districts=district,
@@ -452,12 +440,12 @@ def awareness_mobilisers(
       mobilizer_id,
       mobilizer_name AS mobiliser_name,
       UPPER(youth_district) AS district,
-      SUM(total_registered_youth) AS reached,
-      SUM(total_eligible_youth) AS eligible,
-      SUM(total_eligible_female) AS eligible_female,
-      ROUND(SAFE_DIVIDE(SUM(total_eligible_female), NULLIF(SUM(total_eligible_youth), 0)) * 100, 1) AS pct_eligible_female
-    FROM {AWARENESS_SUMMARY}
-    WHERE {where} AND mobilizer_name IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+      COUNT(*) AS reached,
+      COUNTIF(elligible = TRUE) AS eligible,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE') AS eligible_female,
+      ROUND(SAFE_DIVIDE(COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE'), NULLIF(COUNTIF(elligible = TRUE), 0)) * 100, 1) AS pct_eligible_female
+    FROM {AWARENESS_KYC}
+    WHERE {where} AND mobilizer_name IS NOT NULL
     GROUP BY mobilizer_id, mobiliser_name, district
     ORDER BY eligible DESC
     """
@@ -477,7 +465,9 @@ def awareness_mobiliser_detail(
     x district x parish) — backs the Mobilisers tab's district-then-parish
     drill for a specific mobiliser (matched by mobilizer_id, not the masked
     name). Small enough (~20 mobilisers x a handful of parishes each) to fetch
-    unfiltered and slice client-side, same as awareness-parish."""
+    unfiltered and slice client-side, same as awareness-parish. Backed by
+    AWARENESS_KYC, not AWARENESS_SUMMARY — see the comment at
+    awareness_parish() above."""
     where, params = build_where(
         districts=district,
         extra=[active_cohort_clause("awmd", requested=cohort)], prefix="awmd",
@@ -489,12 +479,12 @@ def awareness_mobiliser_detail(
       mobilizer_name AS mobiliser_name,
       UPPER(youth_district) AS district,
       {normalized_parish_sql()} AS parish,
-      SUM(total_registered_youth) AS reached,
-      SUM(total_eligible_youth) AS eligible,
-      SUM(total_eligible_female) AS eligible_female,
-      ROUND(SAFE_DIVIDE(SUM(total_eligible_female), NULLIF(SUM(total_eligible_youth), 0)) * 100, 1) AS pct_eligible_female
-    FROM {AWARENESS_SUMMARY}
-    WHERE {where} AND mobilizer_name IS NOT NULL AND youth_parish IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+      COUNT(*) AS reached,
+      COUNTIF(elligible = TRUE) AS eligible,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE') AS eligible_female,
+      ROUND(SAFE_DIVIDE(COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE'), NULLIF(COUNTIF(elligible = TRUE), 0)) * 100, 1) AS pct_eligible_female
+    FROM {AWARENESS_KYC}
+    WHERE {where} AND mobilizer_name IS NOT NULL AND youth_parish IS NOT NULL
     GROUP BY mobilizer_id, mobiliser_name, district, parish
     ORDER BY eligible DESC
     """
@@ -770,15 +760,13 @@ def awareness_forecast(
     cohort:   List[str] = Query(default=[]),
 ):
     """Daily registration trend vs target, with a simple pace-to-target
-    projection, for the Awareness tab's Forecast sub-page.
-
-    `target` is an ELIGIBLE-youth quota where it comes from the hardcoded
-    AWARENESS_ELIGIBLE_TARGET_BC5 sheet (per that constant's comment in
-    tables.py), but the live registration_target fallback (districts the
-    sheet doesn't cover) is, per its name, a raw-registration quota. So pace/
-    gap/days-to-target/%-of-target compare against `eligible` for a
-    hardcoded-target district and `registered` for a live-target one — never
-    blend the two bases together."""
+    projection, for the Awareness tab's Forecast sub-page. Backed by
+    AWARENESS_KYC, not AWARENESS_SUMMARY — see the comment at
+    awareness_parish() above. `target` is the hardcoded
+    AWARENESS_ELIGIBLE_TARGET_BC5 sheet only (no live fallback — AWARENESS_KYC
+    carries no per-district/parish target column) — it's an ELIGIBLE-youth
+    quota, so pace/gap/days-to-target/%-of-target are all paced off
+    `eligible`, not `registered`."""
     where, params = build_where(
         districts=district,
         extra=[active_cohort_clause("awf", requested=cohort)], prefix="awf",
@@ -786,23 +774,23 @@ def awareness_forecast(
     )
     daily_sql = f"""
     SELECT report_date AS event_date,
-           SUM(total_registered_youth) AS registered,
-           SUM(total_interested_youth) AS interested,
-           SUM(total_eligible_youth) AS eligible
-    FROM {AWARENESS_SUMMARY}
-    WHERE {where} AND report_date IS NOT NULL AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+           COUNT(*) AS registered,
+           COUNTIF(training_interest = TRUE) AS interested,
+           COUNTIF(elligible = TRUE) AS eligible
+    FROM {AWARENESS_KYC}
+    WHERE {where} AND report_date IS NOT NULL
     GROUP BY event_date ORDER BY event_date
     """
     daily = database.run_query(daily_sql, params, role=user.role)
 
-    registered_sql = f"""
-    SELECT SUM(total_registered_youth) AS registered,
-           SUM(total_interested_youth) AS interested,
-           SUM(total_eligible_youth) AS eligible
-    FROM {AWARENESS_SUMMARY}
-    WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+    totals_sql = f"""
+    SELECT COUNT(*) AS registered,
+           COUNTIF(training_interest = TRUE) AS interested,
+           COUNTIF(elligible = TRUE) AS eligible
+    FROM {AWARENESS_KYC}
+    WHERE {where}
     """
-    totals = (database.run_query(registered_sql, params, role=user.role) or [{}])[0]
+    totals = (database.run_query(totals_sql, params, role=user.role) or [{}])[0]
     registered = totals.get("registered") or 0
     interested = totals.get("interested") or 0
     eligible = totals.get("eligible") or 0
@@ -812,27 +800,14 @@ def awareness_forecast(
     # window) as the denominator above, so every district's rate is "average
     # per day over the same observed reporting window", not each district's
     # own (possibly sparser) active-day count.
-    #
-    # `target` (both here and the page-level total below) prefers the
-    # hardcoded AWARENESS_ELIGIBLE_TARGET_BC5 sheet over the live
-    # registration_target where it has data for that district — see the note
-    # at that constant and at awareness_parish() above, which does the same
-    # thing at parish grain.
     district_stats_sql = f"""
     SELECT UPPER(youth_district) AS district,
-           SUM(total_registered_youth) AS registered,
-           SUM(total_eligible_youth) AS eligible
-    FROM {AWARENESS_SUMMARY}
-    WHERE {where} AND data_measure = '{AWARENESS_MEASURE_ACTUAL}'
+           COUNT(*) AS registered,
+           COUNTIF(elligible = TRUE) AS eligible
+    FROM {AWARENESS_KYC}
+    WHERE {where}
     GROUP BY district
     """
-    district_target_sql = f"""
-    SELECT UPPER(youth_district) AS district, SUM(registration_target) AS target
-    FROM {AWARENESS_SUMMARY}
-    WHERE {where} AND data_measure = '{AWARENESS_MEASURE_TARGET}'
-    GROUP BY district
-    """
-    live_district_target = {r["district"]: r.get("target") or 0 for r in database.run_query(district_target_sql, params, role=user.role)}
 
     requested_districts = {d.upper() for d in district} if district else None
     hardcoded_district_target = {}
@@ -841,54 +816,35 @@ def awareness_forecast(
             continue
         hardcoded_district_target[row["district"]] = hardcoded_district_target.get(row["district"], 0) + row["target"]
 
-    district_target = {
-        d: hardcoded_district_target.get(d, live_district_target.get(d, 0))
-        for d in set(live_district_target) | set(hardcoded_district_target)
-    }
+    district_target = dict(hardcoded_district_target)
     target = sum(district_target.values())
 
     district_stats = {r["district"]: r for r in database.run_query(district_stats_sql, params, role=user.role)}
 
-    # The hardcoded sheet's target is an ELIGIBLE-youth quota, the live
-    # registration_target fallback is a raw-registration one — so which
-    # figure counts as "actual" against `target` depends on which source
-    # that district's target came from (see docstring). Summed per-district
-    # rather than using the global `registered`/`eligible` totals above, so a
-    # district filter mixing both source types still adds up correctly.
-    def _actual_for(d):
-        stats = district_stats.get(d, {})
-        is_hardcoded = d in hardcoded_district_target
-        return (stats.get("eligible") or 0) if is_hardcoded else (stats.get("registered") or 0)
-
-    all_districts = set(district_stats) | set(district_target)
-    actual_for_target = sum(_actual_for(d) for d in all_districts)
-
     n_days = len(daily)
-    avg_daily_rate = (actual_for_target / n_days) if n_days else None
-    remaining = max(target - actual_for_target, 0)
+    avg_daily_rate = (eligible / n_days) if n_days else None
+    remaining = max(target - eligible, 0)
     days_to_target = (
         round(remaining / avg_daily_rate) if avg_daily_rate else None
     )
     eligibility_rate = round(100 * eligible / interested, 1) if interested else None
 
     by_district = []
-    for d in all_districts:
+    for d in set(district_stats) | set(district_target):
         stats = district_stats.get(d, {})
         d_registered = stats.get("registered") or 0
         d_eligible = stats.get("eligible") or 0
         d_target = district_target.get(d, 0)
-        d_source = "hardcoded" if d in hardcoded_district_target else ("live" if d_target else None)
-        d_actual = _actual_for(d)
-        d_rate = (d_actual / n_days) if n_days else None
-        d_gap = max(d_target - d_actual, 0)
+        d_rate = (d_eligible / n_days) if n_days else None
+        d_gap = max(d_target - d_eligible, 0)
         by_district.append({
             "district": d,
             "registered": d_registered,
             "eligible": d_eligible,
             "target": d_target,
-            "target_source": d_source,
+            "target_source": "hardcoded" if d in hardcoded_district_target else None,
             "gap": d_gap,
-            "pct_of_target": round(100 * d_actual / d_target, 1) if d_target else None,
+            "pct_of_target": round(100 * d_eligible / d_target, 1) if d_target else None,
             "avg_daily_rate": round(d_rate, 1) if d_rate is not None else None,
             "days_to_target": round(d_gap / d_rate) if d_rate else None,
         })
@@ -901,11 +857,7 @@ def awareness_forecast(
         "eligible_to_date": eligible,
         "eligibility_rate": eligibility_rate,
         "target": target,
-        # Progress/pace against `target` in mixed-basis districts — eligible
-        # where hardcoded, registered where live (see docstring). Use this,
-        # not registered_to_date/eligible_to_date, for anything measured
-        # against `target`.
-        "actual_to_date_for_target": actual_for_target,
+        "actual_to_date_for_target": eligible,
         "n_days": n_days,
         "avg_daily_rate": round(avg_daily_rate, 1) if avg_daily_rate is not None else None,
         "days_to_target": days_to_target,
