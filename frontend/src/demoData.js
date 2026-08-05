@@ -225,6 +225,21 @@ export const DEMO = {
       { channel: "Church/mosque", eligible: 700, ineligible: 400 },
       { channel: "SMS", eligible: 400, ineligible: 250 },
     ],
+    // Mirrors the live theme mix (qualitatively coded, see
+    // app/core/question_themes.py) -- the vast majority raise no real
+    // question at all.
+    questions: [
+      { theme: "No question raised (or just thanks)", count: 5900, example: "No questions, appreciative for the program" },
+      { theme: "What is Educate / program identity", count: 200, example: "What is Educate" },
+      { theme: "Bootcamp schedule, venue & logistics", count: 180, example: "When is the boot camp" },
+      { theme: "Startup capital / financial support", count: 95, example: "Can Educate offer start up capital" },
+      { theme: "Transport & facilitation", count: 65, example: "How much is the transport" },
+      { theme: "Eligibility & who can join", count: 60, example: "Who is a youth" },
+      { theme: "Certificate, jobs & post-training outcomes", count: 30, example: "How helpful is the certificate" },
+      { theme: "Other", count: 140, example: "Can you take three contacts" },
+      { theme: "Attendance policy, selection & trust", count: 25, example: "Will you deceive us" },
+      { theme: "Control-group / study design", count: 5, example: "What of the youths in the control group" },
+    ],
   },
 
   "/api/recruitment/mobilisation": {

@@ -13,6 +13,7 @@ from app.auth import current_user, User
 from app.core import database  # module import — required for the run_query test seam
 from app.core.database import _array, _scalar
 from app.core.pii import mask_name, youth_id
+from app.core.question_themes import classify_question
 from app.core.sql import build_where, cohort_clause, multiselect_array_sql, normalized_parish_sql
 from app.core.tables import (
     RECRUITMENT_FUNNEL,
@@ -432,16 +433,33 @@ def awareness_kyc(
     parental_relationship = database.run_query(parental_sql, base_params, role=user.role)
 
     # Free-text, unlike activity/reasons/consultation's small fixed category
-    # sets — grouped so repeated questions surface first, capped at the top
-    # 20 so a long tail of one-off phrasing doesn't flood the Q&A section.
+    # sets. Grouping by exact wording (the previous approach, capped at the
+    # top 20 raw strings) buried the real signal: ~88% of the live
+    # distribution is typo/casing variants of "no"/"NA"/thanks, which
+    # dominate any raw-frequency ranking, while every substantive question
+    # is a one-off phrasing that a top-20-by-exact-text cap drops entirely.
+    # classify_question() (app/core/question_themes.py) qualitatively codes
+    # each distinct phrasing into a theme -- see that module's docstring for
+    # methodology. No LIMIT here: every distinct phrasing must be fetched and
+    # classified for the theme counts to be complete, not just the ones
+    # that happen to be common verbatim.
     questions_sql = f"""
     SELECT question, COUNT(*) AS count
     FROM {AWARENESS_KYC}, UNNEST({multiselect_array_sql("open_questions")}) AS question
     WHERE {elig_where} AND question IS NOT NULL AND TRIM(question) != ''
     GROUP BY question ORDER BY count DESC
-    LIMIT 20
     """
-    questions = database.run_query(questions_sql, base_params, role=user.role)
+    questions_raw = database.run_query(questions_sql, base_params, role=user.role)
+    theme_agg = {}
+    for row in questions_raw:
+        theme = classify_question(row["question"])
+        if theme not in theme_agg:
+            # questions_raw is already ORDER BY count DESC, so the first raw
+            # phrasing seen for a theme is that theme's most common one --
+            # a real representative example, not an arbitrary pick.
+            theme_agg[theme] = {"theme": theme, "count": 0, "example": row["question"]}
+        theme_agg[theme]["count"] += row["count"]
+    questions = sorted(theme_agg.values(), key=lambda r: -r["count"])
 
     biz_sql = f"""
     SELECT UPPER(youth_district) AS district, youth_gender AS gender,
