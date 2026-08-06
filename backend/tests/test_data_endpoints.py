@@ -104,6 +104,65 @@ def test_funnel_split_new_recruits_sourced_from_awareness_kyc(as_staff, mock_run
     assert body["new_recruits_control"] == 40
 
 
+# --- Gender split (mirrors funnel-split's BC3 Control List vs New Recruits) -
+
+def test_gender_split_shape(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/overview/gender-split")
+    assert r.status_code == 200
+    body = r.json()
+    assert [s["stage"] for s in body["bc3_control_list"]] == ["Reached", "Confirmed"]
+    assert [s["stage"] for s in body["new_recruits"]] == ["Registered", "Interested", "Eligible"]
+    assert [s["stage"] for s in body["merged"]] == ["Acquired", "Activated", "Retained"]
+    assert body["new_recruits_treatment"]["female"] == 0
+    assert body["new_recruits_control"]["female"] == 0
+
+
+def test_gender_split_new_recruits_sourced_from_awareness_kyc(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if AWARENESS_KYC in sql:
+            return [{
+                "registered_f": 120, "registered_m": 80,
+                "interested_f": 110, "interested_m": 75,
+                "eligible_f": 100, "eligible_m": 60,
+                "treatment_f": 40, "treatment_m": 20,
+                "control_f": 30, "control_m": 15,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/overview/gender-split")
+    assert r.status_code == 200
+    body = r.json()
+    by_stage = {s["stage"]: s for s in body["new_recruits"]}
+    assert by_stage["Registered"]["female"] == 120
+    assert by_stage["Registered"]["male"] == 80
+    assert by_stage["Eligible"]["pct_female"] == 62.5
+    assert body["new_recruits_treatment"]["female"] == 40
+    assert body["new_recruits_treatment"]["male"] == 20
+    assert body["new_recruits_control"]["female"] == 30
+    assert body["new_recruits_control"]["male"] == 15
+
+
+def test_gender_split_omits_stages_with_no_gender_data(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/overview/gender-split")
+    assert r.status_code == 200
+    body = r.json()
+    all_stages = {s["stage"] for group in ("bc3_control_list", "new_recruits", "merged") for s in body[group]}
+    assert "Assigned" not in all_stages
+    assert "Verified" not in all_stages
+
+
+def test_gender_omits_assigned_stage(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/overview/gender")
+    assert r.status_code == 200
+    by_stage = {s["stage"]: s for s in r.json()["stages"]}
+    assert by_stage["Assigned"]["female"] is None
+    assert by_stage["Assigned"]["male"] is None
+    assert by_stage["Assigned"]["pct_female"] is None
+
+
 def test_run_query_receives_caller_role(as_guest, mock_run_query):
     mock_run_query.set_rows([])
     as_guest.get("/api/overview/funnel")

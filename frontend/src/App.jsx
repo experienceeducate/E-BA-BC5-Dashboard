@@ -942,6 +942,7 @@ function ExecutiveSummaryPage({ filters }) {
   const funnelSplit = useApi(`/api/overview/funnel-split${q}`);
   const stageProgress = useApi(`/api/overview/stage-progress${q}`);
   const gender = useApi(`/api/overview/gender${q}`);
+  const genderSplit = useApi(`/api/overview/gender-split${q}`);
   const barriers = useApi(`/api/overview/eligibility-barriers${q}`);
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
@@ -958,8 +959,52 @@ function ExecutiveSummaryPage({ filters }) {
     });
   }
 
+  const genderDrillColumns = [
+    { key: "female", label: "Female", align: "right", render: fmtNum },
+    { key: "male", label: "Male", align: "right", render: fmtNum },
+    { key: "pct_female", label: "% Female", align: "right", render: fmtPct },
+  ];
+
+  function openGenderStageDrill(stage, pathwayKey) {
+    drill.open({
+      title: `${stage} — Female vs Male by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: genderDrillColumns,
+      rootRows: () => fetchPerDistrictFields("/api/overview/gender-split", filters, allDistricts, {
+        female: (json) => (json?.[pathwayKey] || []).find((s) => s.stage === stage)?.female ?? null,
+        male: (json) => (json?.[pathwayKey] || []).find((s) => s.stage === stage)?.male ?? null,
+        pct_female: (json) => (json?.[pathwayKey] || []).find((s) => s.stage === stage)?.pct_female ?? null,
+      }),
+    });
+  }
+
+  function openGenderSplitDrill(fieldKey, label) {
+    drill.open({
+      title: `${label} — Female vs Male by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: genderDrillColumns,
+      rootRows: () => fetchPerDistrictFields("/api/overview/gender-split", filters, allDistricts, {
+        female: (json) => json?.[fieldKey]?.female ?? null,
+        male: (json) => json?.[fieldKey]?.male ?? null,
+        pct_female: (json) => json?.[fieldKey]?.pct_female ?? null,
+      }),
+    });
+  }
+
   const stages = funnel.data?.stages || [];
   const genderStages = gender.data?.stages || [];
+  const genderTableColumns = [
+    { key: "stage", label: "Stage" },
+    { key: "female", label: "Female", align: "right", render: (v) => fmtNum(v) },
+    { key: "male", label: "Male", align: "right", render: (v) => fmtNum(v) },
+    {
+      key: "pct_female", label: "% Female", align: "right",
+      render: (v) => <span style={{ color: v != null && Math.abs(v - 60) > 5 ? C.coral : "inherit", fontWeight: v != null && Math.abs(v - 60) > 5 ? 700 : 400 }}>{fmtPct(v)}</span>,
+    },
+    { key: "target_female", label: "Target", align: "right", render: (v) => fmtPct(v) },
+  ];
 
   const dropoffs = stages.slice(1)
     .map((s, i) => ({ from_stage: stages[i].stage, to_stage: s.stage, lost: s.lost }))
@@ -1062,21 +1107,50 @@ function ExecutiveSummaryPage({ filters }) {
       </Card>
 
       <ExecBand num={5} title="Gender performance summary" />
-      <Card title="Male vs female across the funnel" subtitle="Share of each stage that is female against the 60% target. Gaps over 5pp are flagged." chip="REAL">
-        <State loading={gender.loading} error={gender.error} empty={!gender.loading && genderStages.length === 0}>
+      <Card
+        title="Male vs female — by pathway"
+        subtitle="Share of each stage that is female against the 60% target — gaps over 5pp are flagged. Click a stage to drill by district."
+        chip="REAL"
+      >
+        <State loading={genderSplit.loading} error={genderSplit.error} empty={!genderSplit.loading && (genderSplit.data?.bc3_control_list || []).length === 0 && (genderSplit.data?.new_recruits || []).length === 0}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>BC3 Control List</div>
+              <DataTable
+                columns={genderTableColumns}
+                rows={genderSplit.data?.bc3_control_list || []}
+                onRowClick={(r) => openGenderStageDrill(r.stage, "bc3_control_list")}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>New Recruits</div>
+              <DataTable
+                columns={genderTableColumns}
+                rows={genderSplit.data?.new_recruits || []}
+                onRowClick={(r) => openGenderStageDrill(r.stage, "new_recruits")}
+              />
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, marginTop: 12, marginBottom: 6 }}>
+                Randomisation, after Eligible
+              </div>
+              <DataTable
+                columns={genderTableColumns}
+                rows={[genderSplit.data?.new_recruits_treatment, genderSplit.data?.new_recruits_control].filter(Boolean)}
+                onRowClick={(r) => openGenderSplitDrill(r.stage === "Control" ? "new_recruits_control" : "new_recruits_treatment", r.stage)}
+              />
+            </div>
+          </div>
+        </State>
+      </Card>
+      <Card title="Arrival → Retention — gender" subtitle="Both pathways converge here — same shared journey as the funnel-by-pathway card above. Click a stage to drill by district." chip="REAL">
+        <State loading={genderSplit.loading} error={genderSplit.error} empty={!genderSplit.loading && (genderSplit.data?.merged || []).length === 0}>
           <DataTable
-            columns={[
-              { key: "stage", label: "Stage" },
-              { key: "female", label: "Female", align: "right", render: (v) => fmtNum(v) },
-              { key: "male", label: "Male", align: "right", render: (v) => fmtNum(v) },
-              {
-                key: "pct_female", label: "% Female", align: "right",
-                render: (v) => <span style={{ color: v != null && Math.abs(v - 60) > 5 ? C.coral : "inherit", fontWeight: v != null && Math.abs(v - 60) > 5 ? 700 : 400 }}>{fmtPct(v)}</span>,
-              },
-              { key: "target_female", label: "Target", align: "right", render: (v) => fmtPct(v) },
-            ]}
-            rows={genderStages}
+            columns={genderTableColumns}
+            rows={genderSplit.data?.merged || []}
+            onRowClick={(r) => openGenderStageDrill(r.stage, "merged")}
           />
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+            Verified and Assigned are omitted — the live data has no gender breakdown for either.
+          </p>
         </State>
       </Card>
 

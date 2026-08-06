@@ -544,7 +544,10 @@ def overview_gender(
         "Registered": (aw.get("registered_f") or 0, aw.get("registered_m") or 0),
         "Interested": (aw.get("interested_f") or 0, aw.get("interested_m") or 0),
         "Eligible":   (aw.get("eligible_f") or 0, aw.get("eligible_m") or 0),
-        "Assigned":   (mo("assigned", "FEMALE"), mo("assigned", "MALE")),
+        # Assigned (preload_youth) has no gender breakdown in the live tables
+        # at all (see mo_sql above, which never selects it) — omitted rather
+        # than shown as an always-zero row, same treatment as Verified below.
+        "Assigned":   (None, None),
         "Reached":    (mo("reached", "FEMALE"), mo("reached", "MALE")),
         "Confirmed":  (mo("confirmed", "FEMALE") + acf_by_gender.get("FEMALE", 0),
                        mo("confirmed", "MALE") + acf_by_gender.get("MALE", 0)),
@@ -568,6 +571,114 @@ def overview_gender(
             "target_female": 60.0,
         })
     return {"stages": out}
+
+
+def _gender_row(stage, female, male):
+    female = female or 0
+    male = male or 0
+    total = female + male
+    return {
+        "stage": stage,
+        "female": female,
+        "male": male,
+        "pct_female": round(100 * female / total, 1) if total else None,
+        "target_female": 60.0,
+    }
+
+
+@router.get("/api/overview/gender-split")
+def overview_gender_split(
+    user: User = Depends(current_user),
+    district: List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
+):
+    """Gender breakdown of the recruitment funnel, split by pathway — mirrors
+    /api/overview/funnel-split's BC3 Control List vs New Recruits split (see
+    that endpoint's docstring for the full rationale) rather than the one
+    flat 10-stage list /api/overview/gender returns. Two stages are dropped
+    entirely rather than shown as a misleading 0/0: Assigned (preload_youth
+    has no gender column in the live tables) and Verified (total_verified_youth
+    only lives on genderless 'site_targets' rows).
+
+    BC3 Control List's Confirmed is the call-center actual alone (unblended
+    with the auto-confirm pilot), matching funnel-split's waiting_list.
+    New Recruits ends at Eligible, then Treatment/Control — Treatment IS the
+    New Recruits pathway's confirmed population (see funnel-split's
+    docstring), not a further stage.
+    """
+    aw_where, aw_params = build_where(
+        districts=district, extra=[active_cohort_clause("gsaw", requested=cohort)], prefix="gsaw",
+        district_col="youth_district",
+    )
+    aw_sql = f"""
+    SELECT
+      COUNTIF(UPPER(youth_gender) = 'FEMALE') AS registered_f,
+      COUNTIF(UPPER(youth_gender) = 'MALE') AS registered_m,
+      COUNTIF(training_interest = TRUE AND UPPER(youth_gender) = 'FEMALE') AS interested_f,
+      COUNTIF(training_interest = TRUE AND UPPER(youth_gender) = 'MALE') AS interested_m,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE') AS eligible_f,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'MALE') AS eligible_m,
+      COUNTIF(elligible = TRUE AND is_treatment = TRUE AND UPPER(youth_gender) = 'FEMALE') AS treatment_f,
+      COUNTIF(elligible = TRUE AND is_treatment = TRUE AND UPPER(youth_gender) = 'MALE') AS treatment_m,
+      COUNTIF(elligible = TRUE AND is_treatment = FALSE AND UPPER(youth_gender) = 'FEMALE') AS control_f,
+      COUNTIF(elligible = TRUE AND is_treatment = FALSE AND UPPER(youth_gender) = 'MALE') AS control_m
+    FROM {AWARENESS_KYC} WHERE {aw_where}
+    """
+    aw = (database.run_query(aw_sql, aw_params, role=user.role) or [{}])[0]
+
+    mo_where, mo_params = build_where(
+        districts=district, extra=[active_cohort_clause("gsmo", requested=cohort)], prefix="gsmo",
+        district_col="agent_district",
+    )
+    mo_sql = f"""
+    SELECT UPPER(youth_gender) AS g,
+           SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed
+    FROM {DAILY_ACQUISITION_SUMMARY} WHERE {mo_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'
+    GROUP BY g
+    """
+    mo_by_gender = {r["g"]: r for r in database.run_query(mo_sql, mo_params, role=user.role)}
+
+    def mo(field, g):
+        return (mo_by_gender.get(g) or {}).get(field) or 0
+
+    sf_where, sf_params = build_where(
+        districts=district, extra=[active_cohort_clause("gssf", requested=cohort)], prefix="gssf",
+    )
+    sf_sql = f"""
+    SELECT UPPER(gender) AS g, SUM(acquired_youth) AS acquired,
+           SUM(activated_youth) AS activated, SUM(youth_80pct_lessons) AS retained
+    FROM {SITE_FUNNEL_METRICS} WHERE {sf_where} AND measure = '{SITE_FUNNEL_MEASURE_ACTUAL}'
+    GROUP BY g
+    """
+    sf_by_gender = {r["g"]: r for r in database.run_query(sf_sql, sf_params, role=user.role)}
+
+    def sf(field, g):
+        return (sf_by_gender.get(g) or {}).get(field) or 0
+
+    bc3_control_list = [
+        _gender_row("Reached", mo("reached", "FEMALE"), mo("reached", "MALE")),
+        _gender_row("Confirmed", mo("confirmed", "FEMALE"), mo("confirmed", "MALE")),
+    ]
+    new_recruits = [
+        _gender_row("Registered", aw.get("registered_f"), aw.get("registered_m")),
+        _gender_row("Interested", aw.get("interested_f"), aw.get("interested_m")),
+        _gender_row("Eligible", aw.get("eligible_f"), aw.get("eligible_m")),
+    ]
+    new_recruits_treatment = _gender_row("Treatment (confirmed)", aw.get("treatment_f"), aw.get("treatment_m"))
+    new_recruits_control = _gender_row("Control", aw.get("control_f"), aw.get("control_m"))
+    merged = [
+        _gender_row("Acquired", sf("acquired", "FEMALE"), sf("acquired", "MALE")),
+        _gender_row("Activated", sf("activated", "FEMALE"), sf("activated", "MALE")),
+        _gender_row("Retained", sf("retained", "FEMALE"), sf("retained", "MALE")),
+    ]
+
+    return {
+        "bc3_control_list": bc3_control_list,
+        "new_recruits": new_recruits,
+        "new_recruits_treatment": new_recruits_treatment,
+        "new_recruits_control": new_recruits_control,
+        "merged": merged,
+    }
 
 
 @router.get("/api/overview/stage-progress")
