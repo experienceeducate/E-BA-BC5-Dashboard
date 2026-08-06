@@ -701,3 +701,114 @@ def test_milestones_by_cohort_week_ignores_selected_cohort_filter(as_staff, mock
     call = next(c for c in mock_run_query.calls if "GROUP BY cohort, week_number" in c["sql"])
     assert "@mscw_cohort" not in call["sql"]
     assert not any(getattr(p, "name", "") == "mscw_cohort" for p in call["params"])
+
+
+# --- Mobilisation date range filter -----------------------------------------
+# date_from/date_to filter every OBSERVED figure (call_date on
+# DAILY_ACQUISITION_SUMMARY/ACQUISITION_CALL_LOG, report_date on AWARENESS_KYC
+# for the auto-confirm pathway, date_added on CONTROL_CALLS_BC4, created_at on
+# BC5_ACQUISITION_CALLS) -- never a static target/planning snapshot
+# (DAILY_ACQUISITION_TARGETS_DEDUPED, PARISH_TARGETS_BC5), which has no date
+# column to filter by. See _date_extra, recruitment.py.
+
+def test_mobilisation_accepts_date_range(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/recruitment/mobilisation",
+        params={"date_from": "2026-01-01", "date_to": "2026-01-31"},
+    )
+    assert r.status_code == 200
+    actual_call = next(c for c in mock_run_query.calls if "SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed" in c["sql"])
+    assert "call_date >=" in actual_call["sql"]
+    assert "call_date <=" in actual_call["sql"]
+    called_call = next(c for c in mock_run_query.calls if "COUNT(DISTINCT youth_id) AS n" in c["sql"])
+    assert "call_date >=" in called_call["sql"]
+    auto_call = next(c for c in mock_run_query.calls if "report_date >= @acfd_since" in c["sql"])
+    assert "report_date >=" in auto_call["sql"] and "@acfd_from" in auto_call["sql"]
+    preload_call = next(c for c in mock_run_query.calls if "SUM(preload_youth) AS assigned" in c["sql"])
+    assert "call_date" not in preload_call["sql"]
+
+
+def test_mobilisation_date_range_is_optional(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/mobilisation")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "call_date" not in all_sql
+
+
+def test_mobilisation_heatmap_accepts_date_range(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/recruitment/mobilisation-heatmap",
+        params={"date_from": "2026-01-01", "date_to": "2026-01-31"},
+    )
+    assert r.status_code == 200
+    actual_call = next(c for c in mock_run_query.calls if "SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed" in c["sql"])
+    assert "call_date >=" in actual_call["sql"] and "call_date <=" in actual_call["sql"]
+    targets_call = next(c for c in mock_run_query.calls if "SUM(preload_youth) AS assigned, SUM(mobilisation_target) AS target" in c["sql"] and "GROUP BY district\n" in c["sql"])
+    assert "call_date" not in targets_call["sql"]
+
+
+def test_mobilisation_heatmap_date_range_is_optional(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/mobilisation-heatmap")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "call_date" not in all_sql
+
+
+def test_mobilisation_forecast_accepts_date_range(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/recruitment/mobilisation-forecast",
+        params={"date_from": "2026-01-01", "date_to": "2026-01-31"},
+    )
+    assert r.status_code == 200
+    daily_call = next(c for c in mock_run_query.calls if "call_date AS event_date" in c["sql"])
+    assert "call_date >=" in daily_call["sql"] and "call_date <=" in daily_call["sql"]
+    target_call = next(c for c in mock_run_query.calls if "SUM(mobilisation_target) AS t" in c["sql"])
+    assert "call_date" not in target_call["sql"]
+
+
+def test_mobilisation_forecast_date_range_is_optional(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/mobilisation-forecast")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls if "call_date AS event_date" in c["sql"])
+    assert "call_date >=" not in all_sql
+
+
+def test_control_calls_accepts_date_range(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/recruitment/control-calls",
+        params={"date_from": "2026-01-01", "date_to": "2026-01-31"},
+    )
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert all_sql.count("DATE(date_added) >=") == 3
+    assert all_sql.count("DATE(date_added) <=") == 3
+
+
+def test_control_calls_date_range_is_optional(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/control-calls")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "date_added" not in all_sql
+
+
+def test_call_centre_insights_accepts_date_range(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/recruitment/call-centre-insights",
+        params={"date_from": "2026-01-01", "date_to": "2026-01-31"},
+    )
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert all_sql.count("DATE(created_at) >=") == 7
+    assert all_sql.count("DATE(created_at) <=") == 7
+
+
+def test_call_centre_insights_date_range_is_optional(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/call-centre-insights")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "created_at" not in all_sql
