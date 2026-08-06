@@ -1015,14 +1015,14 @@ function ExecutiveSummaryPage({ filters }) {
 
       <ExecBand num={4} title="Recruitment funnel — by pathway" />
       <Card
-        title="Waiting List (4 Wks) vs New Recruits (have randomisation)"
-        subtitle="Two genuinely different pathways — Waiting List is pure call-center/acquisition data (the BC3 Control List on the Mobilisation tab); New Recruits comes from the awareness table, randomised into Treatment vs Control once eligible. Both converge into one shared funnel below once confirmed."
+        title="BC3 Control List vs New Recruits (have randomisation)"
+        subtitle="Two genuinely different pathways — BC3 Control List is pure call-center/acquisition data (the same BC3 Control List on the Mobilisation tab); New Recruits comes from the awareness table, randomised into Treatment vs Control once eligible. Both converge into one shared funnel below once confirmed."
         chip="REAL"
       >
         <State loading={funnelSplit.loading} error={funnelSplit.error} empty={!funnelSplit.loading && (funnelSplit.data?.waiting_list || []).length === 0 && (funnelSplit.data?.new_recruits || []).length === 0}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
             <div>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Waiting List (4 Wks)</div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>BC3 Control List</div>
               <FunnelViz stages={funnelSplit.data?.waiting_list || []} />
             </div>
             <div>
@@ -1052,11 +1052,11 @@ function ExecutiveSummaryPage({ filters }) {
           </div>
         </State>
       </Card>
-      <Card title="Arrival → Acquisition → Activation → Retention" subtitle="Both pathways converge here — confirmed youth from Waiting List and New Recruits attend the same bootcamp from this point on." chip="REAL">
+      <Card title="Arrival → Acquisition → Activation → Retention" subtitle="Both pathways converge here — confirmed youth from BC3 Control List and New Recruits attend the same bootcamp from this point on." chip="REAL">
         <State loading={funnelSplit.loading} error={funnelSplit.error} empty={!funnelSplit.loading && (funnelSplit.data?.merged || []).length === 0}>
           <FunnelViz stages={funnelSplit.data?.merged || []} />
           <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
-            Shown as one shared journey — the live site-level data (venue x gender x cycle) doesn't carry a Waiting List vs New Recruits marker past this point, so a genuine per-pathway split isn't available yet.
+            Shown as one shared journey — the live site-level data (venue x gender x cycle) doesn't carry a BC3 Control List vs New Recruits marker past this point, so a genuine per-pathway split isn't available yet.
           </p>
         </State>
       </Card>

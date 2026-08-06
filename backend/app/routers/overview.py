@@ -291,11 +291,11 @@ def overview_funnel_split(
     from Verified ("Arrival") onward — confirmed by the recruitment team,
     2026-08-06:
 
-    - "Waiting List (4 Wks)" is pure call-center/acquisition-model data — the
-      same "BC3 Control List" pathway mobilisation()'s four_week segment
-      already reports (DAILY_ACQUISITION_SUMMARY: Assigned -> Reached ->
-      Confirmed). This pool isn't sourced from the awareness table at all —
-      no Registered/Interested/Eligible stages exist for it.
+    - "BC3 Control List" is pure call-center/acquisition-model data — the
+      same pathway mobilisation()'s four_week segment already reports
+      (DAILY_ACQUISITION_SUMMARY: Assigned -> Reached -> Confirmed). This
+      pool isn't sourced from the awareness table at all — no
+      Registered/Interested/Eligible stages exist for it.
     - "New Recruits (have randomisation)" is the awareness table
       (AWARENESS_KYC): Registered -> Interested -> Eligible, then a
       Randomisation SPLIT (not a further linear stage) into Treatment vs
@@ -311,7 +311,7 @@ def overview_funnel_split(
     Both converge into ONE combined Verified/Acquired/Activated/Retained
     tail (SITE_FUNNEL_METRICS) — arrival onward doesn't distinguish pathway.
     """
-    # Waiting List: the call-center pathway — same unblended queries
+    # BC3 Control List: the call-center pathway — same unblended queries
     # _stage_counts/mobilisation() use for their own four_week segment.
     # DAILY_ACQUISITION_TARGETS_DEDUPED + target_measure_where for Assigned
     # — see _stage_counts' docstring for why (snapshot-log dedup + the real
