@@ -71,6 +71,19 @@ function buildParamsOverride(filters, overrides) {
   return buildParams({ ...filters, ...overrides });
 }
 
+// Appends an endpoint-specific date_from/date_to on top of buildParams(filters)
+// — kept separate from buildParams itself since date_from/date_to are only
+// meaningful to the handful of endpoints that actually accept them (Milestones,
+// Mobilisation), not every /api/* call the global filter bar's fields feed.
+function withDateRange(filters, dateFrom, dateTo) {
+  const base = buildParams(filters);
+  const extra = [];
+  if (dateFrom) extra.push(`date_from=${encodeURIComponent(dateFrom)}`);
+  if (dateTo) extra.push(`date_to=${encodeURIComponent(dateTo)}`);
+  if (!extra.length) return base;
+  return base ? `${base}&${extra.join("&")}` : `?${extra.join("&")}`;
+}
+
 function sumBy(rows, key) {
   return (rows || []).reduce((s, r) => s + (Number(r[key]) || 0), 0);
 }
@@ -756,13 +769,18 @@ function DataTable({ columns, rows, onRowClick }) {
 // column (this table's only current use of it combines Venue+District into
 // one cell for exactly that reason); a solid background is required so the
 // scrolling group columns don't show through underneath it.
-function GroupedDataTable({ leading, groups, trailing, rows, onRowClick, stickyLeading }) {
+//
+// maxBodyHeight caps the table to roughly that many pixels (~5 rows worth)
+// and adds a vertical scrollbar for the rest, instead of rendering every row
+// -- e.g. Parish performance's ~40+ parishes. Independent of stickyLeading;
+// either can be used alone or together.
+function GroupedDataTable({ leading, groups, trailing, rows, onRowClick, stickyLeading, maxBodyHeight }) {
   const grouped = groups.flatMap((g) => g.columns.map((c, i) => ({ ...c, groupColor: g.color, groupStart: i === 0 })));
   const thStyle = { padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11 };
   const tdStyle = { padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text };
   const stickyCellStyle = stickyLeading ? { position: "sticky", left: 0, background: C.white, borderRight: `1px solid ${C.line}` } : {};
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div style={maxBodyHeight ? { overflow: "auto", maxHeight: maxBodyHeight } : { overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr>
@@ -2660,6 +2678,12 @@ function AcquisitionArrivalPage({ filters }) {
 
 function MobilisationTab({ filters }) {
   const [page, setPage] = useState("funnel");
+  // One shared date range for every sub-page on this tab — filters by each
+  // report's own event date (call_date/report_date/date_added/created_at,
+  // see the backend's per-endpoint docstrings), never a static target. Kept
+  // at this level (not per sub-page) so switching sub-tabs doesn't reset it.
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   return (
     <div>
       <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Mobilisation</h2>
@@ -2668,6 +2692,15 @@ function MobilisationTab({ filters }) {
         mobilisation rate, the funnel by day and venue, daily pace against target, and the
         randomised control arm.
       </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Date range (all Mobilisation pages)</span>
+        <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} style={{ fontSize: 12, padding: "6px 8px", border: `1px solid ${C.line}`, borderRadius: 5, color: C.text }} />
+        <span style={{ fontSize: 11, color: C.muted }}>to</span>
+        <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} style={{ fontSize: 12, padding: "6px 8px", border: `1px solid ${C.line}`, borderRadius: 5, color: C.text }} />
+        {(dateFrom || dateTo) && (
+          <button onClick={() => { setDateFrom(""); setDateTo(""); }} style={PAGER_BTN}>Clear dates</button>
+        )}
+      </div>
       <PageNav
         active={page}
         onChange={setPage}
@@ -2679,24 +2712,32 @@ function MobilisationTab({ filters }) {
           { key: "insights", label: "Call Centre Insights" },
         ]}
       />
-      {page === "funnel" && <MobRecruitmentFunnelPage filters={filters} />}
-      {page === "forecast" && <MobForecastsPage filters={filters} />}
+      {page === "funnel" && <MobRecruitmentFunnelPage filters={filters} dateFrom={dateFrom} dateTo={dateTo} />}
+      {page === "forecast" && <MobForecastsPage filters={filters} dateFrom={dateFrom} dateTo={dateTo} />}
       {page === "mobilisers" && <MobPerformancePage filters={filters} />}
-      {page === "control" && <MobControlCallsPage />}
-      {page === "insights" && <MobCallCentreInsightsPage />}
+      {page === "control" && <MobControlCallsPage dateFrom={dateFrom} dateTo={dateTo} />}
+      {page === "insights" && <MobCallCentreInsightsPage dateFrom={dateFrom} dateTo={dateTo} />}
+      {page === "mobilisers" && (
+        <p style={{ fontSize: 11, color: C.muted, marginTop: -10 }}>
+          The date range above doesn't apply here — Mobiliser Performance has no live per-mobiliser table yet (see MOBILISER_PERF, tables.py), so there's nothing dated to filter.
+        </p>
+      )}
     </div>
   );
 }
 
-function MobRecruitmentFunnelPage({ filters }) {
+function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
   const drill = useDrill();
-  const mob = useApi(`/api/recruitment/mobilisation${buildParams(filters)}`);
-  const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
+  const mob = useApi(`/api/recruitment/mobilisation${withDateRange(filters, dateFrom, dateTo)}`);
+  const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${withDateRange(filters, dateFrom, dateTo)}`);
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
   const data = mob.data;
   const [parishCat, setParishCat] = useState("All");
   const [mobGrain, setMobGrain] = useState("parish");
+  const [mobSearch, setMobSearch] = useState("");
+  const [selectedParishes, setSelectedParishes] = useState([]);
+  const [selectedVenues, setSelectedVenues] = useState([]);
   // Venue-grain only — no insight here depends on call_date. Day-level
   // tracking has proven sparse/unreliable for some cohorts (see the by_venue/
   // by_day split below), so score cards and insights are built entirely from
@@ -2793,9 +2834,28 @@ function MobRecruitmentFunnelPage({ filters }) {
   const byDistrictTotals = heatmap.data?.by_district || [];
   const districtTotalRows = byDistrictTotals.map(buildSourceRow).sort((a, b) => b.confirmed - a.confirmed);
 
+  // Free-text search matches parish, venue, or district; the Parishes/
+  // Venues multi-selects narrow further on top of it (AND, not OR) — same
+  // combined-filter-panel convention as Milestones' Venue x Week. Parish
+  // rows have no venue of their own, so selectedVenues only narrows the
+  // venue grain below; selectedParishes narrows both.
+  const mq = mobSearch.trim().toLowerCase();
+  const matchesMobText = (parish, venue, district) => {
+    if (!mq) return true;
+    if ((parish || "").toLowerCase().includes(mq)) return true;
+    if ((venue || "").toLowerCase().includes(mq)) return true;
+    if ((district || "").toLowerCase().includes(mq)) return true;
+    return false;
+  };
+  const parishOptions = distinctValues(parishRows, "parish");
+  const venueOptions = distinctValues(venueRows, "venue");
+
   const parishCatCounts = { All: parishRows.length };
   RATE_CATEGORY_ORDER.forEach((c) => { parishCatCounts[c] = parishRows.filter((p) => p.category === c).length; });
-  const filteredParishRows = (parishCat === "All" ? parishRows : parishRows.filter((p) => p.category === parishCat))
+  const filteredParishRows = parishRows
+    .filter((p) => parishCat === "All" || p.category === parishCat)
+    .filter((p) => matchesMobText(p.parish, null, p.district))
+    .filter((p) => selectedParishes.length === 0 || selectedParishes.includes(p.parish))
     .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
 
   // Same columns as before, regrouped for GroupedDataTable — three
@@ -2884,7 +2944,11 @@ function MobRecruitmentFunnelPage({ filters }) {
   // component (see venueGroups' note).
   const venueCatCounts = { All: venueRows.length };
   RATE_CATEGORY_ORDER.forEach((c) => { venueCatCounts[c] = venueRows.filter((v) => v.category === c).length; });
-  const filteredVenueRows = (parishCat === "All" ? venueRows : venueRows.filter((v) => v.category === parishCat))
+  const filteredVenueRows = venueRows
+    .filter((v) => parishCat === "All" || v.category === parishCat)
+    .filter((v) => matchesMobText(v.parish, v.venue, v.district))
+    .filter((v) => selectedParishes.length === 0 || selectedParishes.includes(v.parish))
+    .filter((v) => selectedVenues.length === 0 || selectedVenues.includes(v.venue))
     .sort((a, b) => (b.progressPct ?? -1) - (a.progressPct ?? -1));
 
   return (
@@ -3022,20 +3086,43 @@ function MobRecruitmentFunnelPage({ filters }) {
           <button onClick={() => setMobGrain("venue")} style={{ fontSize: 12, fontWeight: 700, padding: "7px 16px", border: `1px solid ${mobGrain === "venue" ? C.gold : C.line}`, borderRadius: 5, background: mobGrain === "venue" ? C.gold : C.white, color: mobGrain === "venue" ? C.ink : C.inkSoft, cursor: "pointer" }}>Venue</button>
         </div>
 
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+          <input
+            type="text"
+            value={mobSearch}
+            onChange={(e) => setMobSearch(e.target.value)}
+            placeholder="Search parish, venue, or district…"
+            style={{ flex: "1 1 240px", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5 }}
+          />
+          <MultiSelectDropdown label="Parishes" options={parishOptions} selected={selectedParishes} onChange={setSelectedParishes} />
+          <MultiSelectDropdown label="Venues" options={venueOptions} selected={selectedVenues} onChange={setSelectedVenues} />
+        </div>
+
         <CategoryFilterTiles counts={mobGrain === "parish" ? parishCatCounts : venueCatCounts} active={parishCat} onChange={setParishCat} entityLabelPlural={mobGrain === "parish" ? "parishes" : "venues"} />
         <Card
           title={mobGrain === "parish" ? "Parish performance vs target" : "Venue performance vs target"}
           subtitle={mobGrain === "parish"
-            ? "Call-center confirmed (vs mobilisation target) and auto-confirmed from awareness-eligible youth (vs treatment target) shown separately, plus the total confirmed vs combined target."
+            ? `Call-center confirmed (vs mobilisation target) and auto-confirmed from awareness-eligible youth (vs treatment target) shown separately, plus the total confirmed vs combined target. 5 parishes visible at a time — scroll down for the rest.`
             : "Call-center confirmed (vs mobilisation target) shown alongside its parish's auto-confirmed figure (vs treatment target) — awareness records carry no venue at all, only district/parish, so that middle block is the same number on every venue in that parish, not venue-specific. Total stays call-center-only, to avoid double-counting a shared parish figure across sibling venues."}
           chip="REAL"
         >
           {mobGrain === "parish" ? (
             <GroupedDataTable
-              leading={[{ key: "district", label: "District" }, { key: "parish", label: "Parish" }]}
+              leading={[{
+                key: "parish",
+                label: "Parish",
+                render: (v, r) => (
+                  <div>
+                    <div>{v}</div>
+                    <div style={{ fontSize: 11, color: C.muted, fontWeight: 400 }}>{r.district}</div>
+                  </div>
+                ),
+              }]}
               groups={sourceGroups}
               trailing={sourceTrailingColumns}
               rows={filteredParishRows}
+              stickyLeading
+              maxBodyHeight={300}
             />
           ) : (
             <GroupedDataTable
@@ -3200,9 +3287,9 @@ const FORECAST_DRILL_COLUMNS = [
   { key: "daysToTarget", label: "Days to target", align: "right", render: (v) => (v == null ? "—" : v <= 0 ? "Met" : fmtNum(v)) },
 ];
 
-function MobForecastsPage({ filters }) {
+function MobForecastsPage({ filters, dateFrom, dateTo }) {
   const drill = useDrill();
-  const { data, loading, error } = useApi(`/api/recruitment/mobilisation-forecast${buildParams(filters)}`);
+  const { data, loading, error } = useApi(`/api/recruitment/mobilisation-forecast${withDateRange(filters, dateFrom, dateTo)}`);
   // Reference prototype's "Site early-warning flags" panel uses a fabricated
   // "days elapsed / 16" cycle-length pace rule and hardcoded sample venues
   // (explicitly tagged SIMULATED RULE there) — no such cycle-length field
@@ -3210,7 +3297,7 @@ function MobForecastsPage({ filters }) {
   // confirmed÷reached conversion-rate bands used on the Mobilisation overview
   // page's venue categorisation, driven by the live mobilisation-heatmap
   // venue rollup instead of a fabricated pace projection.
-  const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${buildParams(filters)}`);
+  const heatmap = useApi(`/api/recruitment/mobilisation-heatmap${withDateRange(filters, dateFrom, dateTo)}`);
   const daily = data?.daily || [];
   const nDays = daily.length;
   // Sorted worst-first (lowest conversion first) — the sites needing a
@@ -3336,8 +3423,8 @@ function MobPerformancePage({ filters }) {
   );
 }
 
-function MobControlCallsPage() {
-  const { data, loading, error } = useApi(`/api/recruitment/control-calls`);
+function MobControlCallsPage({ dateFrom, dateTo }) {
+  const { data, loading, error } = useApi(`/api/recruitment/control-calls${withDateRange({}, dateFrom, dateTo)}`);
   return (
     <div>
       <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
@@ -3420,12 +3507,12 @@ function ThemedQuotesCard({ title, subtitle, data, color, loading, error, chartH
   );
 }
 
-function MobCallCentreInsightsPage() {
+function MobCallCentreInsightsPage({ dateFrom, dateTo }) {
   // 5 minutes matches the backend's own BigQuery cache TTL (app/core/cache.py)
   // — polling faster wouldn't surface anything newer, just re-run the same
   // cached query. Every classification here re-runs live over whatever call-log
   // rows exist at fetch time, so this keeps the page current without a reload.
-  const cc = useApi("/api/recruitment/call-centre-insights", { pollMs: 5 * 60 * 1000 });
+  const cc = useApi(`/api/recruitment/call-centre-insights${withDateRange({}, dateFrom, dateTo)}`, { pollMs: 5 * 60 * 1000 });
   const data = cc.data;
   const outcomes = data?.call_outcomes || [];
   const gk = data?.gatekeepers;

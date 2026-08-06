@@ -15,7 +15,7 @@ from app.core import database  # module import — required for the run_query te
 from app.core.database import _array, _scalar
 from app.core.pii import mask_name, youth_id
 from app.core.question_themes import classify_question
-from app.core.sql import build_where, cohort_clause, multiselect_array_sql, normalized_parish_sql
+from app.core.sql import build_where, cohort_clause, date_clauses, multiselect_array_sql, normalized_parish_sql
 from app.core.tables import (
     RECRUITMENT_FUNNEL,
     MOBILISER_PERF,
@@ -53,7 +53,7 @@ from app.core.tables import (
 router = APIRouter()
 
 
-def _auto_confirmed_count(district, gender, role, cohort=None):
+def _auto_confirmed_count(district, gender, role, cohort=None, date_from=None, date_to=None):
     """Youth auto-confirmed by policy as part of a cohort's short-cycle
     ("2.5-week") pilot — bypassing daily_acquisition_summary's call-center
     reach/confirm process entirely, so added on top of that table's confirmed
@@ -78,7 +78,7 @@ def _auto_confirmed_count(district, gender, role, cohort=None):
         if subcounties:
             where, params = build_where(
                 districts=district, gender=gender,
-                extra=[(f"bootcamp_cycle = @acf_cycle", [_scalar("acf_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @acf_cycle", [_scalar("acf_cycle", "STRING", cycle)])] + _date_extra("report_date", date_from, date_to, "acf"),
                 prefix="acf", district_col="youth_district", gender_col="youth_gender",
             )
             sql = f"""
@@ -91,7 +91,7 @@ def _auto_confirmed_count(district, gender, role, cohort=None):
         elif since_date:
             where, params = build_where(
                 districts=district, gender=gender,
-                extra=[(f"bootcamp_cycle = @acfd_cycle", [_scalar("acfd_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @acfd_cycle", [_scalar("acfd_cycle", "STRING", cycle)])] + _date_extra("report_date", date_from, date_to, "acfd"),
                 prefix="acfd", district_col="youth_district", gender_col="youth_gender",
             )
             sql = f"""
@@ -104,7 +104,7 @@ def _auto_confirmed_count(district, gender, role, cohort=None):
     return total
 
 
-def _auto_pathway_registered_count(district, gender, role, cohort=None):
+def _auto_pathway_registered_count(district, gender, role, cohort=None, date_from=None, date_to=None):
     """Total REGISTERED youth in the auto-confirm pathway's own scope (same
     subcounties/date-window as _auto_confirmed_count) — "reached" for the
     2.5-week cycle, since this pathway has no call-center reach step at all;
@@ -130,7 +130,7 @@ def _auto_pathway_registered_count(district, gender, role, cohort=None):
         if subcounties:
             where, params = build_where(
                 districts=district, gender=gender,
-                extra=[(f"bootcamp_cycle = @apr_cycle", [_scalar("apr_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @apr_cycle", [_scalar("apr_cycle", "STRING", cycle)])] + _date_extra("report_date", date_from, date_to, "apr"),
                 prefix="apr", district_col="youth_district", gender_col="youth_gender",
             )
             sql = f"""
@@ -142,7 +142,7 @@ def _auto_pathway_registered_count(district, gender, role, cohort=None):
         elif since_date:
             where, params = build_where(
                 districts=district, gender=gender,
-                extra=[(f"bootcamp_cycle = @aprd_cycle", [_scalar("aprd_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @aprd_cycle", [_scalar("aprd_cycle", "STRING", cycle)])] + _date_extra("report_date", date_from, date_to, "aprd"),
                 prefix="aprd", district_col="youth_district", gender_col="youth_gender",
             )
             sql = f"""
@@ -155,7 +155,7 @@ def _auto_pathway_registered_count(district, gender, role, cohort=None):
     return total
 
 
-def _auto_confirmed_by_parish(district, role, cohort=None):
+def _auto_confirmed_by_parish(district, role, cohort=None, date_from=None, date_to=None):
     """_auto_confirmed_count's exact per-cohort scoping (eligible+treatment
     filter — the real "confirmed" definition for this pathway), grouped by
     (district, parish) instead of summed to one total. Feeds the combined
@@ -175,7 +175,7 @@ def _auto_confirmed_by_parish(district, role, cohort=None):
         if subcounties:
             where, params = build_where(
                 districts=district,
-                extra=[(f"bootcamp_cycle = @acbp_cycle", [_scalar("acbp_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @acbp_cycle", [_scalar("acbp_cycle", "STRING", cycle)])] + _date_extra("report_date", date_from, date_to, "acbp"),
                 prefix="acbp", district_col="youth_district",
             )
             sql = f"""
@@ -197,7 +197,7 @@ def _auto_confirmed_by_parish(district, role, cohort=None):
             # all-registrants vs a treatment target of 12).
             where, params = build_where(
                 districts=district,
-                extra=[(f"bootcamp_cycle = @acbpd_cycle", [_scalar("acbpd_cycle", "STRING", cycle)])],
+                extra=[(f"bootcamp_cycle = @acbpd_cycle", [_scalar("acbpd_cycle", "STRING", cycle)])] + _date_extra("report_date", date_from, date_to, "acbpd"),
                 prefix="acbpd", district_col="youth_district",
             )
             sql = f"""
@@ -262,6 +262,18 @@ def _filter_extra(cohort, prefix):
     if coh_clause:
         extra.append((coh_clause, coh_params))
     return extra
+
+
+# Wraps date_clauses' (clauses_list, params_list) into a build_where `extra`
+# entry (a list with zero or one (clause, params) tuple) -- so every
+# Mobilisation date-range filter below is one line: `extra=[...] + _date_extra(...)`.
+# Only ever spliced onto queries against a table with a genuine per-record
+# date column (call_date/report_date/date_added/call_timestamp) -- never onto
+# a static target/planning snapshot (e.g. DAILY_ACQUISITION_TARGETS_DEDUPED,
+# PARISH_TARGETS_BC5), which has no date concept to filter by.
+def _date_extra(date_col_expr, date_from, date_to, prefix):
+    clauses, params = date_clauses(date_col_expr, date_from, date_to, prefix)
+    return [(" AND ".join(clauses), params)] if clauses else []
 
 
 @router.get("/api/recruitment/awareness")
@@ -872,6 +884,8 @@ def mobilisation(
     district: List[str] = Query(default=[]),
     gender:   Optional[str] = Query(None),
     cohort:   List[str] = Query(default=[]),
+    date_from: Optional[str] = Query(None),
+    date_to:   Optional[str] = Query(None),
 ):
     """Assigned -> Reached -> Confirmed with reach & mobilisation rates.
 
@@ -908,6 +922,13 @@ def mobilisation(
     `two_half_week` and the separate `combined` section, which explicitly
     layers both pathways together against a combined target — see `combined`
     below for that layer's own target derivation.
+
+    date_from/date_to filter every OBSERVED figure here (call_date on
+    DAILY_ACQUISITION_SUMMARY/ACQUISITION_CALL_LOG, report_date on
+    AWARENESS_KYC for the auto-confirmed pathway) — but never `target`,
+    `preload_assigned`, or `combined`'s target components, which come from
+    static planning tables (DAILY_ACQUISITION_TARGETS_DEDUPED,
+    PARISH_TARGETS_BC5) with no date to filter by.
     """
     cohorts = resolve_active_cohorts(cohort)
     tm_where, tm_params = target_measure_where("moa", cohorts)
@@ -928,16 +949,18 @@ def mobilisation(
     # connected" — confirmed live 2026-08-05, every row here is treatment-arm
     # (is_control = FALSE throughout for BC5), matching this endpoint's scope.
     called_where, called_params = build_where(
-        districts=district, gender=gender, extra=[active_cohort_clause("moc", requested=cohort)], prefix="moc",
-        district_col="agent_district", gender_col="youth_gender",
+        districts=district, gender=gender,
+        extra=[active_cohort_clause("moc", requested=cohort)] + _date_extra("call_date", date_from, date_to, "moc"),
+        prefix="moc", district_col="agent_district", gender_col="youth_gender",
     )
     youth_called = (database.run_query(
         f"SELECT COUNT(DISTINCT youth_id) AS n FROM {ACQUISITION_CALL_LOG} WHERE {called_where}",
         called_params, role=user.role) or [{}])[0].get("n") or 0
 
     actual_where, actual_params = build_where(
-        districts=district, gender=gender, extra=[active_cohort_clause("mor", requested=cohort)], prefix="mor",
-        district_col="agent_district", gender_col="youth_gender",
+        districts=district, gender=gender,
+        extra=[active_cohort_clause("mor", requested=cohort)] + _date_extra("call_date", date_from, date_to, "mor"),
+        prefix="mor", district_col="agent_district", gender_col="youth_gender",
     )
     actual = (database.run_query(
         f"SELECT SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed "
@@ -946,14 +969,14 @@ def mobilisation(
     four_week_reached   = actual.get("reached") or 0
     four_week_confirmed = actual.get("confirmed") or 0
 
-    auto_confirmed = _auto_confirmed_count(district, gender, user.role, cohort)
+    auto_confirmed = _auto_confirmed_count(district, gender, user.role, cohort, date_from, date_to)
     # This pathway never had a preload list, so there's no "assigned" figure
     # for it at all (None, not 0 — see _segment: falsy either way, but None
     # is honest about "doesn't exist" vs "exists and is zero"). "Reached" is
     # total registered youth in the pathway's own scope — confirmed by the
     # recruitment team, 2026-08-04: registration is this pathway's entry
     # point, there's no separate call-center reach step to report instead.
-    auto_pathway_registered = _auto_pathway_registered_count(district, gender, user.role, cohort)
+    auto_pathway_registered = _auto_pathway_registered_count(district, gender, user.role, cohort, date_from, date_to)
 
     def _segment(assigned, reached, confirmed):
         return {
@@ -972,14 +995,15 @@ def mobilisation(
     # regardless of the `gender` query param — filtering to gender=FEMALE and
     # then asking "what % is female" would trivially always read 100%.
     gsplit_where, gsplit_params = build_where(
-        districts=district, extra=[active_cohort_clause("mog", requested=cohort)], prefix="mog",
-        district_col="agent_district",
+        districts=district,
+        extra=[active_cohort_clause("mog", requested=cohort)] + _date_extra("call_date", date_from, date_to, "mog"),
+        prefix="mog", district_col="agent_district",
     )
     four_week_confirmed_female = (database.run_query(
         f"SELECT SUM(total_acquired_youth) AS n FROM {DAILY_ACQUISITION_SUMMARY} "
         f"WHERE {gsplit_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND UPPER(youth_gender) = 'FEMALE'",
         gsplit_params, role=user.role) or [{}])[0].get("n") or 0
-    two_half_week_confirmed_female = _auto_confirmed_count(district, "FEMALE", user.role, cohort)
+    two_half_week_confirmed_female = _auto_confirmed_count(district, "FEMALE", user.role, cohort, date_from, date_to)
 
     four_week["pct_female"] = round(100 * four_week_confirmed_female / four_week["confirmed"], 1) if four_week["confirmed"] else None
     two_half_week["pct_female"] = round(100 * two_half_week_confirmed_female / two_half_week["confirmed"], 1) if two_half_week["confirmed"] else None
@@ -1078,6 +1102,8 @@ def mobilisation_heatmap(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     cohort:   List[str] = Query(default=[]),
+    date_from: Optional[str] = Query(None),
+    date_to:   Optional[str] = Query(None),
 ):
     """Parish -> Venue rollups of DAILY_ACQUISITION_SUMMARY (+ the auto-confirm
     awareness pathway, for by_parish) for the Mobilisation overview page's
@@ -1144,10 +1170,17 @@ def mobilisation_heatmap(
     that's unreliable for the actual side, filtering this endpoint to one
     specific district may not behave correctly yet; only the no-filter
     (all-districts) default view has been fixed and verified.
+
+    date_from/date_to filter both actual sides (call_date on by_venue_sql/
+    parish_actual_sql; report_date via _auto_confirmed_by_parish) — never
+    targets_sql/parish_targets_sql/venue_targets_sql or
+    _mobilisation_target_by_parish_bc5, which read static planning tables
+    with no date column.
     """
     where, params = build_where(
-        districts=district, extra=[active_cohort_clause("mh", requested=cohort)], prefix="mh",
-        district_col="agent_district",
+        districts=district,
+        extra=[active_cohort_clause("mh", requested=cohort)] + _date_extra("call_date", date_from, date_to, "mh"),
+        prefix="mh", district_col="agent_district",
     )
     # Grouped by parish + venue, NOT agent_district — see the district_by_parish
     # note further down for why (agent_district is the calling agent's own
@@ -1267,7 +1300,7 @@ def mobilisation_heatmap(
     # grain, and its docstring for why call-center-only confirmed/reached can
     # be zero for a parish while this pathway's numbers are real. BC5-only:
     # PARISH_TARGETS_BC5 has no cohort column.
-    auto_by_parish = _auto_confirmed_by_parish(district, user.role, cohort)
+    auto_by_parish = _auto_confirmed_by_parish(district, user.role, cohort, date_from, date_to)
     treatment_target_by_parish = {}
     if "BOOTCAMP_5" in cohorts:
         pt_where, pt_params = build_where(
@@ -1428,12 +1461,21 @@ def mobilisation_forecast(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
     cohort:   List[str] = Query(default=[]),
+    date_from: Optional[str] = Query(None),
+    date_to:   Optional[str] = Query(None),
 ):
     """Daily reached/confirmed trend vs the mobilisation target, with a simple
-    pace-to-target projection — same shape as /api/recruitment/awareness-forecast."""
+    pace-to-target projection — same shape as /api/recruitment/awareness-forecast.
+
+    date_from/date_to narrow the daily series and confirmed_to_date (call_date
+    on DAILY_ACQUISITION_SUMMARY, report_date on AWARENESS_KYC for the
+    auto-confirmed pathway) — never `target`, a static planning figure with
+    no date to filter by.
+    """
     where, params = build_where(
-        districts=district, extra=[active_cohort_clause("mf", requested=cohort)], prefix="mf",
-        district_col="agent_district",
+        districts=district,
+        extra=[active_cohort_clause("mf", requested=cohort)] + _date_extra("call_date", date_from, date_to, "mf"),
+        prefix="mf", district_col="agent_district",
     )
     daily_sql = f"""
     SELECT call_date AS event_date, SUM(total_youth_reached) AS reached,
@@ -1453,7 +1495,7 @@ def mobilisation_forecast(
         f"WHERE {target_where} AND measure = '{DAILY_ACQ_MEASURE_TARGET}'",
         target_params, role=user.role) or [{}])[0].get("t") or 0
 
-    confirmed_to_date = sum(d.get("confirmed") or 0 for d in daily) + _auto_confirmed_count(district, None, user.role, cohort)
+    confirmed_to_date = sum(d.get("confirmed") or 0 for d in daily) + _auto_confirmed_count(district, None, user.role, cohort, date_from, date_to)
     n_days = len(daily)
     avg_daily_rate = (confirmed_to_date / n_days) if n_days else None
     remaining = max(target - confirmed_to_date, 0)
@@ -1469,7 +1511,11 @@ def mobilisation_forecast(
 
 
 @router.get("/api/recruitment/control-calls")
-def control_calls(user: User = Depends(current_user)):
+def control_calls(
+    user: User = Depends(current_user),
+    date_from: Optional[str] = Query(None),
+    date_to:   Optional[str] = Query(None),
+):
     """The randomised control/comparison arm — eligible youth tracked (status
     and reachability only, no mobilisation pitch) but not actively mobilised,
     so the effect of mobilisation can be measured against a real counterfactual.
@@ -1478,7 +1524,13 @@ def control_calls(user: User = Depends(current_user)):
     column, no district/gender filter param since the whole table already is
     the BC4 control arm). decision/interest fields are empty by design here —
     control calls only confirm status and reachability, no mobilisation pitch.
+
+    date_from/date_to filter on date_added (a real per-record TIMESTAMP,
+    confirmed live) — the only filter this endpoint accepts at all.
     """
+    date_where_clauses, date_params = date_clauses("DATE(date_added)", date_from, date_to, "cc")
+    date_where = (" AND " + " AND ".join(date_where_clauses)) if date_where_clauses else ""
+
     totals_sql = f"""
     SELECT COUNT(*) AS total,
            COUNTIF(is_control = TRUE) AS control,
@@ -1488,21 +1540,22 @@ def control_calls(user: User = Depends(current_user)):
            COUNTIF(UPPER(gender) = 'MALE') AS male,
            AVG(age) AS avg_age
     FROM {CONTROL_CALLS_BC4}
+    WHERE TRUE{date_where}
     """
-    totals = (database.run_query(totals_sql, role=user.role) or [{}])[0]
+    totals = (database.run_query(totals_sql, date_params, role=user.role) or [{}])[0]
 
     district_sql = f"""
     SELECT UPPER(district) AS district, COUNT(*) AS n
-    FROM {CONTROL_CALLS_BC4} WHERE district IS NOT NULL
+    FROM {CONTROL_CALLS_BC4} WHERE district IS NOT NULL{date_where}
     GROUP BY district ORDER BY n DESC
     """
-    by_district = database.run_query(district_sql, role=user.role)
+    by_district = database.run_query(district_sql, date_params, role=user.role)
 
     status_sql = f"""
     SELECT status, COUNT(*) AS n FROM {CONTROL_CALLS_BC4}
-    WHERE status IS NOT NULL GROUP BY status ORDER BY n DESC
+    WHERE status IS NOT NULL{date_where} GROUP BY status ORDER BY n DESC
     """
-    by_status = database.run_query(status_sql, role=user.role)
+    by_status = database.run_query(status_sql, date_params, role=user.role)
 
     total = totals.get("total") or 0
     reached = totals.get("reached") or 0
@@ -1701,7 +1754,11 @@ def _grouped_counts(values, normalize):
 
 
 @router.get("/api/recruitment/call-centre-insights")
-def call_centre_insights(user: User = Depends(current_user)):
+def call_centre_insights(
+    user: User = Depends(current_user),
+    date_from: Optional[str] = Query(None),
+    date_to:   Optional[str] = Query(None),
+):
     """Call Centre Insights for the Mobilisation tab — BOOTCAMP_5 only, since
     that's the cohort the reference design targets and the only one this page
     is asked to cover. Backed by the live BC5_ACQUISITION_CALLS (see tables.py
@@ -1754,7 +1811,14 @@ def call_centre_insights(user: User = Depends(current_user)):
     omitted rather than inventing sample data. Not tagged by district/gender
     in the source, so no filters for those; cohort is fixed rather than a
     filter since this page is BC5-only by design.
+
+    date_from/date_to filter on created_at (a real per-record TIMESTAMP,
+    confirmed live — call_timestamp exists too but is stored as STRING, not
+    a proper date/timestamp type, so created_at is the reliable column).
     """
+    date_where_clauses, date_params = date_clauses("DATE(created_at)", date_from, date_to, "cci")
+    date_where = (" AND " + " AND ".join(date_where_clauses)) if date_where_clauses else ""
+
     totals_sql = f"""
     SELECT
       COUNT(*) AS total_calls,
@@ -1763,17 +1827,17 @@ def call_centre_insights(user: User = Depends(current_user)):
       COUNTIF(attendance_status = 'No') AS interested_no,
       COUNTIF(attendance_status = 'Maybe') AS interested_maybe
     FROM {BC5_ACQUISITION_CALLS}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5'
+    WHERE bootcamp_cycle = 'BOOTCAMP_5'{date_where}
     """
-    totals = (database.run_query(totals_sql, role=user.role) or [{}])[0]
+    totals = (database.run_query(totals_sql, date_params, role=user.role) or [{}])[0]
 
     outcomes_sql = f"""
     SELECT call_status AS status, COUNT(*) AS count
     FROM {BC5_ACQUISITION_CALLS}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND call_status IS NOT NULL
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND call_status IS NOT NULL{date_where}
     GROUP BY status ORDER BY count DESC
     """
-    outcomes = database.run_query(outcomes_sql, role=user.role)
+    outcomes = database.run_query(outcomes_sql, date_params, role=user.role)
     outcomes_total = sum(r["count"] for r in outcomes)
     for r in outcomes:
         r["pct"] = round(100 * r["count"] / outcomes_total, 1) if outcomes_total else None
@@ -1781,10 +1845,10 @@ def call_centre_insights(user: User = Depends(current_user)):
     decision_sql = f"""
     SELECT decision_consultant AS who, COUNT(*) AS count
     FROM {BC5_ACQUISITION_CALLS}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND decision_consultant IS NOT NULL AND decision_consultant != ''
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND decision_consultant IS NOT NULL AND decision_consultant != ''{date_where}
     GROUP BY who ORDER BY count DESC
     """
-    decision_rows = database.run_query(decision_sql, role=user.role)
+    decision_rows = database.run_query(decision_sql, date_params, role=user.role)
     decision_total = sum(r["count"] for r in decision_rows)
     gatekeeper_n = sum(r["count"] for r in decision_rows if r["who"] != "None")
     gatekeeper_breakdown = [
@@ -1796,9 +1860,9 @@ def call_centre_insights(user: User = Depends(current_user)):
     gatekeeper_rel_sql = f"""
     SELECT gatekeeper_relationship AS who
     FROM {BC5_ACQUISITION_CALLS}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND gatekeeper_relationship IS NOT NULL AND gatekeeper_relationship != ''
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND gatekeeper_relationship IS NOT NULL AND gatekeeper_relationship != ''{date_where}
     """
-    gatekeeper_rel_rows = database.run_query(gatekeeper_rel_sql, role=user.role)
+    gatekeeper_rel_rows = database.run_query(gatekeeper_rel_sql, date_params, role=user.role)
     gatekeeper_rel_n, gatekeeper_rel_counts = _grouped_counts(
         (r["who"] for r in gatekeeper_rel_rows), _normalize_gatekeeper_relationship,
     )
@@ -1814,9 +1878,9 @@ def call_centre_insights(user: User = Depends(current_user)):
     SELECT attendance_status AS interest, non_attendance_reason AS reason
     FROM {BC5_ACQUISITION_CALLS}
     WHERE bootcamp_cycle = 'BOOTCAMP_5' AND attendance_status IN ('No', 'Maybe')
-      AND non_attendance_reason IS NOT NULL AND non_attendance_reason != ''
+      AND non_attendance_reason IS NOT NULL AND non_attendance_reason != ''{date_where}
     """
-    why_rows = database.run_query(why_sql, role=user.role)
+    why_rows = database.run_query(why_sql, date_params, role=user.role)
 
     def _decline_breakdown(interest_value):
         cats = {}
@@ -1839,9 +1903,9 @@ def call_centre_insights(user: User = Depends(current_user)):
     support_notes_sql = f"""
     SELECT attendance_support_notes AS note
     FROM {BC5_ACQUISITION_CALLS}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND attendance_support_notes IS NOT NULL AND TRIM(attendance_support_notes) != ''
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND attendance_support_notes IS NOT NULL AND TRIM(attendance_support_notes) != ''{date_where}
     """
-    support_notes_rows = database.run_query(support_notes_sql, role=user.role)
+    support_notes_rows = database.run_query(support_notes_sql, date_params, role=user.role)
     support_n, support_counts = _grouped_counts(
         (r["note"] for r in support_notes_rows), _normalize_support_note,
     )
@@ -1856,9 +1920,9 @@ def call_centre_insights(user: User = Depends(current_user)):
     feedback_sql = f"""
     SELECT questions AS text
     FROM {BC5_ACQUISITION_CALLS}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND questions IS NOT NULL AND TRIM(questions) != ''
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND questions IS NOT NULL AND TRIM(questions) != ''{date_where}
     """
-    feedback_texts = [r["text"] for r in database.run_query(feedback_sql, role=user.role)]
+    feedback_texts = [r["text"] for r in database.run_query(feedback_sql, date_params, role=user.role)]
     feedback_n = len(feedback_texts)
 
     theme_counts, theme_quotes = {}, {}
