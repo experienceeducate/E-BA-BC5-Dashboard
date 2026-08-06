@@ -842,16 +842,6 @@ function renderPctFemaleCell(v) {
   return <span style={{ color: c || C.ink, fontWeight: 700 }}>{fmtPct(v)}</span>;
 }
 
-// Headline funnel visual scope matches the reference design: Registered
-// through Acquired (Activation/Retention get their own dedicated treatment
-// elsewhere), with "Assigned" relabelled "Randomised" (RCT terminology) —
-// display-only, the underlying data key is unchanged.
-function headlineFunnelStages(stages) {
-  return stages
-    .filter((s) => s.stage !== "Activated" && s.stage !== "Retained")
-    .map((s) => (s.stage === "Assigned" ? { ...s, stage: "Randomised", apiStage: "Assigned" } : { ...s, apiStage: s.stage }));
-}
-
 function buildExecInsights(rates, stages, genderStages) {
   const insights = [];
   const drops = stages.slice(1)
@@ -968,19 +958,8 @@ function ExecutiveSummaryPage({ filters }) {
     });
   }
 
-  function openStageDrill(stage) {
-    drill.open({
-      title: `${stage.stage} — by district`,
-      tone: "real", tagLabel: "REAL",
-      rootKey: "district", rootLabel: "District",
-      columns: [{ key: "value", label: "Count", align: "right", render: fmtNum }],
-      rootRows: () => fetchPerDistrict("/api/overview/funnel", filters, allDistricts,
-        (json) => (json?.stages || []).find((s) => s.stage === stage.apiStage)?.count ?? null),
-    });
-  }
   const stages = funnel.data?.stages || [];
   const genderStages = gender.data?.stages || [];
-  const headlineStages = headlineFunnelStages(stages);
 
   const dropoffs = stages.slice(1)
     .map((s, i) => ({ from_stage: stages[i].stage, to_stage: s.stage, lost: s.lost }))
@@ -1034,14 +1013,7 @@ function ExecutiveSummaryPage({ filters }) {
         </State>
       </Card>
 
-      <ExecBand num={4} title="Overall recruitment funnel" />
-      <Card title="Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired" subtitle="Each stage shows count and % of the previous stage. The largest single drop-off is outlined. Click a stage to drill by district." chip="REAL">
-        <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
-          <FunnelViz stages={headlineStages} onStageClick={openStageDrill} />
-        </State>
-      </Card>
-
-      <ExecBand num="4a" title="Recruitment funnel — by pathway" />
+      <ExecBand num={4} title="Recruitment funnel — by pathway" />
       <Card
         title="Waiting List (4 Wks) vs New Recruits (have randomisation)"
         subtitle="Two genuinely different pathways — Waiting List is pure call-center/acquisition data (the BC3 Control List on the Mobilisation tab); New Recruits comes from the awareness table, randomised into Treatment vs Control once eligible. Both converge into one shared funnel below once confirmed."
@@ -1083,6 +1055,9 @@ function ExecutiveSummaryPage({ filters }) {
       <Card title="Arrival → Acquisition → Activation → Retention" subtitle="Both pathways converge here — confirmed youth from Waiting List and New Recruits attend the same bootcamp from this point on." chip="REAL">
         <State loading={funnelSplit.loading} error={funnelSplit.error} empty={!funnelSplit.loading && (funnelSplit.data?.merged || []).length === 0}>
           <FunnelViz stages={funnelSplit.data?.merged || []} />
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+            Shown as one shared journey — the live site-level data (venue x gender x cycle) doesn't carry a Waiting List vs New Recruits marker past this point, so a genuine per-pathway split isn't available yet.
+          </p>
         </State>
       </Card>
 
