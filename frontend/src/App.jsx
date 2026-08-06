@@ -5196,7 +5196,7 @@ function MilestonesTab({ filters }) {
   // per venue-week) rather than a scroll-all-rows container, so pivot first
   // then page the pivoted, one-row-per-venue result.
   const pivotedVenueWeek = pivotByWeek(matchedVenueWeek, "venue", ["district"]);
-  const venueWeekPageSize = 10;
+  const venueWeekPageSize = 5;
   const venueWeekMaxPage = Math.max(0, Math.ceil(pivotedVenueWeek.length / venueWeekPageSize) - 1);
   const venueWeekPageClamped = Math.min(venueWeekPage, venueWeekMaxPage);
   const pagedVenueWeekRows = pivotedVenueWeek.slice(venueWeekPageClamped * venueWeekPageSize, venueWeekPageClamped * venueWeekPageSize + venueWeekPageSize);
@@ -5468,33 +5468,6 @@ function MilestonesTab({ filters }) {
         </State>
       </Card>
 
-      <Card title="Quality trajectory" subtitle="Exceeding vs below expectations, week on week." chip="REAL">
-        <State loading={loading} error={error} empty={!loading && weekly.length === 0}>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={weekly} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-              <XAxis dataKey="week_number" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip /><Legend />
-              <Line type="monotone" dataKey="exceed_pct" name="Exceeds %" stroke={C.green} strokeWidth={2} />
-              <Line type="monotone" dataKey="below_pct" name="Below %" stroke={C.coral} strokeWidth={2} />
-            </LineChart>
-          </ResponsiveContainer>
-          <div style={{ overflowX: "auto", marginTop: 14 }}>
-            <DataTable
-              columns={[
-                { key: "week_number", label: "Week", render: (v) => `Week ${v}` },
-                { key: "exceed", label: "# Exceeds", align: "right", render: fmtNum },
-                { key: "exceed_pct", label: "% Exceeds", align: "right", render: (v) => <span style={{ color: milestoneColor(v), fontWeight: 700 }}>{fmtPct(v)}</span> },
-                { key: "below", label: "# Below", align: "right", render: fmtNum },
-                { key: "below_pct", label: "% Below", align: "right", render: fmtPct },
-              ]}
-              rows={weekly}
-            />
-          </div>
-        </State>
-      </Card>
-
       {riskVenues.length > 0 && (
         <div style={{ marginBottom: 14 }}>
           <Insight tone="warn">
@@ -5504,7 +5477,7 @@ function MilestonesTab({ filters }) {
       )}
 
       <Card
-        title="Venue × Week"
+        title="Venue Performance — Weekly Milestone Completion and Quality"
         subtitle={`Activated and the below/meets/exceeds split, every week reported, side by side (each week's own denominator, not cumulative). ${venueWeekPageSize} venues per page. Click a venue to see how it compares with the others, then drill into its own week-over-week change.`}
         chip="REAL"
       >
