@@ -573,16 +573,29 @@ def overview_gender(
     return {"stages": out}
 
 
-def _gender_row(stage, female, male):
+def _gender_row(stage, female, male, prev=None):
+    """`prev` is the (female, male) tuple of the stage immediately before this
+    one in its own pathway — omitted for a pathway's first stage, which then
+    reports female_pct_of_previous/male_pct_of_previous as None (the FunnelViz
+    convention for "start", not a 0% drop)."""
     female = female or 0
     male = male or 0
     total = female + male
+    prev_female, prev_male = prev or (None, None)
+
+    def pct_of_previous(current, previous):
+        return round(100 * current / previous, 1) if previous else None
+
     return {
         "stage": stage,
         "female": female,
         "male": male,
+        # Composition (% of this stage that is female) — kept for the
+        # district drill-down only, not shown in the by-pathway table itself
+        # (that table shows stage-to-stage retention per gender instead).
         "pct_female": round(100 * female / total, 1) if total else None,
-        "target_female": 60.0,
+        "female_pct_of_previous": pct_of_previous(female, prev_female),
+        "male_pct_of_previous": pct_of_previous(male, prev_male),
     }
 
 
@@ -599,6 +612,14 @@ def overview_gender_split(
     entirely rather than shown as a misleading 0/0: Assigned (preload_youth
     has no gender column in the live tables) and Verified (total_verified_youth
     only lives on genderless 'site_targets' rows).
+
+    Each row's female_pct_of_previous/male_pct_of_previous is that gender's
+    stage-to-stage retention within its OWN pathway (e.g. Confirmed female
+    count ÷ Reached female count) — confirmed with the recruitment team,
+    2026-08-06, as the actual point of interest here over the raw %Female-
+    of-target composition /api/overview/gender shows. None on a pathway's
+    first stage (nothing to retain from), same "start" convention as
+    FunnelViz's pct_of_previous.
 
     BC3 Control List's Confirmed is the call-center actual alone (unblended
     with the auto-confirm pilot), matching funnel-split's waiting_list.
@@ -655,22 +676,38 @@ def overview_gender_split(
     def sf(field, g):
         return (sf_by_gender.get(g) or {}).get(field) or 0
 
-    bc3_control_list = [
-        _gender_row("Reached", mo("reached", "FEMALE"), mo("reached", "MALE")),
-        _gender_row("Confirmed", mo("confirmed", "FEMALE"), mo("confirmed", "MALE")),
-    ]
-    new_recruits = [
-        _gender_row("Registered", aw.get("registered_f"), aw.get("registered_m")),
-        _gender_row("Interested", aw.get("interested_f"), aw.get("interested_m")),
-        _gender_row("Eligible", aw.get("eligible_f"), aw.get("eligible_m")),
-    ]
-    new_recruits_treatment = _gender_row("Treatment (confirmed)", aw.get("treatment_f"), aw.get("treatment_m"))
-    new_recruits_control = _gender_row("Control", aw.get("control_f"), aw.get("control_m"))
-    merged = [
-        _gender_row("Acquired", sf("acquired", "FEMALE"), sf("acquired", "MALE")),
-        _gender_row("Activated", sf("activated", "FEMALE"), sf("activated", "MALE")),
-        _gender_row("Retained", sf("retained", "FEMALE"), sf("retained", "MALE")),
-    ]
+    bc3_reached = _gender_row("Reached", mo("reached", "FEMALE"), mo("reached", "MALE"))
+    bc3_confirmed = _gender_row(
+        "Confirmed", mo("confirmed", "FEMALE"), mo("confirmed", "MALE"),
+        prev=(bc3_reached["female"], bc3_reached["male"]),
+    )
+    bc3_control_list = [bc3_reached, bc3_confirmed]
+
+    nr_registered = _gender_row("Registered", aw.get("registered_f"), aw.get("registered_m"))
+    nr_interested = _gender_row(
+        "Interested", aw.get("interested_f"), aw.get("interested_m"),
+        prev=(nr_registered["female"], nr_registered["male"]),
+    )
+    nr_eligible = _gender_row(
+        "Eligible", aw.get("eligible_f"), aw.get("eligible_m"),
+        prev=(nr_interested["female"], nr_interested["male"]),
+    )
+    new_recruits = [nr_registered, nr_interested, nr_eligible]
+
+    eligible_prev = (nr_eligible["female"], nr_eligible["male"])
+    new_recruits_treatment = _gender_row("Treatment (confirmed)", aw.get("treatment_f"), aw.get("treatment_m"), prev=eligible_prev)
+    new_recruits_control = _gender_row("Control", aw.get("control_f"), aw.get("control_m"), prev=eligible_prev)
+
+    m_acquired = _gender_row("Acquired", sf("acquired", "FEMALE"), sf("acquired", "MALE"))
+    m_activated = _gender_row(
+        "Activated", sf("activated", "FEMALE"), sf("activated", "MALE"),
+        prev=(m_acquired["female"], m_acquired["male"]),
+    )
+    m_retained = _gender_row(
+        "Retained", sf("retained", "FEMALE"), sf("retained", "MALE"),
+        prev=(m_activated["female"], m_activated["male"]),
+    )
+    merged = [m_acquired, m_activated, m_retained]
 
     return {
         "bc3_control_list": bc3_control_list,

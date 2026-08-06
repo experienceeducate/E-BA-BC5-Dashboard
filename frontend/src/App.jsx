@@ -995,15 +995,18 @@ function ExecutiveSummaryPage({ filters }) {
 
   const stages = funnel.data?.stages || [];
   const genderStages = gender.data?.stages || [];
+  function renderGenderRetentionCell(v, r) {
+    const gap = r.female_pct_of_previous != null && r.male_pct_of_previous != null
+      ? Math.abs(r.female_pct_of_previous - r.male_pct_of_previous) : null;
+    const flagged = gap != null && gap > 5;
+    return <span style={{ color: flagged ? C.coral : "inherit", fontWeight: flagged ? 700 : 400 }}>{v == null ? "start" : fmtPct(v)}</span>;
+  }
   const genderTableColumns = [
     { key: "stage", label: "Stage" },
     { key: "female", label: "Female", align: "right", render: (v) => fmtNum(v) },
     { key: "male", label: "Male", align: "right", render: (v) => fmtNum(v) },
-    {
-      key: "pct_female", label: "% Female", align: "right",
-      render: (v) => <span style={{ color: v != null && Math.abs(v - 60) > 5 ? C.coral : "inherit", fontWeight: v != null && Math.abs(v - 60) > 5 ? 700 : 400 }}>{fmtPct(v)}</span>,
-    },
-    { key: "target_female", label: "Target", align: "right", render: (v) => fmtPct(v) },
+    { key: "female_pct_of_previous", label: "Female Retention", align: "right", render: renderGenderRetentionCell },
+    { key: "male_pct_of_previous", label: "Male Retention", align: "right", render: renderGenderRetentionCell },
   ];
 
   const dropoffs = stages.slice(1)
@@ -1109,7 +1112,7 @@ function ExecutiveSummaryPage({ filters }) {
       <ExecBand num={5} title="Gender performance summary" />
       <Card
         title="Male vs female — by pathway"
-        subtitle="Share of each stage that is female against the 60% target — gaps over 5pp are flagged. Click a stage to drill by district."
+        subtitle="Stage-to-stage retention within each gender — e.g. Confirmed female count ÷ Reached female count. Gaps over 5pp between Female and Male retention are flagged. Click a stage to drill by district."
         chip="REAL"
       >
         <State loading={genderSplit.loading} error={genderSplit.error} empty={!genderSplit.loading && (genderSplit.data?.bc3_control_list || []).length === 0 && (genderSplit.data?.new_recruits || []).length === 0}>

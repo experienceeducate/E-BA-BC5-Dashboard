@@ -142,6 +142,15 @@ def test_gender_split_new_recruits_sourced_from_awareness_kyc(as_staff, mock_run
     assert body["new_recruits_control"]["female"] == 30
     assert body["new_recruits_control"]["male"] == 15
 
+    # Retention is per-gender, stage-to-stage, within this one pathway.
+    assert by_stage["Registered"]["female_pct_of_previous"] is None  # first stage — "start"
+    assert by_stage["Interested"]["female_pct_of_previous"] == round(100 * 110 / 120, 1)
+    assert by_stage["Interested"]["male_pct_of_previous"] == round(100 * 75 / 80, 1)
+    assert by_stage["Eligible"]["female_pct_of_previous"] == round(100 * 100 / 110, 1)
+    # Treatment/Control retention is measured against Eligible, not each other.
+    assert body["new_recruits_treatment"]["female_pct_of_previous"] == round(100 * 40 / 100, 1)
+    assert body["new_recruits_control"]["male_pct_of_previous"] == round(100 * 15 / 60, 1)
+
 
 def test_gender_split_omits_stages_with_no_gender_data(as_staff, mock_run_query):
     mock_run_query.set_rows([])
