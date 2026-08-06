@@ -750,16 +750,23 @@ function DataTable({ columns, rows, onRowClick }) {
 // `groups` is [{ label, color, columns }] — each group's columns get a
 // left border + the group's tinted spanning header so the visual grouping
 // carries down into the body, not just the header.
-function GroupedDataTable({ leading, groups, trailing, rows, onRowClick }) {
+// stickyLeading pins the leading column(s) to the left edge while the group
+// columns scroll underneath -- e.g. Venue Performance's venue+district cell
+// stays visible while scrolling through Week 1..N. Assumes a single leading
+// column (this table's only current use of it combines Venue+District into
+// one cell for exactly that reason); a solid background is required so the
+// scrolling group columns don't show through underneath it.
+function GroupedDataTable({ leading, groups, trailing, rows, onRowClick, stickyLeading }) {
   const grouped = groups.flatMap((g) => g.columns.map((c, i) => ({ ...c, groupColor: g.color, groupStart: i === 0 })));
   const thStyle = { padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11 };
   const tdStyle = { padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text };
+  const stickyCellStyle = stickyLeading ? { position: "sticky", left: 0, background: C.white, borderRight: `1px solid ${C.line}` } : {};
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr>
-            {(leading || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom" }}>{c.label}</th>)}
+            {(leading || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom", ...stickyCellStyle, zIndex: stickyLeading ? 3 : undefined }}>{c.label}</th>)}
             {groups.map((g) => (
               <th
                 key={g.label}
@@ -782,7 +789,7 @@ function GroupedDataTable({ leading, groups, trailing, rows, onRowClick }) {
           {rows.map((r, i) => (
             <tr key={i} onClick={onRowClick ? () => onRowClick(r) : undefined} style={onRowClick ? { cursor: "pointer" } : undefined}>
               {(leading || []).map((c) => (
-                <td key={c.key} style={{ ...tdStyle, textAlign: c.align || "left" }}>{c.render ? c.render(r[c.key], r) : (r[c.key] ?? "—")}</td>
+                <td key={c.key} style={{ ...tdStyle, textAlign: c.align || "left", ...stickyCellStyle, zIndex: stickyLeading ? 1 : undefined }}>{c.render ? c.render(r[c.key], r) : (r[c.key] ?? "—")}</td>
               ))}
               {grouped.map((c) => (
                 <td key={c.key} style={{ ...tdStyle, textAlign: c.align || "left", borderLeft: c.groupStart ? `2px solid ${C.line}` : undefined, background: `${c.groupColor}0c` }}>
@@ -5483,10 +5490,20 @@ function MilestonesTab({ filters }) {
       >
         <State loading={loading} error={error} empty={!loading && matchedVenueWeek.length === 0}>
           <GroupedDataTable
-            leading={[{ key: "venue", label: "Venue" }, { key: "district", label: "District" }]}
+            leading={[{
+              key: "venue",
+              label: "Venue",
+              render: (v, r) => (
+                <div>
+                  <div>{v}</div>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 400 }}>{r.district}</div>
+                </div>
+              ),
+            }]}
             groups={weekColumnGroupsCompact(weekNumbersIn(matchedVenueWeek))}
             rows={pagedVenueWeekRows}
             onRowClick={() => openVenueComparisonDrill()}
+            stickyLeading
           />
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
             <span>{pivotedVenueWeek.length === 0 ? "0" : venueWeekPageClamped * venueWeekPageSize + 1}–{Math.min(pivotedVenueWeek.length, venueWeekPageClamped * venueWeekPageSize + venueWeekPageSize)} of {pivotedVenueWeek.length} venues</span>
