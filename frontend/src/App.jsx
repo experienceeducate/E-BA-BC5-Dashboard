@@ -730,13 +730,17 @@ function OkrTracker() {
 // DrillTable's row-click convention) — used e.g. by the mobiliser table to
 // open a per-mobiliser district->parish drill, and by the Forecast page's
 // district table to open its parish drill.
-function DataTable({ columns, rows, onRowClick }) {
+// stickyHeader/maxBodyHeight -- same meaning as GroupedDataTable's (single
+// header row here, so no row-offset math needed: just position:sticky;top:0
+// with a solid background so scrolling body rows don't show through).
+function DataTable({ columns, rows, onRowClick, stickyHeader, maxBodyHeight }) {
+  const stickyTop = stickyHeader ? { position: "sticky", top: 0, zIndex: 2, background: C.white } : {};
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div style={maxBodyHeight ? { overflow: "auto", maxHeight: maxBodyHeight } : { overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr>{columns.map((c) => (
-            <th key={c.key} onClick={c.onHeaderClick} style={{ textAlign: c.align || "left", padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11, cursor: c.onHeaderClick ? "pointer" : undefined }}>
+            <th key={c.key} onClick={c.onHeaderClick} style={{ textAlign: c.align || "left", padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11, cursor: c.onHeaderClick ? "pointer" : undefined, ...stickyTop }}>
               {c.label}{c.onHeaderClick && " ›"}
             </th>
           ))}</tr>
@@ -774,32 +778,57 @@ function DataTable({ columns, rows, onRowClick }) {
 // and adds a vertical scrollbar for the rest, instead of rendering every row
 // -- e.g. Parish performance's ~40+ parishes. Independent of stickyLeading;
 // either can be used alone or together.
-function GroupedDataTable({ leading, groups, trailing, rows, onRowClick, stickyLeading, maxBodyHeight }) {
+//
+// stickyHeader pins BOTH header rows to the top of the scroll container while
+// the body scrolls underneath -- only visibly does anything when the table
+// actually scrolls internally (maxBodyHeight set, or the table is tall enough
+// on its own). The group-header row gets a fixed height (GROUP_HEADER_ROW_H)
+// so the sub-header row's own sticky `top` offset is a reliable constant
+// rather than a measured value; a solid background is required on every
+// sticky header cell so body rows scrolling underneath don't show through.
+const GROUP_HEADER_ROW_H = 33;
+function GroupedDataTable({ leading, groups, trailing, rows, onRowClick, stickyLeading, maxBodyHeight, stickyHeader }) {
   const grouped = groups.flatMap((g) => g.columns.map((c, i) => ({ ...c, groupColor: g.color, groupStart: i === 0 })));
   const thStyle = { padding: "8px 10px", borderBottom: `2px solid ${C.line}`, color: C.muted, fontWeight: 600, textTransform: "uppercase", fontSize: 11 };
   const tdStyle = { padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.text };
   const stickyCellStyle = stickyLeading ? { position: "sticky", left: 0, background: C.white, borderRight: `1px solid ${C.line}` } : {};
+  const stickyTop1 = stickyHeader ? { position: "sticky", top: 0, zIndex: 4, background: C.white } : {};
+  const stickyTop2 = stickyHeader ? { position: "sticky", top: GROUP_HEADER_ROW_H, zIndex: 4, background: C.white } : {};
+  const cornerStyle = { ...stickyCellStyle, ...stickyTop1, zIndex: stickyLeading || stickyHeader ? 5 : undefined };
   return (
     <div style={maxBodyHeight ? { overflow: "auto", maxHeight: maxBodyHeight } : { overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr>
-            {(leading || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom", ...stickyCellStyle, zIndex: stickyLeading ? 3 : undefined }}>{c.label}</th>)}
+            {(leading || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom", ...cornerStyle }}>{c.label}</th>)}
             {groups.map((g) => (
               <th
                 key={g.label}
                 colSpan={g.columns.length}
                 onClick={g.onHeaderClick}
-                style={{ padding: "6px 10px", borderBottom: `1px solid ${C.line}`, borderLeft: `2px solid ${C.line}`, background: `${g.color}18`, color: g.color, fontWeight: 700, textTransform: "uppercase", fontSize: 10.5, textAlign: "center", cursor: g.onHeaderClick ? "pointer" : undefined }}
+                style={{
+                  padding: "6px 10px", height: GROUP_HEADER_ROW_H, boxSizing: "border-box",
+                  borderBottom: `1px solid ${C.line}`, borderLeft: `2px solid ${C.line}`,
+                  background: stickyHeader ? `linear-gradient(${g.color}18, ${g.color}18), ${C.white}` : `${g.color}18`,
+                  color: g.color, fontWeight: 700, textTransform: "uppercase", fontSize: 10.5, textAlign: "center",
+                  cursor: g.onHeaderClick ? "pointer" : undefined, ...stickyTop1,
+                  // A table `height` is a floor, not a cap -- a wrapped 2-line
+                  // label would render taller than GROUP_HEADER_ROW_H, throwing
+                  // off the sub-header row's sticky offset below it (confirmed
+                  // live: "Auto-confirmed (awareness, parish-level)" wraps and
+                  // visibly overlaps). Forcing nowrap when sticky keeps this
+                  // row's real height equal to the fixed constant it promises.
+                  whiteSpace: stickyHeader ? "nowrap" : undefined,
+                }}
               >
                 {g.label}{g.onHeaderClick ? " ›" : ""}
               </th>
             ))}
-            {(trailing || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom" }}>{c.label}</th>)}
+            {(trailing || []).map((c) => <th key={c.key} rowSpan={2} style={{ ...thStyle, textAlign: c.align || "left", verticalAlign: "bottom", ...stickyTop1, zIndex: stickyHeader ? 4 : undefined }}>{c.label}</th>)}
           </tr>
           <tr>
             {grouped.map((c) => (
-              <th key={c.key} style={{ ...thStyle, textAlign: c.align || "left", borderLeft: c.groupStart ? `2px solid ${C.line}` : undefined }}>{c.label}</th>
+              <th key={c.key} style={{ ...thStyle, textAlign: c.align || "left", borderLeft: c.groupStart ? `2px solid ${C.line}` : undefined, ...stickyTop2 }}>{c.label}</th>
             ))}
           </tr>
         </thead>
@@ -3061,6 +3090,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
               { label: "BC3 Control List", ...data?.four_week },
               { label: "Newly registered", ...data?.two_half_week },
             ]}
+            stickyHeader
           />
         </Card>
 
@@ -3095,6 +3125,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
                 { label: "Treatment target (of the acquisition target, by RCT split)", value: data.combined.treatment_target },
                 { label: "Control target (of the acquisition target, by RCT split)", value: data.combined.control_target },
               ]}
+              stickyHeader
             />
           </Card>
         )}
@@ -3152,6 +3183,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
             groups={sourceGroups}
             trailing={sourceTrailingColumns}
             rows={districtTotalRows}
+            stickyHeader
           />
         </Card>
 
@@ -3200,6 +3232,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
               trailing={sourceTrailingColumns}
               rows={filteredParishRows}
               stickyLeading
+              stickyHeader
               maxBodyHeight={300}
             />
           ) : (
@@ -3208,6 +3241,8 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
               groups={venueGroups}
               trailing={venueTrailingColumns}
               rows={filteredVenueRows}
+              stickyHeader
+              maxBodyHeight={300}
             />
           )}
         </Card>
@@ -3448,19 +3483,19 @@ function MobForecastsPage({ filters, dateFrom, dateTo }) {
       </Card>
       <Card title="Site early-warning flags" subtitle="Venues confirming below 85% of reached youth, worst first — see Mobilisation overview → Performance categorisation for the full breakdown. Shows 10 at a time — scroll for the rest." chip="REAL">
         <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && flaggedVenues.length === 0}>
-          <div style={{ maxHeight: 380, overflowY: "auto" }}>
-            <DataTable
-              columns={[
-                { key: "venue", label: "Site" },
-                { key: "district", label: "District" },
-                { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
-                { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
-                { key: "rate", label: "Confirmed ÷ reached", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
-                { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
-              ]}
-              rows={flaggedVenues}
-            />
-          </div>
+          <DataTable
+            columns={[
+              { key: "venue", label: "Site" },
+              { key: "district", label: "District" },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "rate", label: "Confirmed ÷ reached", align: "right", render: (v, r) => <span style={{ color: RATE_CATEGORY_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span> },
+              { key: "category", label: "Status", render: (v) => <span style={{ color: RATE_CATEGORY_COLOR[v], fontWeight: 700 }}>{v}</span> },
+            ]}
+            rows={flaggedVenues}
+            maxBodyHeight={380}
+            stickyHeader
+          />
         </State>
       </Card>
       {flaggedVenues.length > 0 && (
@@ -3536,6 +3571,7 @@ function MobControlCallsPage({ dateFrom, dateTo }) {
                 { key: "n", label: "# Youth", align: "right", render: (v) => fmtNum(v) },
               ]}
               rows={data?.by_district || []}
+              stickyHeader
             />
           </Card>
         </div>
@@ -3570,6 +3606,7 @@ function ThemedQuotesCard({ title, subtitle, data, color, loading, error, chartH
           <DataTable
             columns={[{ key: "theme", label: "Theme" }, { key: "count", label: "#", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "%", align: "right", render: (v) => fmtPct(v) }]}
             rows={themes}
+            stickyHeader
           />
         </div>
         <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 14 }}>
@@ -3645,6 +3682,7 @@ function MobCallCentreInsightsPage({ dateFrom, dateTo }) {
             <DataTable
               columns={[{ key: "status", label: "Status" }, { key: "count", label: "# Calls", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "% of calls", align: "right", render: (v) => fmtPct(v) }]}
               rows={outcomes}
+              stickyHeader
             />
           </div>
         </State>
@@ -3667,7 +3705,7 @@ function MobCallCentreInsightsPage({ dateFrom, dateTo }) {
                 <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
-            <DataTable columns={[{ key: "who", label: "Who" }, { key: "count", label: "# Calls", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "% of captured", align: "right", render: (v) => fmtPct(v) }]} rows={gkBreakdown} />
+            <DataTable columns={[{ key: "who", label: "Who" }, { key: "count", label: "# Calls", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "% of captured", align: "right", render: (v) => fmtPct(v) }]} rows={gkBreakdown} stickyHeader />
           </div>
         </State>
       </Card>
@@ -3687,7 +3725,7 @@ function MobCallCentreInsightsPage({ dateFrom, dateTo }) {
                 <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
-            <DataTable columns={[{ key: "who", label: "Relationship" }, { key: "count", label: "# Calls", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "% of captured", align: "right", render: (v) => fmtPct(v) }]} rows={gkRelationship?.breakdown || []} />
+            <DataTable columns={[{ key: "who", label: "Relationship" }, { key: "count", label: "# Calls", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "% of captured", align: "right", render: (v) => fmtPct(v) }]} rows={gkRelationship?.breakdown || []} stickyHeader />
           </div>
         </State>
       </Card>
@@ -3709,12 +3747,12 @@ function MobCallCentreInsightsPage({ dateFrom, dateTo }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <Card title={`Why "No" (n=${declineNo?.n || 0})`} subtitle="Reasons given by youth who declined, categorised" chip="SAMPLE" chipTone="sim">
           <State loading={cc.loading} error={cc.error} empty={!cc.loading && !(declineNo?.categories?.length)}>
-            <DataTable columns={[{ key: "category", label: "Reason" }, ...pctColumns]} rows={declineNo?.categories || []} />
+            <DataTable columns={[{ key: "category", label: "Reason" }, ...pctColumns]} rows={declineNo?.categories || []} stickyHeader />
           </State>
         </Card>
         <Card title={`Why "Maybe" (n=${declineMaybe?.n || 0})`} subtitle="Reasons given by youth who are unsure, categorised" chip="SAMPLE" chipTone="sim">
           <State loading={cc.loading} error={cc.error} empty={!cc.loading && !(declineMaybe?.categories?.length)}>
-            <DataTable columns={[{ key: "category", label: "Reason" }, ...pctColumns]} rows={declineMaybe?.categories || []} />
+            <DataTable columns={[{ key: "category", label: "Reason" }, ...pctColumns]} rows={declineMaybe?.categories || []} stickyHeader />
           </State>
         </Card>
       </div>
@@ -3736,7 +3774,7 @@ function MobCallCentreInsightsPage({ dateFrom, dateTo }) {
                 <Bar dataKey="count" fill={C.coral} radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
-            <DataTable columns={[{ key: "category", label: "Support needed" }, ...pctColumns]} rows={attendanceSupportNeeded?.categories || []} />
+            <DataTable columns={[{ key: "category", label: "Support needed" }, ...pctColumns]} rows={attendanceSupportNeeded?.categories || []} stickyHeader />
           </div>
         </State>
       </Card>
@@ -3791,6 +3829,7 @@ function MobilisersTab({ filters }) {
             { key: "confirmed", label: "Confirmed", align: "right" },
           ]}
           rows={rows}
+          stickyHeader
         />
       </State>
     </Card>
@@ -4609,27 +4648,27 @@ function TrainerQualityPage({ filters, phase }) {
         chip="PII" chipTone="pii"
       >
         <State loading={loading} error={error} empty={!loading && rows.length === 0}>
-          <div style={{ maxHeight: 380, overflowY: "auto" }}>
-            <DataTable
-              columns={[
-                {
-                  key: "trainer_name", label: "Trainer",
-                  render: (v) => <span><span style={{ color: C.teal, marginRight: 4 }}>›</span>{v}</span>,
-                },
-                { key: "venue", label: "Venue" },
-                { key: "district", label: "District" },
-                // Redundant when a single cohort is selected — every row would
-                // carry the same value — so it only earns a column on All cohorts.
-                ...(phase ? [] : [{ key: "cohort", label: "Cohort" }]),
-                { key: "observation_count", label: "# Observations", align: "right", render: (v) => fmtNum(v) },
-                { key: "score", label: "Overall", align: "right", onHeaderClick: openScoreDrill, render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
-                { key: "rating", label: "Rating", render: (v) => <TrainerRatingBadge rating={v} /> },
-                ...domainColumns,
-              ]}
-              rows={sortedRows}
-              onRowClick={(r) => setOpenTrainerKey(r.trainer_key)}
-            />
-          </div>
+          <DataTable
+            columns={[
+              {
+                key: "trainer_name", label: "Trainer",
+                render: (v) => <span><span style={{ color: C.teal, marginRight: 4 }}>›</span>{v}</span>,
+              },
+              { key: "venue", label: "Venue" },
+              { key: "district", label: "District" },
+              // Redundant when a single cohort is selected — every row would
+              // carry the same value — so it only earns a column on All cohorts.
+              ...(phase ? [] : [{ key: "cohort", label: "Cohort" }]),
+              { key: "observation_count", label: "# Observations", align: "right", render: (v) => fmtNum(v) },
+              { key: "score", label: "Overall", align: "right", onHeaderClick: openScoreDrill, render: (v) => <span style={{ color: trainerScoreColor(v), fontWeight: 700 }}>{fmtScore(v)}</span> },
+              { key: "rating", label: "Rating", render: (v) => <TrainerRatingBadge rating={v} /> },
+              ...domainColumns,
+            ]}
+            rows={sortedRows}
+            onRowClick={(r) => setOpenTrainerKey(r.trainer_key)}
+            maxBodyHeight={380}
+            stickyHeader
+          />
         </State>
       </Card>
 
