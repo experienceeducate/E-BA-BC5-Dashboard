@@ -79,8 +79,9 @@ def test_funnel_split_shape(as_staff, mock_run_query):
     assert r.status_code == 200
     body = r.json()
     assert [s["stage"] for s in body["waiting_list"]] == ["Assigned", "Reached", "Confirmed"]
-    assert [s["stage"] for s in body["new_recruits"]] == ["Registered", "Interested", "Eligible", "Treatment", "Confirmed"]
+    assert [s["stage"] for s in body["new_recruits"]] == ["Registered", "Interested", "Eligible"]
     assert [s["stage"] for s in body["merged"]] == ["Verified", "Acquired", "Activated", "Retained"]
+    assert body["new_recruits_treatment"] == 0
     assert body["new_recruits_control"] == 0
 
 
@@ -97,7 +98,9 @@ def test_funnel_split_new_recruits_sourced_from_awareness_kyc(as_staff, mock_run
     assert by_stage["Registered"] == 200
     assert by_stage["Interested"] == 180
     assert by_stage["Eligible"] == 150
-    assert by_stage["Treatment"] == 60
+    assert "Randomised" not in by_stage
+    assert "Confirmed" not in by_stage
+    assert body["new_recruits_treatment"] == 60
     assert body["new_recruits_control"] == 40
 
 

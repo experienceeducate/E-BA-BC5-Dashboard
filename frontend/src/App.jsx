@@ -981,7 +981,6 @@ function ExecutiveSummaryPage({ filters }) {
   const stages = funnel.data?.stages || [];
   const genderStages = gender.data?.stages || [];
   const headlineStages = headlineFunnelStages(stages);
-  const registeredBase = stages[0]?.count || 0;
 
   const dropoffs = stages.slice(1)
     .map((s, i) => ({ from_stage: stages[i].stage, to_stage: s.stage, lost: s.lost }))
@@ -1045,7 +1044,7 @@ function ExecutiveSummaryPage({ filters }) {
       <ExecBand num="4a" title="Recruitment funnel — by pathway" />
       <Card
         title="Waiting List (4 Wks) vs New Recruits (have randomisation)"
-        subtitle="Two genuinely different pathways — Waiting List is pure call-center/acquisition data (the BC3 Control List on the Mobilisation tab); New Recruits comes from the awareness table, split into the RCT arm once eligible. Both converge into one shared funnel below once confirmed."
+        subtitle="Two genuinely different pathways — Waiting List is pure call-center/acquisition data (the BC3 Control List on the Mobilisation tab); New Recruits comes from the awareness table, randomised into Treatment vs Control once eligible. Both converge into one shared funnel below once confirmed."
         chip="REAL"
       >
         <State loading={funnelSplit.loading} error={funnelSplit.error} empty={!funnelSplit.loading && (funnelSplit.data?.waiting_list || []).length === 0 && (funnelSplit.data?.new_recruits || []).length === 0}>
@@ -1057,11 +1056,26 @@ function ExecutiveSummaryPage({ filters }) {
             <div>
               <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>New Recruits (have randomisation)</div>
               <FunnelViz stages={funnelSplit.data?.new_recruits || []} />
-              {funnelSplit.data?.new_recruits_control != null && (
-                <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
-                  Plus <b>{fmtNum(funnelSplit.data.new_recruits_control)}</b> in the Control arm — a comparison group, not part of the confirmed-to-attend flow above.
-                </p>
+              {(funnelSplit.data?.new_recruits_treatment != null || funnelSplit.data?.new_recruits_control != null) && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, marginTop: 12 }}>
+                    Randomisation, after Eligible
+                  </div>
+                  <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                    <div style={{ flex: 1, background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3 }}>Treatment (confirmed)</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{fmtNum(funnelSplit.data.new_recruits_treatment)}</div>
+                    </div>
+                    <div style={{ flex: 1, background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3 }}>Control</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{fmtNum(funnelSplit.data.new_recruits_control)}</div>
+                    </div>
+                  </div>
+                </>
               )}
+              <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+                Every eligible youth is randomised into Treatment or Control — Treatment-arm youth are auto-confirmed by policy (Confirmed = Treatment, no separate drop), while Control is a comparison group held out by design, not attrition.
+              </p>
             </div>
           </div>
         </State>
@@ -1069,25 +1083,6 @@ function ExecutiveSummaryPage({ filters }) {
       <Card title="Arrival → Acquisition → Activation → Retention" subtitle="Both pathways converge here — confirmed youth from Waiting List and New Recruits attend the same bootcamp from this point on." chip="REAL">
         <State loading={funnelSplit.loading} error={funnelSplit.error} empty={!funnelSplit.loading && (funnelSplit.data?.merged || []).length === 0}>
           <FunnelViz stages={funnelSplit.data?.merged || []} />
-        </State>
-      </Card>
-
-      <ExecBand num="4b" title="Attrition through the funnel" />
-      <Card title="Retention against Registered" subtitle="Every stage measured against the same denominator — total Registered — so cumulative attrition reads at a glance" chip="DERIVED">
-        <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
-          <DataTable
-            columns={[
-              { key: "stage", label: "Stage" },
-              { key: "count", label: "Count", align: "right", render: (v) => fmtNum(v) },
-              { key: "pct_of_base", label: "% of Registered", align: "right", render: (v) => fmtPct(v) },
-            ]}
-            rows={stages.map((s) => ({ stage: s.stage, count: s.count, pct_of_base: registeredBase ? Math.round((1000 * s.count) / registeredBase) / 10 : null }))}
-          />
-          <p style={{ fontSize: 11.5, color: C.muted, marginTop: 10 }}>
-            A true treatment-vs-control split isn't reliably trackable across every stage in the
-            live data yet (RCT assignment is only captured for a small subset at registration) —
-            this uses total Registered as the fixed denominator instead.
-          </p>
         </State>
       </Card>
 
@@ -5987,7 +5982,6 @@ async function buildExecutiveSummaryExport(filters) {
   const stages = funnel.stages || [];
   const allDistricts = filterMeta.districts || [];
   const rateKeys = Object.keys(RATE_TARGETS);
-  const registeredBase = stages[0]?.count || 0;
 
   const [byDistrictRates, byDistrictStages] = await Promise.all([
     fetchPerDistrictFields("/api/overview/kpis", filters, allDistricts,
@@ -6010,9 +6004,6 @@ async function buildExecutiveSummaryExport(filters) {
       xSection("Progress on target, by stage", "stage", "Stage", [
         xCol("count", "Count"), xCol("target", "Target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
       ], stageProgress.stages || []),
-      xSection("Attrition through the funnel", "stage", "Stage", [
-        xCol("count", "Count"), xCol("pct_of_base", "% of Registered", { format: fmtPct }),
-      ], stages.map((s) => ({ stage: s.stage, count: s.count, pct_of_base: registeredBase ? Math.round((1000 * s.count) / registeredBase) / 10 : null }))),
       xSection("Eligibility barriers", "barrier", "Barrier", [xCol("count", "Count")], barriers.barriers || []),
       xSection("Gender performance, by stage", "stage", "Stage", [
         xCol("female", "Female"), xCol("male", "Male"), xCol("pct_female", "% Female", { format: fmtPct }), xCol("target_female", "Target", { format: fmtPct }),

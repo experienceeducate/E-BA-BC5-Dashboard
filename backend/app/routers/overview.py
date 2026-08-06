@@ -297,11 +297,16 @@ def overview_funnel_split(
       Confirmed). This pool isn't sourced from the awareness table at all —
       no Registered/Interested/Eligible stages exist for it.
     - "New Recruits (have randomisation)" is the awareness table
-      (AWARENESS_KYC): Registered -> Interested -> Eligible, then split by
-      the RCT arm (is_treatment) once eligible — Treatment continues to
-      Confirmed (auto-confirmed, mobilisation()'s two_half_week/
-      _auto_confirmed_count), Control is reported alongside as a comparison
-      group, not part of the confirmed-to-attend flow.
+      (AWARENESS_KYC): Registered -> Interested -> Eligible, then a
+      Randomisation SPLIT (not a further linear stage) into Treatment vs
+      Control, exposed as new_recruits_treatment/new_recruits_control.
+      There's no separate "Confirmed" stage after that — confirmed with the
+      recruitment team, 2026-08-06: every Treatment-arm youth is
+      auto-confirmed by policy (mobilisation()'s two_half_week/
+      _auto_confirmed_count), so Confirmed == new_recruits_treatment exactly;
+      showing it as another linear stage would just repeat the same number.
+      Control isn't attrition either — roughly half of eligible youth are
+      deliberately held out by design as a comparison group.
 
     Both converge into ONE combined Verified/Acquired/Activated/Retained
     tail (SITE_FUNNEL_METRICS) — arrival onward doesn't distinguish pathway.
@@ -350,21 +355,20 @@ def overview_funnel_split(
     FROM {AWARENESS_KYC} WHERE {aw_where}
     """
     aw = (database.run_query(aw_sql, aw_params, role=user.role) or [{}])[0]
-    # Confirmed = auto-confirmed Treatment-arm youth — same helper
-    # mobilisation()'s two_half_week segment uses (already filters
-    # elligible=TRUE AND is_treatment=TRUE).
-    new_confirmed = _auto_confirmed_count(district, gender, user.role, cohort)
+    treatment = aw.get("treatment") or 0
+    control = aw.get("control") or 0
 
+    # New Recruits' linear funnel ends at Eligible — Randomisation
+    # (Treatment vs Control) is a split of that same population, not a
+    # further drop-off stage, and Confirmed isn't shown separately either
+    # since it's identical to the Treatment count (see docstring above).
     new_recruits = _funnel_from_counts({
         "Registered": aw.get("registered"),
         "Interested": aw.get("interested"),
         "Eligible": aw.get("eligible"),
-        "Treatment": aw.get("treatment"),
-        "Confirmed": new_confirmed,
     })
-    # Control arm — a comparison group, not part of the confirmed-to-attend
-    # flow, so reported as a side figure rather than a funnel stage.
-    new_recruits_control = aw.get("control") or 0
+    new_recruits_treatment = treatment
+    new_recruits_control = control
 
     sf_where, sf_params = build_where(
         districts=district, gender=gender, extra=[active_cohort_clause("fssf", requested=cohort)], prefix="fssf",
@@ -387,6 +391,7 @@ def overview_funnel_split(
     return {
         "waiting_list": waiting_list,
         "new_recruits": new_recruits,
+        "new_recruits_treatment": new_recruits_treatment,
         "new_recruits_control": new_recruits_control,
         "merged": merged,
     }
