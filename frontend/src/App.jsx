@@ -860,16 +860,6 @@ function renderPctFemaleCell(v) {
   return <span style={{ color: c || C.ink, fontWeight: 700 }}>{fmtPct(v)}</span>;
 }
 
-// Headline funnel visual scope matches the reference design: Registered
-// through Acquired (Activation/Retention get their own dedicated treatment
-// elsewhere), with "Assigned" relabelled "Randomised" (RCT terminology) —
-// display-only, the underlying data key is unchanged.
-function headlineFunnelStages(stages) {
-  return stages
-    .filter((s) => s.stage !== "Activated" && s.stage !== "Retained")
-    .map((s) => (s.stage === "Assigned" ? { ...s, stage: "Randomised", apiStage: "Assigned" } : { ...s, apiStage: s.stage }));
-}
-
 function buildExecInsights(rates, stages, genderStages) {
   const insights = [];
   const drops = stages.slice(1)
@@ -967,8 +957,10 @@ function ExecutiveSummaryPage({ filters }) {
   const q = buildParams(filters);
   const kpis = useApi(`/api/overview/kpis${q}`);
   const funnel = useApi(`/api/overview/funnel${q}`);
+  const funnelSplit = useApi(`/api/overview/funnel-split${q}`);
   const stageProgress = useApi(`/api/overview/stage-progress${q}`);
   const gender = useApi(`/api/overview/gender${q}`);
+  const genderSplit = useApi(`/api/overview/gender-split${q}`);
   const barriers = useApi(`/api/overview/eligibility-barriers${q}`);
   const filterMeta = useApi("/api/filters");
   const allDistricts = filterMeta.data?.districts || [];
@@ -985,20 +977,55 @@ function ExecutiveSummaryPage({ filters }) {
     });
   }
 
-  function openStageDrill(stage) {
+  const genderDrillColumns = [
+    { key: "female", label: "Female", align: "right", render: fmtNum },
+    { key: "male", label: "Male", align: "right", render: fmtNum },
+    { key: "pct_female", label: "% Female", align: "right", render: fmtPct },
+  ];
+
+  function openGenderStageDrill(stage, pathwayKey) {
     drill.open({
-      title: `${stage.stage} — by district`,
+      title: `${stage} — Female vs Male by district`,
       tone: "real", tagLabel: "REAL",
       rootKey: "district", rootLabel: "District",
-      columns: [{ key: "value", label: "Count", align: "right", render: fmtNum }],
-      rootRows: () => fetchPerDistrict("/api/overview/funnel", filters, allDistricts,
-        (json) => (json?.stages || []).find((s) => s.stage === stage.apiStage)?.count ?? null),
+      columns: genderDrillColumns,
+      rootRows: () => fetchPerDistrictFields("/api/overview/gender-split", filters, allDistricts, {
+        female: (json) => (json?.[pathwayKey] || []).find((s) => s.stage === stage)?.female ?? null,
+        male: (json) => (json?.[pathwayKey] || []).find((s) => s.stage === stage)?.male ?? null,
+        pct_female: (json) => (json?.[pathwayKey] || []).find((s) => s.stage === stage)?.pct_female ?? null,
+      }),
     });
   }
+
+  function openGenderSplitDrill(fieldKey, label) {
+    drill.open({
+      title: `${label} — Female vs Male by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: genderDrillColumns,
+      rootRows: () => fetchPerDistrictFields("/api/overview/gender-split", filters, allDistricts, {
+        female: (json) => json?.[fieldKey]?.female ?? null,
+        male: (json) => json?.[fieldKey]?.male ?? null,
+        pct_female: (json) => json?.[fieldKey]?.pct_female ?? null,
+      }),
+    });
+  }
+
   const stages = funnel.data?.stages || [];
   const genderStages = gender.data?.stages || [];
-  const headlineStages = headlineFunnelStages(stages);
-  const registeredBase = stages[0]?.count || 0;
+  function renderGenderRetentionCell(v, r) {
+    const gap = r.female_pct_of_previous != null && r.male_pct_of_previous != null
+      ? Math.abs(r.female_pct_of_previous - r.male_pct_of_previous) : null;
+    const flagged = gap != null && gap > 5;
+    return <span style={{ color: flagged ? C.coral : "inherit", fontWeight: flagged ? 700 : 400 }}>{v == null ? "start" : fmtPct(v)}</span>;
+  }
+  const genderTableColumns = [
+    { key: "stage", label: "Stage" },
+    { key: "female", label: "Female", align: "right", render: (v) => fmtNum(v) },
+    { key: "male", label: "Male", align: "right", render: (v) => fmtNum(v) },
+    { key: "female_pct_of_previous", label: "Female Retention", align: "right", render: renderGenderRetentionCell },
+    { key: "male_pct_of_previous", label: "Male Retention", align: "right", render: renderGenderRetentionCell },
+  ];
 
   const dropoffs = stages.slice(1)
     .map((s, i) => ({ from_stage: stages[i].stage, to_stage: s.stage, lost: s.lost }))
@@ -1052,48 +1079,99 @@ function ExecutiveSummaryPage({ filters }) {
         </State>
       </Card>
 
-      <ExecBand num={4} title="Overall recruitment funnel" />
-      <Card title="Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired" subtitle="Each stage shows count and % of the previous stage. The largest single drop-off is outlined. Click a stage to drill by district." chip="REAL">
-        <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
-          <FunnelViz stages={headlineStages} onStageClick={openStageDrill} />
+      <ExecBand num={4} title="Recruitment funnel — by pathway" />
+      <Card
+        title="BC3 Control List vs New Recruits (have randomisation)"
+        subtitle="Two genuinely different pathways — BC3 Control List is pure call-center/acquisition data (the same BC3 Control List on the Mobilisation tab); New Recruits comes from the awareness table, randomised into Treatment vs Control once eligible. Both converge into one shared funnel below once confirmed."
+        chip="REAL"
+      >
+        <State loading={funnelSplit.loading} error={funnelSplit.error} empty={!funnelSplit.loading && (funnelSplit.data?.waiting_list || []).length === 0 && (funnelSplit.data?.new_recruits || []).length === 0}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>BC3 Control List</div>
+              <FunnelViz stages={funnelSplit.data?.waiting_list || []} />
+            </div>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>New Recruits (have randomisation)</div>
+              <FunnelViz stages={funnelSplit.data?.new_recruits || []} />
+              {(funnelSplit.data?.new_recruits_treatment != null || funnelSplit.data?.new_recruits_control != null) && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, marginTop: 12 }}>
+                    Randomisation, after Eligible
+                  </div>
+                  <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                    <div style={{ flex: 1, background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3 }}>Treatment (confirmed)</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{fmtNum(funnelSplit.data.new_recruits_treatment)}</div>
+                    </div>
+                    <div style={{ flex: 1, background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3 }}>Control</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{fmtNum(funnelSplit.data.new_recruits_control)}</div>
+                    </div>
+                  </div>
+                </>
+              )}
+              <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+                Every eligible youth is randomised into Treatment or Control — Treatment-arm youth are auto-confirmed by policy (Confirmed = Treatment, no separate drop), while Control is a comparison group held out by design, not attrition.
+              </p>
+            </div>
+          </div>
         </State>
       </Card>
-
-      <ExecBand num="4b" title="Attrition through the funnel" />
-      <Card title="Retention against Registered" subtitle="Every stage measured against the same denominator — total Registered — so cumulative attrition reads at a glance" chip="DERIVED">
-        <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
-          <DataTable
-            columns={[
-              { key: "stage", label: "Stage" },
-              { key: "count", label: "Count", align: "right", render: (v) => fmtNum(v) },
-              { key: "pct_of_base", label: "% of Registered", align: "right", render: (v) => fmtPct(v) },
-            ]}
-            rows={stages.map((s) => ({ stage: s.stage, count: s.count, pct_of_base: registeredBase ? Math.round((1000 * s.count) / registeredBase) / 10 : null }))}
-          />
-          <p style={{ fontSize: 11.5, color: C.muted, marginTop: 10 }}>
-            A true treatment-vs-control split isn't reliably trackable across every stage in the
-            live data yet (RCT assignment is only captured for a small subset at registration) —
-            this uses total Registered as the fixed denominator instead.
+      <Card title="Arrival → Acquisition → Activation → Retention" subtitle="Both pathways converge here — confirmed youth from BC3 Control List and New Recruits attend the same bootcamp from this point on." chip="REAL">
+        <State loading={funnelSplit.loading} error={funnelSplit.error} empty={!funnelSplit.loading && (funnelSplit.data?.merged || []).length === 0}>
+          <FunnelViz stages={funnelSplit.data?.merged || []} />
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+            Shown as one shared journey — the live site-level data (venue x gender x cycle) doesn't carry a BC3 Control List vs New Recruits marker past this point, so a genuine per-pathway split isn't available yet.
           </p>
         </State>
       </Card>
 
       <ExecBand num={5} title="Gender performance summary" />
-      <Card title="Male vs female across the funnel" subtitle="Share of each stage that is female against the 60% target. Gaps over 5pp are flagged." chip="REAL">
-        <State loading={gender.loading} error={gender.error} empty={!gender.loading && genderStages.length === 0}>
+      <Card
+        title="Male vs female — by pathway"
+        subtitle="Stage-to-stage retention within each gender — e.g. Confirmed female count ÷ Reached female count. Gaps over 5pp between Female and Male retention are flagged. Click a stage to drill by district."
+        chip="REAL"
+      >
+        <State loading={genderSplit.loading} error={genderSplit.error} empty={!genderSplit.loading && (genderSplit.data?.bc3_control_list || []).length === 0 && (genderSplit.data?.new_recruits || []).length === 0}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>BC3 Control List</div>
+              <DataTable
+                columns={genderTableColumns}
+                rows={genderSplit.data?.bc3_control_list || []}
+                onRowClick={(r) => openGenderStageDrill(r.stage, "bc3_control_list")}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>New Recruits</div>
+              <DataTable
+                columns={genderTableColumns}
+                rows={genderSplit.data?.new_recruits || []}
+                onRowClick={(r) => openGenderStageDrill(r.stage, "new_recruits")}
+              />
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, marginTop: 12, marginBottom: 6 }}>
+                Randomisation, after Eligible
+              </div>
+              <DataTable
+                columns={genderTableColumns}
+                rows={[genderSplit.data?.new_recruits_treatment, genderSplit.data?.new_recruits_control].filter(Boolean)}
+                onRowClick={(r) => openGenderSplitDrill(r.stage === "Control" ? "new_recruits_control" : "new_recruits_treatment", r.stage)}
+              />
+            </div>
+          </div>
+        </State>
+      </Card>
+      <Card title="Arrival → Retention — gender" subtitle="Both pathways converge here — same shared journey as the funnel-by-pathway card above. Click a stage to drill by district." chip="REAL">
+        <State loading={genderSplit.loading} error={genderSplit.error} empty={!genderSplit.loading && (genderSplit.data?.merged || []).length === 0}>
           <DataTable
-            columns={[
-              { key: "stage", label: "Stage" },
-              { key: "female", label: "Female", align: "right", render: (v) => fmtNum(v) },
-              { key: "male", label: "Male", align: "right", render: (v) => fmtNum(v) },
-              {
-                key: "pct_female", label: "% Female", align: "right",
-                render: (v) => <span style={{ color: v != null && Math.abs(v - 60) > 5 ? C.coral : "inherit", fontWeight: v != null && Math.abs(v - 60) > 5 ? 700 : 400 }}>{fmtPct(v)}</span>,
-              },
-              { key: "target_female", label: "Target", align: "right", render: (v) => fmtPct(v) },
-            ]}
-            rows={genderStages}
+            columns={genderTableColumns}
+            rows={genderSplit.data?.merged || []}
+            onRowClick={(r) => openGenderStageDrill(r.stage, "merged")}
           />
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+            Verified and Assigned are omitted — the live data has no gender breakdown for either.
+          </p>
         </State>
       </Card>
 
@@ -2966,9 +3044,9 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
           <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(data?.progress_pct)] }}>{fmtPct(data?.progress_pct)}</span>} sub={`confirmed ÷ target (${fmtNum(data?.target)}) — call-center only, see Combined progress below`} tag="REAL" onClick={() => openMobDrill("progress_pct", "Progress on target", fmtPct)} />
         </Grid>
         <p style={{ fontSize: 11.5, color: C.muted, margin: "-6px 0 14px" }}>
-          Everything above is built from the call-center pathway alone (DAILY_ACQUISITION_SUMMARY) — the auto-confirmed 2.5-week pilot is deliberately kept out of these numbers so it never blends into one confusing rate. See it on its own below, and combined with this pathway in "Combined progress."
+          Everything above is built from the call-center pathway alone (DAILY_ACQUISITION_SUMMARY) — the auto-confirmed Newly registered pathway is deliberately kept out of these numbers so it never blends into one confusing rate. See it on its own below, and combined with this pathway in "Combined progress."
         </p>
-        <Card title="4-week vs 2.5-week cycle" subtitle="The 2.5-week pilot subcounties are auto-confirmed by policy — a distinct pathway with its own numbers, not blended into the 4-week cycle's rates." chip="REAL">
+        <Card title="BC3 Control List vs Newly registered" subtitle="Newly registered subcounties are auto-confirmed by policy — a distinct pathway with its own numbers, not blended into the BC3 Control List's rates." chip="REAL">
           <DataTable
             columns={[
               { key: "label", label: "Cycle" },
@@ -2980,8 +3058,8 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
               { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
             ]}
             rows={[
-              { label: "4-week cycle (call-center)", ...data?.four_week },
-              { label: "2.5-week cycle (auto-confirm)", ...data?.two_half_week },
+              { label: "BC3 Control List", ...data?.four_week },
+              { label: "Newly registered", ...data?.two_half_week },
             ]}
           />
         </Card>
@@ -3050,7 +3128,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
           })()}
           {data?.four_week?.mobilisation_rate != null && data?.mobilisation_rate != null && Math.abs(data.mobilisation_rate - data.four_week.mobilisation_rate) >= 1 && (
             <Insight tone="warn">
-              The blended mobilisation rate (<b>{fmtPct(data.mobilisation_rate)}</b>) reads {data.mobilisation_rate > data.four_week.mobilisation_rate ? "higher" : "lower"} than the 4-week cycle's real call-center rate (<b>{fmtPct(data.four_week.mobilisation_rate)}</b>) — the {fmtNum(data?.two_half_week?.assigned)} auto-confirmed pilot-subcounty youth skew the overall figure. See the cycle breakdown above.
+              The blended mobilisation rate (<b>{fmtPct(data.mobilisation_rate)}</b>) reads {data.mobilisation_rate > data.four_week.mobilisation_rate ? "higher" : "lower"} than the BC3 Control List's real call-center rate (<b>{fmtPct(data.four_week.mobilisation_rate)}</b>) — the {fmtNum(data?.two_half_week?.assigned)} auto-confirmed Newly registered youth skew the overall figure. See the cycle breakdown above.
             </Insight>
           )}
           {topVenue && (
@@ -5782,8 +5860,8 @@ const GUIDE_PAGES = [
     summary: "Registered → interested → eligible by district/parish/mobiliser.",
     what: "4 sub-pages — Awareness Overview, Mobilisers, KYC / Youth Profile, Forecast. Registered → interested → eligible by district, parish and mobiliser; youth demographics; registration-pace forecast." },
   { group: "Recruitment", page: "Mobilisation", tone: "real", navGroup: "rec", navTab: "mob",
-    summary: "Assigned → reached → confirmed, 4-week vs 2.5-week cycles.",
-    what: "5 sub-pages — Mobilisation Overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
+    summary: "Assigned → reached → confirmed, BC3 Control List vs Newly registered.",
+    what: "5 sub-pages — Mobilisation Overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split BC3 Control List vs Newly registered pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
   { group: "Recruitment", page: "Acquisition", tone: "real", navGroup: "rec", navTab: "acq",
     summary: "Verified → acquired by district; venue risk categories.",
     what: "2 sub-pages — Overview, Arrival & Verification. Verified → acquired by district; venue risk categories (Target Achieved / On Track / Low Risk / High Risk)." },
@@ -6043,7 +6121,6 @@ async function buildExecutiveSummaryExport(filters) {
   const stages = funnel.stages || [];
   const allDistricts = filterMeta.districts || [];
   const rateKeys = Object.keys(RATE_TARGETS);
-  const registeredBase = stages[0]?.count || 0;
 
   const [byDistrictRates, byDistrictStages] = await Promise.all([
     fetchPerDistrictFields("/api/overview/kpis", filters, allDistricts,
@@ -6066,9 +6143,6 @@ async function buildExecutiveSummaryExport(filters) {
       xSection("Progress on target, by stage", "stage", "Stage", [
         xCol("count", "Count"), xCol("target", "Target"), xCol("pct_of_target", "% of target", { format: fmtPct }),
       ], stageProgress.stages || []),
-      xSection("Attrition through the funnel", "stage", "Stage", [
-        xCol("count", "Count"), xCol("pct_of_base", "% of Registered", { format: fmtPct }),
-      ], stages.map((s) => ({ stage: s.stage, count: s.count, pct_of_base: registeredBase ? Math.round((1000 * s.count) / registeredBase) / 10 : null }))),
       xSection("Eligibility barriers", "barrier", "Barrier", [xCol("count", "Count")], barriers.barriers || []),
       xSection("Gender performance, by stage", "stage", "Stage", [
         xCol("female", "Female"), xCol("male", "Male"), xCol("pct_female", "% Female", { format: fmtPct }), xCol("target_female", "Target", { format: fmtPct }),
@@ -6249,12 +6323,12 @@ async function buildMobilisationExport(filters) {
     sections: [
       xSection("Mobilisation KPIs, by district", "district", "District",
         mobMetricKeys.map((k) => xCol(k, k, { format: k.includes("rate") || k === "progress_pct" ? fmtPct : fmtNum })), byDistrictMob),
-      xSection("4-week vs 2.5-week cycle", "label", "Cycle", [
+      xSection("BC3 Control List vs Newly registered", "label", "Cycle", [
         xCol("assigned", "Assigned"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
         xCol("reach_rate", "Reach rate", { format: fmtPct }), xCol("mobilisation_rate", "Mobilisation rate", { format: fmtPct }), xCol("pct_female", "% Female", { format: fmtPct }),
       ], [
-        { label: "4-week cycle (call-center)", ...mob.four_week },
-        { label: "2.5-week cycle (auto-confirm)", ...mob.two_half_week },
+        { label: "BC3 Control List", ...mob.four_week },
+        { label: "Newly registered", ...mob.two_half_week },
       ], "Deliberately not blended into one row — see \"Combined progress\" below for the two pathways added together."),
       ...(mob.combined ? [
         xSection("Combined progress — call-center + auto-confirm", "label", "Component", [

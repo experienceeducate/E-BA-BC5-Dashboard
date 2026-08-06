@@ -260,6 +260,143 @@ def overview_funnel(
     return {"stages": out}
 
 
+def _funnel_from_counts(stage_counts):
+    """Same pct_of_previous/lost math as overview_funnel's own stage builder,
+    for an explicit ordered {stage: count} dict rather than _stage_counts'
+    full ten-stage output — used by overview_funnel_split's two independent
+    early-funnel sequences and its merged late-funnel sequence."""
+    out, prev = [], None
+    for stage, count in stage_counts.items():
+        count = count or 0
+        pct_prev = round(100 * count / prev, 1) if prev else 100.0
+        out.append({
+            "stage": stage,
+            "count": count,
+            "pct_of_previous": pct_prev,
+            "lost": (prev - count) if prev is not None else 0,
+        })
+        prev = count
+    return out
+
+
+@router.get("/api/overview/funnel-split")
+def overview_funnel_split(
+    user: User = Depends(current_user),
+    district: List[str] = Query(default=[]),
+    gender:   Optional[str] = Query(None),
+    cohort:   List[str] = Query(default=[]),
+):
+    """Splits the recruitment funnel into two genuinely different pathways
+    with different SOURCE TABLES, then merges back into one shared funnel
+    from Verified ("Arrival") onward — confirmed by the recruitment team,
+    2026-08-06:
+
+    - "BC3 Control List" is pure call-center/acquisition-model data — the
+      same pathway mobilisation()'s four_week segment already reports
+      (DAILY_ACQUISITION_SUMMARY: Assigned -> Reached -> Confirmed). This
+      pool isn't sourced from the awareness table at all — no
+      Registered/Interested/Eligible stages exist for it.
+    - "New Recruits (have randomisation)" is the awareness table
+      (AWARENESS_KYC): Registered -> Interested -> Eligible, then a
+      Randomisation SPLIT (not a further linear stage) into Treatment vs
+      Control, exposed as new_recruits_treatment/new_recruits_control.
+      There's no separate "Confirmed" stage after that — confirmed with the
+      recruitment team, 2026-08-06: every Treatment-arm youth is
+      auto-confirmed by policy (mobilisation()'s two_half_week/
+      _auto_confirmed_count), so Confirmed == new_recruits_treatment exactly;
+      showing it as another linear stage would just repeat the same number.
+      Control isn't attrition either — roughly half of eligible youth are
+      deliberately held out by design as a comparison group.
+
+    Both converge into ONE combined Verified/Acquired/Activated/Retained
+    tail (SITE_FUNNEL_METRICS) — arrival onward doesn't distinguish pathway.
+    """
+    # BC3 Control List: the call-center pathway — same unblended queries
+    # _stage_counts/mobilisation() use for their own four_week segment.
+    # DAILY_ACQUISITION_TARGETS_DEDUPED + target_measure_where for Assigned
+    # — see _stage_counts' docstring for why (snapshot-log dedup + the real
+    # measure differing by cohort, e.g. BOOTCAMP_5's 'venue_targets').
+    moa_tm_where, moa_tm_params = target_measure_where("fswl", resolve_active_cohorts(cohort))
+    moa_where, moa_params = build_where(
+        districts=district, extra=[(moa_tm_where, moa_tm_params)], prefix="fswl",
+        district_col="agent_district",
+    )
+    waiting_assigned = (database.run_query(
+        f"SELECT SUM(preload_youth) AS assigned FROM {DAILY_ACQUISITION_TARGETS_DEDUPED} WHERE {moa_where}",
+        moa_params, role=user.role) or [{}])[0].get("assigned") or 0
+
+    mor_where, mor_params = build_where(
+        districts=district, gender=gender, extra=[active_cohort_clause("fswlr", requested=cohort)], prefix="fswlr",
+        district_col="agent_district", gender_col="youth_gender",
+    )
+    mo_row = (database.run_query(
+        f"SELECT SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed "
+        f"FROM {DAILY_ACQUISITION_SUMMARY} WHERE {mor_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'",
+        mor_params, role=user.role) or [{}])[0]
+
+    waiting_list = _funnel_from_counts({
+        "Assigned": waiting_assigned,
+        "Reached": mo_row.get("reached"),
+        "Confirmed": mo_row.get("confirmed"),
+    })
+
+    # New Recruits: the awareness table, split by RCT arm once eligible.
+    aw_where, aw_params = build_where(
+        districts=district, gender=gender,
+        extra=[active_cohort_clause("fsnr", requested=cohort)], prefix="fsnr",
+        district_col="youth_district", gender_col="youth_gender",
+    )
+    aw_sql = f"""
+    SELECT COUNT(*) AS registered,
+           COUNTIF(training_interest = TRUE) AS interested,
+           COUNTIF(elligible = TRUE) AS eligible,
+           COUNTIF(elligible = TRUE AND is_treatment = TRUE) AS treatment,
+           COUNTIF(elligible = TRUE AND is_treatment = FALSE) AS control
+    FROM {AWARENESS_KYC} WHERE {aw_where}
+    """
+    aw = (database.run_query(aw_sql, aw_params, role=user.role) or [{}])[0]
+    treatment = aw.get("treatment") or 0
+    control = aw.get("control") or 0
+
+    # New Recruits' linear funnel ends at Eligible — Randomisation
+    # (Treatment vs Control) is a split of that same population, not a
+    # further drop-off stage, and Confirmed isn't shown separately either
+    # since it's identical to the Treatment count (see docstring above).
+    new_recruits = _funnel_from_counts({
+        "Registered": aw.get("registered"),
+        "Interested": aw.get("interested"),
+        "Eligible": aw.get("eligible"),
+    })
+    new_recruits_treatment = treatment
+    new_recruits_control = control
+
+    sf_where, sf_params = build_where(
+        districts=district, gender=gender, extra=[active_cohort_clause("fssf", requested=cohort)], prefix="fssf",
+    )
+    sf_sql = f"""
+    SELECT SUM(IF(measure = '{SITE_FUNNEL_MEASURE_TARGET}', total_verified_youth, 0)) AS verified,
+           SUM(IF(measure = '{SITE_FUNNEL_MEASURE_ACTUAL}', acquired_youth, 0)) AS acquired,
+           SUM(IF(measure = '{SITE_FUNNEL_MEASURE_ACTUAL}', activated_youth, 0)) AS activated,
+           SUM(IF(measure = '{SITE_FUNNEL_MEASURE_ACTUAL}', youth_80pct_lessons, 0)) AS retained
+    FROM {SITE_FUNNEL_METRICS} WHERE {sf_where}
+    """
+    sf = (database.run_query(sf_sql, sf_params, role=user.role) or [{}])[0]
+    merged = _funnel_from_counts({
+        "Verified": sf.get("verified"),
+        "Acquired": sf.get("acquired"),
+        "Activated": sf.get("activated"),
+        "Retained": sf.get("retained"),
+    })
+
+    return {
+        "waiting_list": waiting_list,
+        "new_recruits": new_recruits,
+        "new_recruits_treatment": new_recruits_treatment,
+        "new_recruits_control": new_recruits_control,
+        "merged": merged,
+    }
+
+
 @router.get("/api/overview/kpis")
 def overview_kpis(
     user: User = Depends(current_user),
@@ -407,7 +544,10 @@ def overview_gender(
         "Registered": (aw.get("registered_f") or 0, aw.get("registered_m") or 0),
         "Interested": (aw.get("interested_f") or 0, aw.get("interested_m") or 0),
         "Eligible":   (aw.get("eligible_f") or 0, aw.get("eligible_m") or 0),
-        "Assigned":   (mo("assigned", "FEMALE"), mo("assigned", "MALE")),
+        # Assigned (preload_youth) has no gender breakdown in the live tables
+        # at all (see mo_sql above, which never selects it) — omitted rather
+        # than shown as an always-zero row, same treatment as Verified below.
+        "Assigned":   (None, None),
         "Reached":    (mo("reached", "FEMALE"), mo("reached", "MALE")),
         "Confirmed":  (mo("confirmed", "FEMALE") + acf_by_gender.get("FEMALE", 0),
                        mo("confirmed", "MALE") + acf_by_gender.get("MALE", 0)),
@@ -431,6 +571,151 @@ def overview_gender(
             "target_female": 60.0,
         })
     return {"stages": out}
+
+
+def _gender_row(stage, female, male, prev=None):
+    """`prev` is the (female, male) tuple of the stage immediately before this
+    one in its own pathway — omitted for a pathway's first stage, which then
+    reports female_pct_of_previous/male_pct_of_previous as None (the FunnelViz
+    convention for "start", not a 0% drop)."""
+    female = female or 0
+    male = male or 0
+    total = female + male
+    prev_female, prev_male = prev or (None, None)
+
+    def pct_of_previous(current, previous):
+        return round(100 * current / previous, 1) if previous else None
+
+    return {
+        "stage": stage,
+        "female": female,
+        "male": male,
+        # Composition (% of this stage that is female) — kept for the
+        # district drill-down only, not shown in the by-pathway table itself
+        # (that table shows stage-to-stage retention per gender instead).
+        "pct_female": round(100 * female / total, 1) if total else None,
+        "female_pct_of_previous": pct_of_previous(female, prev_female),
+        "male_pct_of_previous": pct_of_previous(male, prev_male),
+    }
+
+
+@router.get("/api/overview/gender-split")
+def overview_gender_split(
+    user: User = Depends(current_user),
+    district: List[str] = Query(default=[]),
+    cohort:   List[str] = Query(default=[]),
+):
+    """Gender breakdown of the recruitment funnel, split by pathway — mirrors
+    /api/overview/funnel-split's BC3 Control List vs New Recruits split (see
+    that endpoint's docstring for the full rationale) rather than the one
+    flat 10-stage list /api/overview/gender returns. Two stages are dropped
+    entirely rather than shown as a misleading 0/0: Assigned (preload_youth
+    has no gender column in the live tables) and Verified (total_verified_youth
+    only lives on genderless 'site_targets' rows).
+
+    Each row's female_pct_of_previous/male_pct_of_previous is that gender's
+    stage-to-stage retention within its OWN pathway (e.g. Confirmed female
+    count ÷ Reached female count) — confirmed with the recruitment team,
+    2026-08-06, as the actual point of interest here over the raw %Female-
+    of-target composition /api/overview/gender shows. None on a pathway's
+    first stage (nothing to retain from), same "start" convention as
+    FunnelViz's pct_of_previous.
+
+    BC3 Control List's Confirmed is the call-center actual alone (unblended
+    with the auto-confirm pilot), matching funnel-split's waiting_list.
+    New Recruits ends at Eligible, then Treatment/Control — Treatment IS the
+    New Recruits pathway's confirmed population (see funnel-split's
+    docstring), not a further stage.
+    """
+    aw_where, aw_params = build_where(
+        districts=district, extra=[active_cohort_clause("gsaw", requested=cohort)], prefix="gsaw",
+        district_col="youth_district",
+    )
+    aw_sql = f"""
+    SELECT
+      COUNTIF(UPPER(youth_gender) = 'FEMALE') AS registered_f,
+      COUNTIF(UPPER(youth_gender) = 'MALE') AS registered_m,
+      COUNTIF(training_interest = TRUE AND UPPER(youth_gender) = 'FEMALE') AS interested_f,
+      COUNTIF(training_interest = TRUE AND UPPER(youth_gender) = 'MALE') AS interested_m,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'FEMALE') AS eligible_f,
+      COUNTIF(elligible = TRUE AND UPPER(youth_gender) = 'MALE') AS eligible_m,
+      COUNTIF(elligible = TRUE AND is_treatment = TRUE AND UPPER(youth_gender) = 'FEMALE') AS treatment_f,
+      COUNTIF(elligible = TRUE AND is_treatment = TRUE AND UPPER(youth_gender) = 'MALE') AS treatment_m,
+      COUNTIF(elligible = TRUE AND is_treatment = FALSE AND UPPER(youth_gender) = 'FEMALE') AS control_f,
+      COUNTIF(elligible = TRUE AND is_treatment = FALSE AND UPPER(youth_gender) = 'MALE') AS control_m
+    FROM {AWARENESS_KYC} WHERE {aw_where}
+    """
+    aw = (database.run_query(aw_sql, aw_params, role=user.role) or [{}])[0]
+
+    mo_where, mo_params = build_where(
+        districts=district, extra=[active_cohort_clause("gsmo", requested=cohort)], prefix="gsmo",
+        district_col="agent_district",
+    )
+    mo_sql = f"""
+    SELECT UPPER(youth_gender) AS g,
+           SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed
+    FROM {DAILY_ACQUISITION_SUMMARY} WHERE {mo_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'
+    GROUP BY g
+    """
+    mo_by_gender = {r["g"]: r for r in database.run_query(mo_sql, mo_params, role=user.role)}
+
+    def mo(field, g):
+        return (mo_by_gender.get(g) or {}).get(field) or 0
+
+    sf_where, sf_params = build_where(
+        districts=district, extra=[active_cohort_clause("gssf", requested=cohort)], prefix="gssf",
+    )
+    sf_sql = f"""
+    SELECT UPPER(gender) AS g, SUM(acquired_youth) AS acquired,
+           SUM(activated_youth) AS activated, SUM(youth_80pct_lessons) AS retained
+    FROM {SITE_FUNNEL_METRICS} WHERE {sf_where} AND measure = '{SITE_FUNNEL_MEASURE_ACTUAL}'
+    GROUP BY g
+    """
+    sf_by_gender = {r["g"]: r for r in database.run_query(sf_sql, sf_params, role=user.role)}
+
+    def sf(field, g):
+        return (sf_by_gender.get(g) or {}).get(field) or 0
+
+    bc3_reached = _gender_row("Reached", mo("reached", "FEMALE"), mo("reached", "MALE"))
+    bc3_confirmed = _gender_row(
+        "Confirmed", mo("confirmed", "FEMALE"), mo("confirmed", "MALE"),
+        prev=(bc3_reached["female"], bc3_reached["male"]),
+    )
+    bc3_control_list = [bc3_reached, bc3_confirmed]
+
+    nr_registered = _gender_row("Registered", aw.get("registered_f"), aw.get("registered_m"))
+    nr_interested = _gender_row(
+        "Interested", aw.get("interested_f"), aw.get("interested_m"),
+        prev=(nr_registered["female"], nr_registered["male"]),
+    )
+    nr_eligible = _gender_row(
+        "Eligible", aw.get("eligible_f"), aw.get("eligible_m"),
+        prev=(nr_interested["female"], nr_interested["male"]),
+    )
+    new_recruits = [nr_registered, nr_interested, nr_eligible]
+
+    eligible_prev = (nr_eligible["female"], nr_eligible["male"])
+    new_recruits_treatment = _gender_row("Treatment (confirmed)", aw.get("treatment_f"), aw.get("treatment_m"), prev=eligible_prev)
+    new_recruits_control = _gender_row("Control", aw.get("control_f"), aw.get("control_m"), prev=eligible_prev)
+
+    m_acquired = _gender_row("Acquired", sf("acquired", "FEMALE"), sf("acquired", "MALE"))
+    m_activated = _gender_row(
+        "Activated", sf("activated", "FEMALE"), sf("activated", "MALE"),
+        prev=(m_acquired["female"], m_acquired["male"]),
+    )
+    m_retained = _gender_row(
+        "Retained", sf("retained", "FEMALE"), sf("retained", "MALE"),
+        prev=(m_activated["female"], m_activated["male"]),
+    )
+    merged = [m_acquired, m_activated, m_retained]
+
+    return {
+        "bc3_control_list": bc3_control_list,
+        "new_recruits": new_recruits,
+        "new_recruits_treatment": new_recruits_treatment,
+        "new_recruits_control": new_recruits_control,
+        "merged": merged,
+    }
 
 
 @router.get("/api/overview/stage-progress")
