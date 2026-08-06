@@ -67,6 +67,40 @@ def test_overview_kpis_rates(as_staff, mock_run_query):
     assert r.json()["rates"]["eligibility_rate"] == 75.0
 
 
+# --- Recruitment funnel split (Waiting List vs New Recruits) ----------------
+# Waiting List is pure call-center/acquisition data (DAILY_ACQUISITION_
+# SUMMARY/DEDUPED) with no Registered/Interested/Eligible stages at all; New
+# Recruits is the awareness table (AWARENESS_KYC), split by RCT arm once
+# eligible. Both converge into one merged Verified..Retained tail.
+
+def test_funnel_split_shape(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/overview/funnel-split")
+    assert r.status_code == 200
+    body = r.json()
+    assert [s["stage"] for s in body["waiting_list"]] == ["Assigned", "Reached", "Confirmed"]
+    assert [s["stage"] for s in body["new_recruits"]] == ["Registered", "Interested", "Eligible", "Treatment", "Confirmed"]
+    assert [s["stage"] for s in body["merged"]] == ["Verified", "Acquired", "Activated", "Retained"]
+    assert body["new_recruits_control"] == 0
+
+
+def test_funnel_split_new_recruits_sourced_from_awareness_kyc(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if AWARENESS_KYC in sql:
+            return [{"registered": 200, "interested": 180, "eligible": 150, "treatment": 60, "control": 40}]
+        return [{}]
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/overview/funnel-split")
+    assert r.status_code == 200
+    body = r.json()
+    by_stage = {s["stage"]: s["count"] for s in body["new_recruits"]}
+    assert by_stage["Registered"] == 200
+    assert by_stage["Interested"] == 180
+    assert by_stage["Eligible"] == 150
+    assert by_stage["Treatment"] == 60
+    assert body["new_recruits_control"] == 40
+
+
 def test_run_query_receives_caller_role(as_guest, mock_run_query):
     mock_run_query.set_rows([])
     as_guest.get("/api/overview/funnel")

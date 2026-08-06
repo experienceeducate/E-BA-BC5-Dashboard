@@ -949,6 +949,7 @@ function ExecutiveSummaryPage({ filters }) {
   const q = buildParams(filters);
   const kpis = useApi(`/api/overview/kpis${q}`);
   const funnel = useApi(`/api/overview/funnel${q}`);
+  const funnelSplit = useApi(`/api/overview/funnel-split${q}`);
   const stageProgress = useApi(`/api/overview/stage-progress${q}`);
   const gender = useApi(`/api/overview/gender${q}`);
   const barriers = useApi(`/api/overview/eligibility-barriers${q}`);
@@ -1038,6 +1039,36 @@ function ExecutiveSummaryPage({ filters }) {
       <Card title="Registered → Interested → Eligible → Randomised → Reached → Confirmed → Verified → Acquired" subtitle="Each stage shows count and % of the previous stage. The largest single drop-off is outlined. Click a stage to drill by district." chip="REAL">
         <State loading={funnel.loading} error={funnel.error} empty={!funnel.loading && stages.length === 0}>
           <FunnelViz stages={headlineStages} onStageClick={openStageDrill} />
+        </State>
+      </Card>
+
+      <ExecBand num="4a" title="Recruitment funnel — by pathway" />
+      <Card
+        title="Waiting List (4 Wks) vs New Recruits (have randomisation)"
+        subtitle="Two genuinely different pathways — Waiting List is pure call-center/acquisition data (the BC3 Control List on the Mobilisation tab); New Recruits comes from the awareness table, split into the RCT arm once eligible. Both converge into one shared funnel below once confirmed."
+        chip="REAL"
+      >
+        <State loading={funnelSplit.loading} error={funnelSplit.error} empty={!funnelSplit.loading && (funnelSplit.data?.waiting_list || []).length === 0 && (funnelSplit.data?.new_recruits || []).length === 0}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Waiting List (4 Wks)</div>
+              <FunnelViz stages={funnelSplit.data?.waiting_list || []} />
+            </div>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>New Recruits (have randomisation)</div>
+              <FunnelViz stages={funnelSplit.data?.new_recruits || []} />
+              {funnelSplit.data?.new_recruits_control != null && (
+                <p style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+                  Plus <b>{fmtNum(funnelSplit.data.new_recruits_control)}</b> in the Control arm — a comparison group, not part of the confirmed-to-attend flow above.
+                </p>
+              )}
+            </div>
+          </div>
+        </State>
+      </Card>
+      <Card title="Arrival → Acquisition → Activation → Retention" subtitle="Both pathways converge here — confirmed youth from Waiting List and New Recruits attend the same bootcamp from this point on." chip="REAL">
+        <State loading={funnelSplit.loading} error={funnelSplit.error} empty={!funnelSplit.loading && (funnelSplit.data?.merged || []).length === 0}>
+          <FunnelViz stages={funnelSplit.data?.merged || []} />
         </State>
       </Card>
 
@@ -2902,9 +2933,9 @@ function MobRecruitmentFunnelPage({ filters }) {
           <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(data?.progress_pct)] }}>{fmtPct(data?.progress_pct)}</span>} sub={`confirmed ÷ target (${fmtNum(data?.target)}) — call-center only, see Combined progress below`} tag="REAL" onClick={() => openMobDrill("progress_pct", "Progress on target", fmtPct)} />
         </Grid>
         <p style={{ fontSize: 11.5, color: C.muted, margin: "-6px 0 14px" }}>
-          Everything above is built from the call-center pathway alone (DAILY_ACQUISITION_SUMMARY) — the auto-confirmed 2.5-week pilot is deliberately kept out of these numbers so it never blends into one confusing rate. See it on its own below, and combined with this pathway in "Combined progress."
+          Everything above is built from the call-center pathway alone (DAILY_ACQUISITION_SUMMARY) — the auto-confirmed Newly registered pathway is deliberately kept out of these numbers so it never blends into one confusing rate. See it on its own below, and combined with this pathway in "Combined progress."
         </p>
-        <Card title="4-week vs 2.5-week cycle" subtitle="The 2.5-week pilot subcounties are auto-confirmed by policy — a distinct pathway with its own numbers, not blended into the 4-week cycle's rates." chip="REAL">
+        <Card title="BC3 Control List vs Newly registered" subtitle="Newly registered subcounties are auto-confirmed by policy — a distinct pathway with its own numbers, not blended into the BC3 Control List's rates." chip="REAL">
           <DataTable
             columns={[
               { key: "label", label: "Cycle" },
@@ -2916,8 +2947,8 @@ function MobRecruitmentFunnelPage({ filters }) {
               { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
             ]}
             rows={[
-              { label: "4-week cycle (call-center)", ...data?.four_week },
-              { label: "2.5-week cycle (auto-confirm)", ...data?.two_half_week },
+              { label: "BC3 Control List", ...data?.four_week },
+              { label: "Newly registered", ...data?.two_half_week },
             ]}
           />
         </Card>
@@ -2986,7 +3017,7 @@ function MobRecruitmentFunnelPage({ filters }) {
           })()}
           {data?.four_week?.mobilisation_rate != null && data?.mobilisation_rate != null && Math.abs(data.mobilisation_rate - data.four_week.mobilisation_rate) >= 1 && (
             <Insight tone="warn">
-              The blended mobilisation rate (<b>{fmtPct(data.mobilisation_rate)}</b>) reads {data.mobilisation_rate > data.four_week.mobilisation_rate ? "higher" : "lower"} than the 4-week cycle's real call-center rate (<b>{fmtPct(data.four_week.mobilisation_rate)}</b>) — the {fmtNum(data?.two_half_week?.assigned)} auto-confirmed pilot-subcounty youth skew the overall figure. See the cycle breakdown above.
+              The blended mobilisation rate (<b>{fmtPct(data.mobilisation_rate)}</b>) reads {data.mobilisation_rate > data.four_week.mobilisation_rate ? "higher" : "lower"} than the BC3 Control List's real call-center rate (<b>{fmtPct(data.four_week.mobilisation_rate)}</b>) — the {fmtNum(data?.two_half_week?.assigned)} auto-confirmed Newly registered youth skew the overall figure. See the cycle breakdown above.
             </Insight>
           )}
           {topVenue && (
@@ -5695,8 +5726,8 @@ const GUIDE_PAGES = [
     summary: "Registered → interested → eligible by district/parish/mobiliser.",
     what: "4 sub-pages — Awareness Overview, Mobilisers, KYC / Youth Profile, Forecast. Registered → interested → eligible by district, parish and mobiliser; youth demographics; registration-pace forecast." },
   { group: "Recruitment", page: "Mobilisation", tone: "real", navGroup: "rec", navTab: "mob",
-    summary: "Assigned → reached → confirmed, 4-week vs 2.5-week cycles.",
-    what: "5 sub-pages — Mobilisation Overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split 4-week vs 2.5-week pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
+    summary: "Assigned → reached → confirmed, BC3 Control List vs Newly registered.",
+    what: "5 sub-pages — Mobilisation Overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split BC3 Control List vs Newly registered pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
   { group: "Recruitment", page: "Acquisition", tone: "real", navGroup: "rec", navTab: "acq",
     summary: "Verified → acquired by district; venue risk categories.",
     what: "2 sub-pages — Overview, Arrival & Verification. Verified → acquired by district; venue risk categories (Target Achieved / On Track / Low Risk / High Risk)." },
@@ -6162,12 +6193,12 @@ async function buildMobilisationExport(filters) {
     sections: [
       xSection("Mobilisation KPIs, by district", "district", "District",
         mobMetricKeys.map((k) => xCol(k, k, { format: k.includes("rate") || k === "progress_pct" ? fmtPct : fmtNum })), byDistrictMob),
-      xSection("4-week vs 2.5-week cycle", "label", "Cycle", [
+      xSection("BC3 Control List vs Newly registered", "label", "Cycle", [
         xCol("assigned", "Assigned"), xCol("reached", "Reached"), xCol("confirmed", "Confirmed"),
         xCol("reach_rate", "Reach rate", { format: fmtPct }), xCol("mobilisation_rate", "Mobilisation rate", { format: fmtPct }), xCol("pct_female", "% Female", { format: fmtPct }),
       ], [
-        { label: "4-week cycle (call-center)", ...mob.four_week },
-        { label: "2.5-week cycle (auto-confirm)", ...mob.two_half_week },
+        { label: "BC3 Control List", ...mob.four_week },
+        { label: "Newly registered", ...mob.two_half_week },
       ], "Deliberately not blended into one row — see \"Combined progress\" below for the two pathways added together."),
       ...(mob.combined ? [
         xSection("Combined progress — call-center + auto-confirm", "label", "Component", [
