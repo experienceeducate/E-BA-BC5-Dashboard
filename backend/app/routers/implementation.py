@@ -138,11 +138,13 @@ def attendance(
 
     by_venue_day is the single-day, per-venue grain (unlike by_venue, which
     averages present across every day reported) -- feeds the Daily attendance
-    chart's district/venue drill for whichever day is clicked. all_sessions_
-    count/eighty_pct_sessions_count on by_venue are raw counts (SITE_FUNNEL_
-    METRICS' youth_100pct_lessons/youth_80pct_lessons, confirmed live) for the
-    frontend's two gauges -- summed against activated the same way it already
-    sums activated itself, not computed into a rate here.
+    chart's district/venue drill for whichever day is clicked.
+
+    Session-completion (youth_100pct_lessons/youth_80pct_lessons, the "Youth
+    attending sessions" gauges) lives on /api/implementation/retention, not
+    here -- it's a lesson-completion metric off the same SITE_FUNNEL_METRICS
+    mart /api/implementation/retention already reads, not a daily-attendance
+    one, so it moved there instead of being duplicated on both endpoints.
     """
     where_d, params_d = build_where(
         districts=district, venues=venue, extra=[active_cohort_clause("ad")], prefix="ad",
@@ -213,13 +215,7 @@ def attendance(
     SELECT UPPER(district) AS district, venue_name AS venue,
            SUM(activated_youth) AS activated,
            SUM(IF(UPPER(gender) = 'FEMALE', activated_youth, 0)) AS activated_female,
-           SUM(IF(UPPER(gender) = 'MALE', activated_youth, 0)) AS activated_male,
-           SUM(youth_100pct_lessons) AS all_sessions_count,
-           SUM(IF(UPPER(gender) = 'FEMALE', youth_100pct_lessons, 0)) AS all_sessions_count_female,
-           SUM(IF(UPPER(gender) = 'MALE', youth_100pct_lessons, 0)) AS all_sessions_count_male,
-           SUM(youth_80pct_lessons) AS eighty_pct_sessions_count,
-           SUM(IF(UPPER(gender) = 'FEMALE', youth_80pct_lessons, 0)) AS eighty_pct_sessions_count_female,
-           SUM(IF(UPPER(gender) = 'MALE', youth_80pct_lessons, 0)) AS eighty_pct_sessions_count_male
+           SUM(IF(UPPER(gender) = 'MALE', activated_youth, 0)) AS activated_male
     FROM {SITE_FUNNEL_METRICS}
     WHERE {activated_where} AND measure = '{SITE_FUNNEL_MEASURE_ACTUAL}'
     GROUP BY district, venue
@@ -240,12 +236,6 @@ def attendance(
         present = p.get("present")
         present_female = p.get("present_female")
         present_male = p.get("present_male")
-        all_sessions_count = r.get("all_sessions_count") or 0
-        all_sessions_count_female = r.get("all_sessions_count_female") or 0
-        all_sessions_count_male = r.get("all_sessions_count_male") or 0
-        eighty_pct_sessions_count = r.get("eighty_pct_sessions_count") or 0
-        eighty_pct_sessions_count_female = r.get("eighty_pct_sessions_count_female") or 0
-        eighty_pct_sessions_count_male = r.get("eighty_pct_sessions_count_male") or 0
         by_venue.append({
             "district": r["district"],
             "venue": r["venue"],
@@ -254,18 +244,12 @@ def attendance(
             "attendance_rate": _attendance_pick(_rate(present, activated), _rate(present_female, activated_female), _rate(present_male, activated_male), gender),
             "attendance_rate_female": _rate(present_female, activated_female),
             "attendance_rate_male": _rate(present_male, activated_male),
-            "all_sessions_count": _attendance_pick(all_sessions_count, all_sessions_count_female, all_sessions_count_male, gender),
-            "eighty_pct_sessions_count": _attendance_pick(eighty_pct_sessions_count, eighty_pct_sessions_count_female, eighty_pct_sessions_count_male, gender),
             # Always-both-genders raw counts (never gender-picked, unlike the
             # headline fields above) -- so the frontend can sum its own
-            # gender-split gauge/drill totals the same way it already sums
-            # "activated" itself, regardless of the active gender filter.
+            # gender-split totals the same way it already sums "activated"
+            # itself, regardless of the active gender filter.
             "activated_female": activated_female,
             "activated_male": activated_male,
-            "all_sessions_count_female": all_sessions_count_female,
-            "all_sessions_count_male": all_sessions_count_male,
-            "eighty_pct_sessions_count_female": eighty_pct_sessions_count_female,
-            "eighty_pct_sessions_count_male": eighty_pct_sessions_count_male,
         })
 
     by_venue_day = []
@@ -441,8 +425,16 @@ def retention(
     raw counts (denominator for retention_rate is activated_youth), not the
     table's own retention_rate* columns, to stay consistent across both rates.
     site_metrics rows are venue×gender-grain (see tables.py), so
-    retained_female sums the same youth_80pct_lessons column filtered to
-    gender = 'FEMALE' rather than needing a second query.
+    retained_female/male sum the same youth_80pct_lessons column filtered to
+    gender rather than needing a second query -- same pattern for
+    all_sessions_count(_female/_male) off youth_100pct_lessons.
+
+    all_sessions_count/all_sessions_rate ("Youth attending sessions" -- the
+    100%-of-lessons gauge) lives here, not on /api/implementation/attendance,
+    because it's a lesson-completion metric off this same SITE_FUNNEL_METRICS
+    mart, not a daily-attendance one -- moved here (and consolidated with
+    retained/retention_rate into one gendered-by-district-then-venue drill on
+    the frontend) rather than duplicating it across both endpoints.
     """
     where, params = build_where(
         venues=venue, extra=[active_cohort_clause("rt")], prefix="rt",
@@ -452,19 +444,35 @@ def retention(
     SELECT UPPER(district) AS district, venue_name AS venue,
            SUM(acquired_youth) AS acquired,
            SUM(activated_youth) AS activated,
+           SUM(IF(UPPER(gender) = 'FEMALE', activated_youth, 0)) AS activated_female,
+           SUM(IF(UPPER(gender) = 'MALE', activated_youth, 0)) AS activated_male,
            SUM(youth_80pct_lessons) AS retained,
-           SUM(IF(UPPER(gender) = 'FEMALE', youth_80pct_lessons, 0)) AS retained_female
+           SUM(IF(UPPER(gender) = 'FEMALE', youth_80pct_lessons, 0)) AS retained_female,
+           SUM(IF(UPPER(gender) = 'MALE', youth_80pct_lessons, 0)) AS retained_male,
+           SUM(youth_100pct_lessons) AS all_sessions_count,
+           SUM(IF(UPPER(gender) = 'FEMALE', youth_100pct_lessons, 0)) AS all_sessions_count_female,
+           SUM(IF(UPPER(gender) = 'MALE', youth_100pct_lessons, 0)) AS all_sessions_count_male
     FROM {SITE_FUNNEL_METRICS}
     WHERE {where} AND measure = '{SITE_FUNNEL_MEASURE_ACTUAL}'
     GROUP BY district, venue
     ORDER BY district, venue
     """
     rows = database.run_query(sql, params, role=user.role)
+
+    def _rate(numer, denom):
+        return round(100 * numer / denom, 1) if numer is not None and denom else None
+
     for r in rows:
         acq, act = r.get("acquired") or 0, r.get("activated") or 0
+        act_f, act_m = r.get("activated_female") or 0, r.get("activated_male") or 0
         r["activation_rate"] = round(100 * act / acq, 1) if acq else None
-        r["retention_rate"]  = round(100 * (r.get("retained") or 0) / act, 1) if act else None
-    return {"by_venue": rows, "targets": {"activation": 90, "retention": 85}}
+        r["retention_rate"]         = _rate(r.get("retained"), act)
+        r["retention_rate_female"]  = _rate(r.get("retained_female"), act_f)
+        r["retention_rate_male"]    = _rate(r.get("retained_male"), act_m)
+        r["all_sessions_rate"]        = _rate(r.get("all_sessions_count"), act)
+        r["all_sessions_rate_female"] = _rate(r.get("all_sessions_count_female"), act_f)
+        r["all_sessions_rate_male"]   = _rate(r.get("all_sessions_count_male"), act_m)
+    return {"by_venue": rows, "targets": {"activation": 90, "retention": 85, "all_sessions": 75}}
 
 
 @router.get("/api/implementation/retention-calls")
