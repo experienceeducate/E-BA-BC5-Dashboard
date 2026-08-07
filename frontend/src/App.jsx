@@ -348,7 +348,12 @@ function Gauge({ label, pct, target, onClick }) {
     <div onClick={onClick} style={{ marginBottom: 16, cursor: onClick ? "pointer" : undefined }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
         <span style={{ color: C.text, fontWeight: 600 }}>{label}{onClick && <span style={{ color: C.muted, marginLeft: 5 }}>›</span>}</span>
-        <span style={{ color: belowTarget ? C.coral : C.green, fontWeight: 700 }}>{fmtPct(pct)}</span>
+        <span>
+          <span style={{ color: belowTarget ? C.coral : C.green, fontWeight: 700 }}>{fmtPct(pct)}</span>
+          {/* Explicit target text, not just the tick mark below — a hover-only
+              title attribute on a 2px line is easy to miss. */}
+          {target != null && <span style={{ color: C.muted, fontWeight: 600, marginLeft: 6 }}>· target {target}%</span>}
+        </span>
       </div>
       <div style={{ background: C.line, borderRadius: 6, height: 10, position: "relative" }}>
         <div style={{ width: `${filled}%`, background: belowTarget ? C.coral : C.teal, height: "100%", borderRadius: 6 }} />
@@ -4034,17 +4039,64 @@ function AttendanceTab({ filters }) {
 
   // Gauges — real per-youth lesson-completion counts (SITE_FUNNEL_METRICS'
   // youth_100pct_lessons/youth_80pct_lessons), summed the same way
-  // totalActivated already is, not a fabricated pace projection.
+  // totalActivated already is, not a fabricated pace projection. Female/male
+  // totals use by_venue's always-both-genders raw fields (never affected by
+  // the page's own gender filter), so both split gauges stay real and
+  // populated regardless of which gender (if any) is selected up top.
   const totalAllSessions = sumBy(venueRows, "all_sessions_count");
   const totalEightyPctSessions = sumBy(venueRows, "eighty_pct_sessions_count");
   const pctAllSessions = totalActivated ? Math.round((1000 * totalAllSessions) / totalActivated) / 10 : null;
   const pct80pctSessions = totalActivated ? Math.round((1000 * totalEightyPctSessions) / totalActivated) / 10 : null;
 
+  const totalActivatedFemale = sumBy(venueRows, "activated_female");
+  const totalActivatedMale = sumBy(venueRows, "activated_male");
+  const pctAllSessionsFemale = totalActivatedFemale ? Math.round((1000 * sumBy(venueRows, "all_sessions_count_female")) / totalActivatedFemale) / 10 : null;
+  const pctAllSessionsMale = totalActivatedMale ? Math.round((1000 * sumBy(venueRows, "all_sessions_count_male")) / totalActivatedMale) / 10 : null;
+  const pct80pctSessionsFemale = totalActivatedFemale ? Math.round((1000 * sumBy(venueRows, "eighty_pct_sessions_count_female")) / totalActivatedFemale) / 10 : null;
+  const pct80pctSessionsMale = totalActivatedMale ? Math.round((1000 * sumBy(venueRows, "eighty_pct_sessions_count_male")) / totalActivatedMale) / 10 : null;
+
+  // Click a gauge -> that session-completion metric, by district then venue
+  // (same district->venue drill shape as openMetricDrill below, just against
+  // all_sessions_count/eighty_pct_sessions_count instead of present).
+  function openSessionDrill(metricKey, label, target) {
+    const rateFor = (activated, count) => (activated ? Math.round((1000 * (count || 0)) / activated) / 10 : null);
+    const byDistrict = {};
+    venueRows.forEach((v) => {
+      const d = byDistrict[v.district] || (byDistrict[v.district] = { district: v.district, activated: 0, count: 0 });
+      d.activated += v.activated || 0;
+      d.count += v[metricKey] || 0;
+    });
+    const rootRows = Object.values(byDistrict)
+      .map((d) => ({ district: d.district, activated: d.activated, [metricKey]: d.count, rate: rateFor(d.activated, d.count) }))
+      .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
+    drill.open({
+      title: `${label} — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: [
+        { key: "activated", label: "Activated", align: "right", render: fmtNum },
+        { key: metricKey, label: "# " + label, align: "right", render: fmtNum },
+        { key: "rate", label, align: "right", render: (v) => <span style={{ color: v == null ? C.muted : v >= target ? C.green : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
+      ],
+      rootRows,
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => venueRows
+        .filter((v) => v.district === root.district)
+        .map((v) => ({ venue: v.venue, activated: v.activated, [metricKey]: v[metricKey], rate: rateFor(v.activated, v[metricKey]) }))
+        .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1)),
+    });
+  }
+
   const rateFns = { attendance_rate: (d) => (d.activated ? Math.round((1000 * d.present) / d.activated) / 10 : null) };
   const districtRows = groupByDistrict(venueRows, ["activated", "present"], rateFns);
-  // Bottom 5 only (not scrolled) — same read as the reference design's
-  // "Attendance rate — bottom 5 venues" panel.
-  const bottom5Venues = [...venueRows].filter((v) => v.attendance_rate != null).sort((a, b) => a.attendance_rate - b.attendance_rate).slice(0, 5);
+  // Every venue, worst-first — same priority read as the previous bottom-5
+  // cut, just paginated instead of hard-limited to 5.
+  const sortedVenues = [...venueRows].filter((v) => v.attendance_rate != null).sort((a, b) => a.attendance_rate - b.attendance_rate);
+  const [venuePage, setVenuePage] = useState(0);
+  const venuePageSize = 10;
+  const venueMaxPage = Math.max(0, Math.ceil(sortedVenues.length / venuePageSize) - 1);
+  const venuePageClamped = Math.min(venuePage, venueMaxPage);
+  const pagedVenues = sortedVenues.slice(venuePageClamped * venuePageSize, venuePageClamped * venuePageSize + venuePageSize);
 
   function openMetricDrill(metricKey, label, formatter = fmtNum) {
     const rootRows = groupByDistrict(venueRows, ["activated", "present"], rateFns)
@@ -4119,26 +4171,34 @@ function AttendanceTab({ filters }) {
           tag="REAL"
         />
         <KpiTile
-          label="Latest attendance rate" value={fmtPct(latestAttendanceRate)}
+          label="Attendance rate today" value={fmtPct(latestAttendanceRate)}
           sub={latestDay?.event_date} tag="REAL"
           onClick={() => openMetricDrill("attendance_rate", "Attendance rate", fmtPct)}
         />
-        <KpiTile label="Youth present (latest)" value={fmtNum(latestDay?.present)} sub={latestDay?.event_date} tag="REAL" onClick={() => openMetricDrill("present", "Present")} />
+        <KpiTile label="Youth present today" value={fmtNum(latestDay?.present)} sub={latestDay?.event_date} tag="REAL" onClick={() => openMetricDrill("present", "Present")} />
         <KpiTile label="Average attendance" value={fmtPct(avgAttendanceRate)} sub={daily.length ? `mean of ${fmtNum(daily.length)} days reported, present ÷ activated` : undefined} tag="REAL" />
         <KpiTile label="Absenteeism rate" value={fmtPct(avgAbsenteeismRate)} sub={daily.length ? `mean of ${fmtNum(daily.length)} days reported, absent ÷ activated` : undefined} tag="REAL" />
-        <KpiTile label="Females present (latest)" value={fmtNum(latestDay?.present_female)} sub={latestDay?.event_date} tag="REAL" />
-        <KpiTile label="Males present (latest)" value={fmtNum(latestDay?.present_male)} sub={latestDay?.event_date} tag="REAL" />
+        <KpiTile label="Females present today" value={fmtNum(latestDay?.present_female)} sub={latestDay?.event_date} tag="REAL" />
+        <KpiTile label="Males present today" value={fmtNum(latestDay?.present_male)} sub={latestDay?.event_date} tag="REAL" />
       </Grid>
 
       <ExecBand num="◆" title="Session completion" />
       <Card
         title="Youth attending sessions"
-        subtitle="Real per-youth lesson-completion counts from SITE_FUNNEL_METRICS (youth_100pct_lessons / youth_80pct_lessons), against activated — not a fabricated pace projection."
+        subtitle="Real per-youth lesson-completion counts from SITE_FUNNEL_METRICS (youth_100pct_lessons / youth_80pct_lessons), against activated — not a fabricated pace projection. Click a gauge to drill by district, then venue."
         chip="REAL"
       >
         <State loading={loading} error={error} empty={!loading && venueRows.length === 0}>
-          <Gauge label="% who attended all sessions" pct={pctAllSessions} target={75} />
-          <Gauge label="% who attended ≥80% of sessions" pct={pct80pctSessions} target={85} />
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 24, marginBottom: 8 }}>
+            <Gauge label="% who attended all sessions" pct={pctAllSessions} target={75} onClick={() => openSessionDrill("all_sessions_count", "% attended all sessions", 75)} />
+            <Gauge label="Female" pct={pctAllSessionsFemale} target={75} onClick={() => openSessionDrill("all_sessions_count_female", "% attended all sessions (F)", 75)} />
+            <Gauge label="Male" pct={pctAllSessionsMale} target={75} onClick={() => openSessionDrill("all_sessions_count_male", "% attended all sessions (M)", 75)} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 24 }}>
+            <Gauge label="% who attended ≥80% of sessions" pct={pct80pctSessions} target={85} onClick={() => openSessionDrill("eighty_pct_sessions_count", "% attended ≥80% of sessions", 85)} />
+            <Gauge label="Female" pct={pct80pctSessionsFemale} target={85} onClick={() => openSessionDrill("eighty_pct_sessions_count_female", "% attended ≥80% of sessions (F)", 85)} />
+            <Gauge label="Male" pct={pct80pctSessionsMale} target={85} onClick={() => openSessionDrill("eighty_pct_sessions_count_male", "% attended ≥80% of sessions (M)", 85)} />
+          </div>
         </State>
       </Card>
 
@@ -4193,8 +4253,8 @@ function AttendanceTab({ filters }) {
         </Card>
       </div>
 
-      <Card title="Attendance rate — bottom 5 venues" subtitle="Lowest-attendance venues: present ÷ activated, overall and by gender." chip="REAL">
-        <State loading={loading} error={error} empty={!loading && bottom5Venues.length === 0}>
+      <Card title={`Attendance rate — all ${fmtNum(sortedVenues.length)} venues`} subtitle="Every reporting venue, lowest-attendance first: present ÷ activated, overall and by gender." chip="REAL">
+        <State loading={loading} error={error} empty={!loading && sortedVenues.length === 0}>
           <DataTable
             columns={[
               { key: "venue", label: "Venue" },
@@ -4204,15 +4264,22 @@ function AttendanceTab({ filters }) {
               { key: "attendance_rate_female", label: "Attendance rate (F)", align: "right", render: renderRateCell("attendance_rate") },
               { key: "attendance_rate_male", label: "Attendance rate (M)", align: "right", render: renderRateCell("attendance_rate") },
             ]}
-            rows={bottom5Venues}
+            rows={pagedVenues}
           />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
+            <span>{sortedVenues.length === 0 ? "0" : venuePageClamped * venuePageSize + 1}–{Math.min(sortedVenues.length, venuePageClamped * venuePageSize + venuePageSize)} of {sortedVenues.length} venues</span>
+            <span style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => setVenuePage(Math.max(0, venuePageClamped - 1))} disabled={venuePageClamped === 0} style={{ ...PAGER_BTN, opacity: venuePageClamped === 0 ? 0.5 : 1 }}>‹ Prev</button>
+              <button onClick={() => setVenuePage(Math.min(venueMaxPage, venuePageClamped + 1))} disabled={venuePageClamped === venueMaxPage} style={{ ...PAGER_BTN, opacity: venuePageClamped === venueMaxPage ? 0.5 : 1 }}>Next ›</button>
+            </span>
+          </div>
         </State>
       </Card>
 
       {avgChurnRate != null && latestAttendanceRate != null && (
         <Insight tone={latestAttendanceRate >= 95 && avgChurnRate <= 1 ? "pos" : "warn"}>
           <b>Attendance holds at {fmtPct(latestAttendanceRate)}</b> as of {latestDay?.event_date}, with average daily churn at <b>{fmtPct(avgChurnRate)}</b>
-          {bottom5Venues[0] ? <> — <b>{bottom5Venues[0].venue}</b> ({bottom5Venues[0].district}) is the lowest-attendance venue at {fmtPct(bottom5Venues[0].attendance_rate)}.</> : "."}
+          {sortedVenues[0] ? <> — <b>{sortedVenues[0].venue}</b> ({sortedVenues[0].district}) is the lowest-attendance venue at {fmtPct(sortedVenues[0].attendance_rate)}.</> : "."}
         </Insight>
       )}
       <Insight tone="neutral">

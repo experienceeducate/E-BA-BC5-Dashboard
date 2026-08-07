@@ -403,12 +403,16 @@ export const DEMO = {
       { event_date: "2026-05-11", present: 3700, absent: 300, present_female: 2270, present_male: 1430, absent_female: 170, absent_male: 130, net_churn: -50 },
       { event_date: "2026-05-12", present: 3680, absent: 320, present_female: 2255, present_male: 1425, absent_female: 180, absent_male: 140, net_churn: -20 },
     ],
+    // activated_female/male and the _female/_male session-completion counts
+    // are always-both-genders raw fields (see _attendance_pick, backend) --
+    // real regardless of any gender filter, feeding the gauges' Female/Male
+    // splits and their drills.
     by_venue: [
-      { district: "MAYUGE", venue: "Kigandalo HS", activated: 300, present: 275, attendance_rate: 91.7, attendance_rate_female: 93.5, attendance_rate_male: 88.9, all_sessions_count: 210, eighty_pct_sessions_count: 265 },
-      { district: "BUGWERI", venue: "Busembatia CC", activated: 280, present: 258, attendance_rate: 92.1, attendance_rate_female: 90.8, attendance_rate_male: 94.2, all_sessions_count: 195, eighty_pct_sessions_count: 250 },
-      { district: "KAMULI", venue: "Namwendwa VTC", activated: 240, present: 205, attendance_rate: 85.4, attendance_rate_female: 87.0, attendance_rate_male: 82.6, all_sessions_count: 160, eighty_pct_sessions_count: 200 },
-      { district: "BUGIRI", venue: "Isegero VTC", activated: 190, present: 152, attendance_rate: 80.0, attendance_rate_female: 78.5, attendance_rate_male: 82.1, all_sessions_count: 110, eighty_pct_sessions_count: 148 },
-      { district: "MAYUGE", venue: "Bwondha Primary school", activated: 150, present: 108, attendance_rate: 72.0, attendance_rate_female: 74.2, attendance_rate_male: 68.9, all_sessions_count: 78, eighty_pct_sessions_count: 100 },
+      { district: "MAYUGE", venue: "Kigandalo HS", activated: 300, activated_female: 185, activated_male: 115, present: 275, attendance_rate: 91.7, attendance_rate_female: 93.5, attendance_rate_male: 88.9, all_sessions_count: 210, all_sessions_count_female: 135, all_sessions_count_male: 75, eighty_pct_sessions_count: 265, eighty_pct_sessions_count_female: 168, eighty_pct_sessions_count_male: 97 },
+      { district: "BUGWERI", venue: "Busembatia CC", activated: 280, activated_female: 170, activated_male: 110, present: 258, attendance_rate: 92.1, attendance_rate_female: 90.8, attendance_rate_male: 94.2, all_sessions_count: 195, all_sessions_count_female: 118, all_sessions_count_male: 77, eighty_pct_sessions_count: 250, eighty_pct_sessions_count_female: 152, eighty_pct_sessions_count_male: 98 },
+      { district: "KAMULI", venue: "Namwendwa VTC", activated: 240, activated_female: 150, activated_male: 90, present: 205, attendance_rate: 85.4, attendance_rate_female: 87.0, attendance_rate_male: 82.6, all_sessions_count: 160, all_sessions_count_female: 102, all_sessions_count_male: 58, eighty_pct_sessions_count: 200, eighty_pct_sessions_count_female: 127, eighty_pct_sessions_count_male: 73 },
+      { district: "BUGIRI", venue: "Isegero VTC", activated: 190, activated_female: 115, activated_male: 75, present: 152, attendance_rate: 80.0, attendance_rate_female: 78.5, attendance_rate_male: 82.1, all_sessions_count: 110, all_sessions_count_female: 66, all_sessions_count_male: 44, eighty_pct_sessions_count: 148, eighty_pct_sessions_count_female: 89, eighty_pct_sessions_count_male: 59 },
+      { district: "MAYUGE", venue: "Bwondha Primary school", activated: 150, activated_female: 92, activated_male: 58, present: 108, attendance_rate: 72.0, attendance_rate_female: 74.2, attendance_rate_male: 68.9, all_sessions_count: 78, all_sessions_count_female: 49, all_sessions_count_male: 29, eighty_pct_sessions_count: 100, eighty_pct_sessions_count_female: 63, eighty_pct_sessions_count_male: 37 },
     ],
     // Single-day grain (unlike by_venue's avg-across-days present above) —
     // feeds the Daily attendance chart's district/venue drill.

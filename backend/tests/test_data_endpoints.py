@@ -1021,3 +1021,41 @@ def test_attendance_by_venue_day_skips_venues_with_no_activated_match(as_staff, 
     mock_run_query.set_side_effect(side_effect)
     r = as_staff.get("/api/implementation/attendance")
     assert r.json()["by_venue_day"] == []
+
+
+def test_attendance_accepts_district_filter(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/implementation/attendance", params={"district": "BUGIRI"})
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "youth_district" in all_sql  # ATTENDANCE_SUMMARY-based queries
+    assert "UPPER(district) AS district" in all_sql  # SITE_FUNNEL_METRICS query
+
+
+def test_attendance_gender_filter_picks_headline_without_collapsing_split(as_staff, mock_run_query):
+    """gender=FEMALE should make the headline present/activated/attendance_rate
+    reflect female-only numbers, but attendance_rate_male must stay real and
+    non-zero -- gender is never a WHERE filter here (see _attendance_pick's
+    docstring), so the male side is never collapsed to zero by the filter."""
+    def side_effect(sql, params, role):
+        if "AVG(total_youths_present)" in sql:
+            return [{"venue": "Bugiri primary school", "present": 80, "present_female": 50, "present_male": 30}]
+        if "SUM(activated_youth) AS activated" in sql:
+            return [{
+                "district": "BUGIRI", "venue": "Bugiri primary school",
+                "activated": 100, "activated_female": 60, "activated_male": 40,
+                "all_sessions_count": 40, "all_sessions_count_female": 25, "all_sessions_count_male": 15,
+                "eighty_pct_sessions_count": 70, "eighty_pct_sessions_count_female": 45, "eighty_pct_sessions_count_male": 25,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance", params={"gender": "FEMALE"})
+    assert r.status_code == 200
+    v = r.json()["by_venue"][0]
+    assert v["activated"] == 60
+    assert v["present"] == 50.0
+    assert v["attendance_rate"] == round(100 * 50 / 60, 1)
+    assert v["all_sessions_count"] == 25
+    assert v["eighty_pct_sessions_count"] == 45
+    # Male-side split numbers must remain real, not collapsed by the filter.
+    assert v["attendance_rate_male"] == 75.0
