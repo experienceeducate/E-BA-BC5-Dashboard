@@ -1232,3 +1232,59 @@ def test_retention_all_sessions_rate_null_when_activated_zero(as_staff, mock_run
     assert v["all_sessions_rate"] is None
     assert v["all_sessions_rate_female"] is None
     assert v["retention_rate"] is None
+
+
+def test_retention_gender_filter_picks_headline_without_collapsing_split(as_staff, mock_run_query):
+    """gender=FEMALE should make the headline acquired/activated/retained/
+    all_sessions_count (and every rate derived from them) reflect female-only
+    numbers, but the male-side raw counts and retention_rate_male/
+    all_sessions_rate_male must stay real and non-zero -- gender is never a
+    WHERE filter here (site_metrics is venue×gender-grain; WHERE-filtering
+    would collapse the other gender's counts to zero)."""
+    mock_run_query.set_rows([{
+        "district": "BUGIRI", "venue": "Bugiri primary school",
+        "acquired": 100, "acquired_female": 60, "acquired_male": 40,
+        "activated": 90, "activated_female": 55, "activated_male": 35,
+        "retained": 80, "retained_female": 50, "retained_male": 30,
+        "all_sessions_count": 60, "all_sessions_count_female": 38, "all_sessions_count_male": 22,
+    }])
+    r = as_staff.get("/api/implementation/retention", params={"gender": "FEMALE"})
+    assert r.status_code == 200
+    v = r.json()["by_venue"][0]
+    assert v["acquired"] == 60
+    assert v["activated"] == 55
+    assert v["retained"] == 50
+    assert v["all_sessions_count"] == 38
+    assert v["activation_rate"] == round(100 * 55 / 60, 1)
+    assert v["retention_rate"] == round(100 * 50 / 55, 1)
+    # Male-side raw counts and rates must remain real, not collapsed by the filter.
+    assert v["activated_male"] == 35
+    assert v["retained_male"] == 30
+    assert v["retention_rate_male"] == round(100 * 30 / 35, 1)
+    assert v["all_sessions_rate_male"] == round(100 * 22 / 35, 1)
+
+
+def test_attendance_by_venue_day_includes_absent_and_net_churn(as_staff, mock_run_query):
+    """absent/net_churn are needed so the frontend can recompute a venue-
+    filtered Daily attendance/net-churn series -- previously missing from
+    by_venue_day entirely, so those two charts stayed unfiltered while every
+    other venue-grain visual on the page responded to the local filter."""
+    def side_effect(sql, params, role):
+        if "SELECT venue_name AS venue, report_date AS event_date" in sql:
+            return [{
+                "venue": "Bugiri primary school", "event_date": "2026-05-30",
+                "present": 90, "present_female": 55, "present_male": 35,
+                "absent": 10, "absent_female": 6, "absent_male": 4, "net_churn": -2,
+            }]
+        if "SUM(activated_youth) AS activated" in sql:
+            return [{
+                "district": "BUGIRI", "venue": "Bugiri primary school",
+                "activated": 100, "activated_female": 60, "activated_male": 40,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance")
+    assert r.status_code == 200
+    v = r.json()["by_venue_day"][0]
+    assert v["absent"] == 10
+    assert v["net_churn"] == -2
