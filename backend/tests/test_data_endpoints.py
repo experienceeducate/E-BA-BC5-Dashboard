@@ -1059,3 +1059,98 @@ def test_attendance_gender_filter_picks_headline_without_collapsing_split(as_sta
     assert v["eighty_pct_sessions_count"] == 45
     # Male-side split numbers must remain real, not collapsed by the filter.
     assert v["attendance_rate_male"] == 75.0
+
+
+def test_attendance_lessons_by_lesson_computes_rates(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "GROUP BY lesson_id, lesson_name, lesson_time" in sql:
+            return [{
+                "lesson_id": "L1", "lesson_name": "Planning to Earn", "lesson_time": "Morning",
+                "total": 100, "present": 92, "total_reports": 10, "timely_reports": 7,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance-lessons")
+    assert r.status_code == 200
+    lesson = r.json()["by_lesson"][0]
+    assert lesson["attendance_rate"] == 92.0
+    assert lesson["timely_rate"] == 70.0
+
+
+def test_attendance_lessons_by_session_splits_morning_afternoon(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "GROUP BY lesson_time" in sql:
+            return [
+                {"lesson_time": "Morning", "total": 100, "present": 95, "total_reports": 10, "timely_reports": 9},
+                {"lesson_time": "Afternoon", "total": 80, "present": 60, "total_reports": 8, "timely_reports": 4},
+            ]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance-lessons")
+    assert r.status_code == 200
+    by_session = {s["lesson_time"]: s for s in r.json()["by_session"]}
+    assert by_session["Morning"]["attendance_rate"] == 95.0
+    assert by_session["Morning"]["timely_rate"] == 90.0
+    assert by_session["Afternoon"]["attendance_rate"] == 75.0
+    assert by_session["Afternoon"]["timely_rate"] == 50.0
+
+
+def test_attendance_lessons_timely_report_sql_uses_kampala_cutoffs(as_staff, mock_run_query):
+    """Morning reports are timely before 12:00 noon LOCAL time, Afternoon
+    reports at/before 17:00 LOCAL -- submission_time is stored UTC, so the
+    comparison must convert to Africa/Kampala first, not compare raw UTC
+    clock time against the literal cutoffs."""
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/attendance-lessons")
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "Africa/Kampala" in all_sql
+    assert "TIME(12, 0, 0)" in all_sql
+    assert "TIME(17, 0, 0)" in all_sql
+
+
+def test_attendance_lessons_by_reporter_ranks_timeliness(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "SELECT report_created_by AS reporter" in sql:
+            return [
+                {"reporter": "user_abc", "total_reports": 20, "timely_reports": 5},
+                {"reporter": "user_xyz", "total_reports": 10, "timely_reports": 10},
+            ]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance-lessons")
+    assert r.status_code == 200
+    by_reporter = {row["reporter"]: row for row in r.json()["by_reporter"]}
+    assert by_reporter["user_abc"]["timely_rate"] == 25.0
+    assert by_reporter["user_xyz"]["timely_rate"] == 100.0
+
+
+def test_attendance_lessons_by_lesson_venue_drill_shape(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "GROUP BY lesson_id, lesson_name, district, venue" in sql:
+            return [{
+                "lesson_id": "L1", "lesson_name": "Planning to Earn",
+                "district": "BUGIRI", "venue": "Bugiri primary school",
+                "total": 40, "present": 36, "total_reports": 4, "timely_reports": 3,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance-lessons")
+    assert r.status_code == 200
+    row = r.json()["by_lesson_venue"][0]
+    assert row["district"] == "BUGIRI"
+    assert row["venue"] == "Bugiri primary school"
+    assert row["attendance_rate"] == 90.0
+    assert row["timely_rate"] == 75.0
+
+
+def test_attendance_lessons_accepts_district_gender_venue_filters(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/implementation/attendance-lessons",
+        params={"district": "BUGIRI", "gender": "FEMALE", "venue": "Bugiri primary school"},
+    )
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "youth_district" in all_sql
+    assert "youth_gender" in all_sql
+    assert "venue_name" in all_sql

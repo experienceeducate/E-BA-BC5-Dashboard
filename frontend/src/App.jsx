@@ -868,6 +868,7 @@ const RATE_TARGETS = {
   retention_rate:    { good: 85, warn: 75, label: "Retention" },
   attendance_rate:   { good: 95, warn: 90, label: "Attendance" },
   reach_rate:        { good: 70, warn: 60, label: "Reach" },
+  timely_rate:       { good: 90, warn: 75, label: "Timely reporting" },
 };
 
 // One color rule for every rate-vs-target figure that uses RATE_TARGETS'
@@ -4014,6 +4015,29 @@ function RetentionTab({ filters }) {
 }
 
 function AttendanceTab({ filters }) {
+  const [page, setPage] = useState("overview");
+  return (
+    <div>
+      <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Attendance</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>
+        Daily and per-venue attendance against activation, session-completion gauges, and a
+        lesson-by-lesson breakdown with report timeliness.
+      </p>
+      <PageNav
+        active={page}
+        onChange={setPage}
+        pages={[
+          { key: "overview", label: "Attendance Overview" },
+          { key: "lessons", label: "Lesson Attendance" },
+        ]}
+      />
+      {page === "overview" && <AttendanceOverviewPage filters={filters} />}
+      {page === "lessons" && <AttendanceLessonsPage filters={filters} />}
+    </div>
+  );
+}
+
+function AttendanceOverviewPage({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/attendance${buildParams(filters)}`);
   const daily = data?.daily || [];
@@ -4282,10 +4306,178 @@ function AttendanceTab({ filters }) {
           {sortedVenues[0] ? <> — <b>{sortedVenues[0].venue}</b> ({sortedVenues[0].district}) is the lowest-attendance venue at {fmtPct(sortedVenues[0].attendance_rate)}.</> : "."}
         </Insight>
       )}
-      <Insight tone="neutral">
-        Per-lesson attendance isn't shown yet — no per-lesson attendance-% table has been confirmed against
-        live BigQuery. This page will grow a lesson-by-lesson breakdown once one is.
-      </Insight>
+    </div>
+  );
+}
+
+// Per-lesson, per-session attendance + report timeliness -- a genuinely
+// finer grain than AttendanceOverviewPage's daily venue-level view (that
+// mart has no per-lesson breakdown). "Timely" here is the recruitment
+// team's own cutoff: a Morning lesson's report is on time if submitted
+// before 12:00 noon local (Africa/Kampala) time; an Afternoon report is on
+// time at/before 17:00 local -- see LESSON_TIMELY_REPORT_SQL in tables.py.
+function AttendanceLessonsPage({ filters }) {
+  const drill = useDrill();
+  const { data, loading, error } = useApi(`/api/implementation/attendance-lessons${buildParams(filters)}`);
+  const byLesson = data?.by_lesson || [];
+  const bySession = data?.by_session || [];
+  const byLessonVenue = data?.by_lesson_venue || [];
+  const byReporter = data?.by_reporter || [];
+
+  const morning = bySession.find((s) => s.lesson_time === "Morning");
+  const afternoon = bySession.find((s) => s.lesson_time === "Afternoon");
+  const totalReports = sumBy(bySession, "total_reports");
+  const timelyReports = sumBy(bySession, "timely_reports");
+  const totalRecords = sumBy(bySession, "total");
+  const presentRecords = sumBy(bySession, "present");
+  const overallAttendanceRate = totalRecords ? Math.round((1000 * presentRecords) / totalRecords) / 10 : null;
+  const overallTimelyRate = totalReports ? Math.round((1000 * timelyReports) / totalReports) / 10 : null;
+  const lessonsTracked = new Set(byLesson.map((l) => l.lesson_id)).size;
+
+  // Worst-attendance-first, same priority read as the Overview tab's venue
+  // table -- paginated instead of hard-limited.
+  const sortedLessons = [...byLesson].filter((l) => l.attendance_rate != null).sort((a, b) => a.attendance_rate - b.attendance_rate);
+  const [lessonPage, setLessonPage] = useState(0);
+  const lessonPageSize = 10;
+  const lessonMaxPage = Math.max(0, Math.ceil(sortedLessons.length / lessonPageSize) - 1);
+  const lessonPageClamped = Math.min(lessonPage, lessonMaxPage);
+  const pagedLessons = sortedLessons.slice(lessonPageClamped * lessonPageSize, lessonPageClamped * lessonPageSize + lessonPageSize);
+
+  function openLessonDrill(lesson) {
+    const rowsForLesson = byLessonVenue.filter((v) => v.lesson_id === lesson.lesson_id);
+    const byDistrict = {};
+    rowsForLesson.forEach((v) => {
+      const d = byDistrict[v.district] || (byDistrict[v.district] = { district: v.district, total: 0, present: 0, total_reports: 0, timely_reports: 0 });
+      d.total += v.total || 0;
+      d.present += v.present || 0;
+      d.total_reports += v.total_reports || 0;
+      d.timely_reports += v.timely_reports || 0;
+    });
+    const rate = (present, total) => (total ? Math.round((1000 * present) / total) / 10 : null);
+    const rootRows = Object.values(byDistrict)
+      .map((d) => ({ ...d, attendance_rate: rate(d.present, d.total), timely_rate: rate(d.timely_reports, d.total_reports) }))
+      .sort((a, b) => (a.attendance_rate ?? 101) - (b.attendance_rate ?? 101));
+    const columns = [
+      { key: "total_reports", label: "Reports", align: "right", render: fmtNum },
+      { key: "attendance_rate", label: "Attendance rate", align: "right", render: renderRateCell("attendance_rate") },
+      { key: "timely_rate", label: "Timely reporting", align: "right", render: renderRateCell("timely_rate") },
+    ];
+    drill.open({
+      title: `${lesson.lesson_name} (${lesson.lesson_time}) — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns,
+      rootRows,
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => rowsForLesson
+        .filter((v) => v.district === root.district)
+        .map((v) => ({ venue: v.venue, total_reports: v.total_reports, attendance_rate: v.attendance_rate, timely_rate: v.timely_rate }))
+        .sort((a, b) => (a.attendance_rate ?? 101) - (b.attendance_rate ?? 101)),
+    });
+  }
+
+  // Worst-timeliness-first -- a data-quality/coverage read, not a ranking of
+  // named staff (reporter is an opaque auth-system ID, never a real name).
+  const sortedReporters = [...byReporter].filter((r) => r.timely_rate != null).sort((a, b) => a.timely_rate - b.timely_rate);
+  const [reporterPage, setReporterPage] = useState(0);
+  const reporterPageSize = 10;
+  const reporterMaxPage = Math.max(0, Math.ceil(sortedReporters.length / reporterPageSize) - 1);
+  const reporterPageClamped = Math.min(reporterPage, reporterMaxPage);
+  const pagedReporters = sortedReporters.slice(reporterPageClamped * reporterPageSize, reporterPageClamped * reporterPageSize + reporterPageSize);
+
+  return (
+    <div>
+      <Grid cols={4}>
+        <KpiTile label="Lessons tracked" value={String(lessonsTracked)} sub="silver_eba.eba_bootcamp_attendance" tag="REAL" />
+        <KpiTile label="Reports analyzed" value={fmtNum(totalReports)} sub="distinct report_id" tag="REAL" />
+        <KpiTile label="Overall attendance rate" value={fmtPct(overallAttendanceRate)} sub="present ÷ lesson records" tag="REAL" />
+        <KpiTile label="Overall timely-reporting rate" value={fmtPct(overallTimelyRate)} sub="Morning < 12:00, Afternoon ≤ 17:00 (EAT)" tag="REAL" />
+        <KpiTile label="Morning attendance rate" value={fmtPct(morning?.attendance_rate)} sub={morning ? `${fmtNum(morning.total_reports)} reports` : undefined} tag="REAL" />
+        <KpiTile label="Morning timely rate" value={fmtPct(morning?.timely_rate)} sub="reports submitted before 12:00 EAT" tag="REAL" />
+        <KpiTile label="Afternoon attendance rate" value={fmtPct(afternoon?.attendance_rate)} sub={afternoon ? `${fmtNum(afternoon.total_reports)} reports` : undefined} tag="REAL" />
+        <KpiTile label="Afternoon timely rate" value={fmtPct(afternoon?.timely_rate)} sub="reports submitted by 17:00 EAT" tag="REAL" />
+      </Grid>
+
+      <ExecBand num="◆" title="Attendance rate by lesson" />
+      <Card
+        title={`Attendance rate by lesson — ${fmtNum(sortedLessons.length)} lessons`}
+        subtitle="Lowest-attendance first. Click a row to drill into that lesson by district, then venue."
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && sortedLessons.length === 0}>
+          <DataTable
+            columns={[
+              { key: "lesson_name", label: "Lesson" },
+              { key: "lesson_time", label: "Session" },
+              { key: "total_reports", label: "Reports", align: "right", render: fmtNum },
+              { key: "attendance_rate", label: "Attendance rate", align: "right", render: renderRateCell("attendance_rate") },
+              { key: "timely_rate", label: "Timely reporting", align: "right", render: renderRateCell("timely_rate") },
+            ]}
+            rows={pagedLessons}
+            onRowClick={openLessonDrill}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
+            <span>{sortedLessons.length === 0 ? "0" : lessonPageClamped * lessonPageSize + 1}–{Math.min(sortedLessons.length, lessonPageClamped * lessonPageSize + lessonPageSize)} of {sortedLessons.length} lessons</span>
+            <span style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => setLessonPage(Math.max(0, lessonPageClamped - 1))} disabled={lessonPageClamped === 0} style={{ ...PAGER_BTN, opacity: lessonPageClamped === 0 ? 0.5 : 1 }}>‹ Prev</button>
+              <button onClick={() => setLessonPage(Math.min(lessonMaxPage, lessonPageClamped + 1))} disabled={lessonPageClamped === lessonMaxPage} style={{ ...PAGER_BTN, opacity: lessonPageClamped === lessonMaxPage ? 0.5 : 1 }}>Next ›</button>
+            </span>
+          </div>
+        </State>
+      </Card>
+
+      <ExecBand num="◆" title="Morning vs afternoon" />
+      <Card title="Session attendance & timeliness" subtitle="Morning reports are timely before 12:00 noon local time; Afternoon reports are timely at/before 17:00 local time." chip="REAL">
+        <State loading={loading} error={error} empty={!loading && bySession.length === 0}>
+          <DataTable
+            columns={[
+              { key: "lesson_time", label: "Session" },
+              { key: "total_reports", label: "Reports", align: "right", render: fmtNum },
+              { key: "attendance_rate", label: "Attendance rate", align: "right", render: renderRateCell("attendance_rate") },
+              { key: "timely_rate", label: "Timely reporting", align: "right", render: renderRateCell("timely_rate") },
+            ]}
+            rows={bySession}
+          />
+        </State>
+      </Card>
+
+      <ExecBand num="◆" title="Reported by" />
+      <Card
+        title={`Report timeliness by reporter — ${fmtNum(sortedReporters.length)} reporters`}
+        subtitle="Lowest timely-reporting rate first. reporter is an opaque, already-de-identified auth-system ID (not a name) — this is a data-quality/coverage signal, not a performance ranking of named staff."
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && sortedReporters.length === 0}>
+          <DataTable
+            columns={[
+              { key: "reporter", label: "Reporter ID" },
+              { key: "total_reports", label: "Reports", align: "right", render: fmtNum },
+              { key: "timely_rate", label: "Timely reporting", align: "right", render: renderRateCell("timely_rate") },
+            ]}
+            rows={pagedReporters}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, fontSize: 11, color: C.muted }}>
+            <span>{sortedReporters.length === 0 ? "0" : reporterPageClamped * reporterPageSize + 1}–{Math.min(sortedReporters.length, reporterPageClamped * reporterPageSize + reporterPageSize)} of {sortedReporters.length} reporters</span>
+            <span style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => setReporterPage(Math.max(0, reporterPageClamped - 1))} disabled={reporterPageClamped === 0} style={{ ...PAGER_BTN, opacity: reporterPageClamped === 0 ? 0.5 : 1 }}>‹ Prev</button>
+              <button onClick={() => setReporterPage(Math.min(reporterMaxPage, reporterPageClamped + 1))} disabled={reporterPageClamped === reporterMaxPage} style={{ ...PAGER_BTN, opacity: reporterPageClamped === reporterMaxPage ? 0.5 : 1 }}>Next ›</button>
+            </span>
+          </div>
+        </State>
+      </Card>
+
+      {overallAttendanceRate != null && overallTimelyRate != null && (
+        <Insight tone={overallTimelyRate >= 90 ? "pos" : "warn"}>
+          <b>Lesson attendance runs at {fmtPct(overallAttendanceRate)}</b>, with <b>{fmtPct(overallTimelyRate)}</b> of reports filed on time
+          {morning && afternoon ? <> — {morning.timely_rate < afternoon.timely_rate ? "Morning" : "Afternoon"} sessions report less on time ({fmtPct(Math.min(morning.timely_rate ?? 100, afternoon.timely_rate ?? 100))}).</> : "."}
+          {sortedLessons[0] ? <> <b>{sortedLessons[0].lesson_name}</b> ({sortedLessons[0].lesson_time}) has the lowest attendance at {fmtPct(sortedLessons[0].attendance_rate)}.</> : null}
+        </Insight>
+      )}
+      {sortedReporters[0] && sortedReporters[0].timely_rate < 75 && (
+        <Insight tone="warn">
+          Reporter <b>{sortedReporters[0].reporter}</b> has the lowest report-timeliness rate at {fmtPct(sortedReporters[0].timely_rate)} across {fmtNum(sortedReporters[0].total_reports)} reports — worth a coaching check on submission time, not attendance itself.
+        </Insight>
+      )}
     </div>
   );
 }
