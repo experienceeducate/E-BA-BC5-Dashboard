@@ -917,3 +917,107 @@ def test_call_centre_insights_date_range_is_optional(as_staff, mock_run_query):
     as_staff.get("/api/recruitment/call-centre-insights")
     all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
     assert "created_at" not in all_sql
+
+
+# --- Attendance ---------------------------------------------------------------
+# ATTENDANCE_SUMMARY carries two `measure` values sharing the same total_youths_
+# present column ('attendance' = real daily actuals; 'attendance_targets' = a
+# separate, overlapping-date mart that also populates total_youths_present
+# against a target) -- confirmed live 2026-08-07. The original query filtered
+# on neither, silently double-counting any venue-day with rows in both.
+
+def test_attendance_daily_filters_to_attendance_measure(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/attendance")
+    daily_call = next(c for c in mock_run_query.calls if "GROUP BY event_date" in c["sql"])
+    assert "measure = 'attendance'" in daily_call["sql"]
+    assert "attendance_targets" not in daily_call["sql"]
+
+
+def test_attendance_venue_avg_filters_to_attendance_measure(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/attendance")
+    venue_call = next(c for c in mock_run_query.calls if "AVG(total_youths_present)" in c["sql"])
+    assert "measure = 'attendance'" in venue_call["sql"]
+
+
+def test_attendance_daily_includes_gender_and_absent_counts(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "GROUP BY event_date" in sql:
+            return [{
+                "event_date": "2026-05-30", "present": 100, "absent": 10,
+                "present_female": 60, "present_male": 40,
+                "absent_female": 6, "absent_male": 4, "net_churn": 2,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance")
+    assert r.status_code == 200
+    d = r.json()["daily"][0]
+    assert d["present_female"] == 60
+    assert d["present_male"] == 40
+    assert d["absent"] == 10
+    assert d["absent_female"] == 6
+    assert d["absent_male"] == 4
+
+
+def test_attendance_by_venue_gender_rate_and_session_counts(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "AVG(total_youths_present)" in sql:
+            return [{"venue": "Bugiri primary school", "present": 80, "present_female": 50, "present_male": 30}]
+        if "SUM(activated_youth) AS activated" in sql:
+            return [{
+                "district": "BUGIRI", "venue": "Bugiri primary school",
+                "activated": 100, "activated_female": 60, "activated_male": 40,
+                "all_sessions_count": 40, "eighty_pct_sessions_count": 70,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance")
+    assert r.status_code == 200
+    v = r.json()["by_venue"][0]
+    assert v["attendance_rate"] == 80.0
+    assert v["attendance_rate_female"] == round(100 * 50 / 60, 1)
+    assert v["attendance_rate_male"] == 75.0
+    assert v["all_sessions_count"] == 40
+    assert v["eighty_pct_sessions_count"] == 70
+
+
+def test_attendance_by_venue_day_shape_and_rates(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "SELECT venue_name AS venue, report_date AS event_date" in sql:
+            return [{"venue": "Bugiri primary school", "event_date": "2026-05-30", "present": 90, "present_female": 55, "present_male": 35}]
+        if "SUM(activated_youth) AS activated" in sql:
+            return [{
+                "district": "BUGIRI", "venue": "Bugiri primary school",
+                "activated": 100, "activated_female": 60, "activated_male": 40,
+                "all_sessions_count": 40, "eighty_pct_sessions_count": 70,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance")
+    assert r.status_code == 200
+    v = r.json()["by_venue_day"][0]
+    assert v["district"] == "BUGIRI"
+    assert v["event_date"] == "2026-05-30"
+    assert v["attendance_rate"] == 90.0
+    assert v["activated_female"] == 60
+    assert v["attendance_rate_female"] == round(100 * 55 / 60, 1)
+    assert v["activated_male"] == 40
+    assert v["attendance_rate_male"] == round(100 * 35 / 40, 1)
+
+
+def test_attendance_by_venue_day_skips_venues_with_no_activated_match(as_staff, mock_run_query):
+    """A venue-day row with no matching SITE_FUNNEL_METRICS activated row
+    (e.g. a genuinely different program's venue, or a casing mismatch that
+    normalisation still can't resolve) has no real denominator to compute a
+    rate against, so it's dropped rather than shown with activated=0."""
+    def side_effect(sql, params, role):
+        if "SELECT venue_name AS venue, report_date AS event_date" in sql:
+            return [{"venue": "Unmapped Venue", "event_date": "2026-05-30", "present": 10, "present_female": 5, "present_male": 5}]
+        if "SUM(activated_youth) AS activated" in sql:
+            return []
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance")
+    assert r.json()["by_venue_day"] == []
