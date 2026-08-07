@@ -84,19 +84,37 @@ def attendance(
 ):
     """Daily attendance & churn, plus a real per-venue attendance rate.
 
-    Backed by the live ATTENDANCE_SUMMARY mart for daily present/churn and
-    per-venue avg present. There's no per-lesson attendance-% table
-    confirmed yet, so "lessons" stays empty until one is.
+    Backed by the live ATTENDANCE_SUMMARY mart for daily present/absent/churn
+    (gender-split, all real columns — see below) and per-venue avg present.
+    There's no per-lesson attendance-% table confirmed yet, so "lessons"
+    stays empty until one is.
 
-    ATTENDANCE_SUMMARY has no confirmed district column of its own, so
-    by_venue's attendance_rate is built by joining its real per-venue
-    present counts against SITE_FUNNEL_METRICS's real per-venue
-    activated_youth (the same table /api/implementation/retention already
-    uses) — present ÷ activated, both real, rather than modelling
-    attendance from retention quality the way the reference prototype
-    illustrates it. district comes from that join too. Matched
-    case/whitespace-insensitively since the two tables' venue_name casing
-    isn't guaranteed to agree.
+    IMPORTANT — ATTENDANCE_SUMMARY carries two `measure` values: 'attendance'
+    (the real daily actuals, confirmed live 2026-08-07) and 'attendance_targets'
+    (a separate, overlapping-date, sometimes-duplicated-per-venue-day rows that
+    ALSO populate total_youths_present with a target attached). The original
+    version of this query filtered on neither, silently summing both together
+    -- e.g. double-counting present/absent/churn for any venue-day that had
+    both an 'attendance' and an 'attendance_targets' row. Every query below is
+    now scoped to measure = 'attendance' specifically.
+
+    ATTENDANCE_SUMMARY has no confirmed district column of its own -- wait,
+    it does now (youth_district, confirmed live) but by_venue's activated
+    denominator still isn't there, so attendance_rate is still built by
+    joining ATTENDANCE_SUMMARY's real per-venue present/absent counts against
+    SITE_FUNNEL_METRICS's real per-venue (and per-gender) activated_youth
+    (the same table /api/implementation/retention already uses) -- present ÷
+    activated, both real. district for by_venue/by_venue_day also comes from
+    that join, for the same reason. Matched case/whitespace-insensitively
+    since the two tables' venue_name casing isn't guaranteed to agree.
+
+    by_venue_day is the single-day, per-venue grain (unlike by_venue, which
+    averages present across every day reported) -- feeds the Daily attendance
+    chart's district/venue drill for whichever day is clicked. all_sessions_
+    count/eighty_pct_sessions_count on by_venue are raw counts (SITE_FUNNEL_
+    METRICS' youth_100pct_lessons/youth_80pct_lessons, confirmed live) for the
+    frontend's two gauges -- summed against activated the same way it already
+    sums activated itself, not computed into a rate here.
     """
     where_d, params_d = build_where(
         venues=venue, extra=[active_cohort_clause("ad")], prefix="ad",
@@ -105,9 +123,14 @@ def attendance(
     daily_sql = f"""
     SELECT report_date AS event_date,
            SUM(total_youths_present) AS present,
+           SUM(total_youths_absent) AS absent,
+           SUM(total_females_present) AS present_female,
+           SUM(total_males_present) AS present_male,
+           SUM(total_females_absent) AS absent_female,
+           SUM(total_males_absent) AS absent_male,
            SUM(youths_churned) AS net_churn
     FROM {ATTENDANCE_SUMMARY}
-    WHERE {where_d} AND report_date IS NOT NULL
+    WHERE {where_d} AND measure = 'attendance' AND report_date IS NOT NULL
     GROUP BY event_date
     ORDER BY event_date
     """
@@ -118,15 +141,34 @@ def attendance(
         venue_col="venue_name",
     )
     present_sql = f"""
-    SELECT venue_name AS venue, AVG(total_youths_present) AS present
+    SELECT venue_name AS venue,
+           AVG(total_youths_present) AS present,
+           AVG(total_females_present) AS present_female,
+           AVG(total_males_present) AS present_male
     FROM {ATTENDANCE_SUMMARY}
-    WHERE {present_where} AND report_date IS NOT NULL
+    WHERE {present_where} AND measure = 'attendance' AND report_date IS NOT NULL
     GROUP BY venue
     """
     present_by_venue = {
-        _norm_venue_key(r["venue"]): r.get("present")
+        _norm_venue_key(r["venue"]): r
         for r in database.run_query(present_sql, present_params, role=user.role)
     }
+
+    # Single-day grain (unlike present_by_venue's AVG-across-days rollup
+    # above) -- feeds by_venue_day, the Daily attendance chart's drill.
+    venue_day_where, venue_day_params = build_where(
+        venues=venue, extra=[active_cohort_clause("advd")], prefix="advd",
+        venue_col="venue_name",
+    )
+    venue_day_sql = f"""
+    SELECT venue_name AS venue, report_date AS event_date,
+           total_youths_present AS present,
+           total_females_present AS present_female,
+           total_males_present AS present_male
+    FROM {ATTENDANCE_SUMMARY}
+    WHERE {venue_day_where} AND measure = 'attendance' AND report_date IS NOT NULL
+    """
+    venue_day_rows = database.run_query(venue_day_sql, venue_day_params, role=user.role)
 
     activated_where, activated_params = build_where(
         venues=venue, extra=[active_cohort_clause("ada")], prefix="ada",
@@ -134,31 +176,75 @@ def attendance(
     )
     activated_sql = f"""
     SELECT UPPER(district) AS district, venue_name AS venue,
-           SUM(activated_youth) AS activated
+           SUM(activated_youth) AS activated,
+           SUM(IF(UPPER(gender) = 'FEMALE', activated_youth, 0)) AS activated_female,
+           SUM(IF(UPPER(gender) = 'MALE', activated_youth, 0)) AS activated_male,
+           SUM(youth_100pct_lessons) AS all_sessions_count,
+           SUM(youth_80pct_lessons) AS eighty_pct_sessions_count
     FROM {SITE_FUNNEL_METRICS}
     WHERE {activated_where} AND measure = '{SITE_FUNNEL_MEASURE_ACTUAL}'
     GROUP BY district, venue
     ORDER BY district, venue
     """
     activated_rows = database.run_query(activated_sql, activated_params, role=user.role)
+    activated_by_venue = {_norm_venue_key(r["venue"]): r for r in activated_rows}
+
+    def _rate(numer, denom):
+        return round(100 * numer / denom, 1) if numer is not None and denom else None
 
     by_venue = []
     for r in activated_rows:
         activated = r.get("activated") or 0
-        present = present_by_venue.get(_norm_venue_key(r["venue"]))
-        rate = round(100 * present / activated, 1) if present is not None and activated else None
+        activated_female = r.get("activated_female") or 0
+        activated_male = r.get("activated_male") or 0
+        p = present_by_venue.get(_norm_venue_key(r["venue"])) or {}
+        present = p.get("present")
+        present_female = p.get("present_female")
+        present_male = p.get("present_male")
         by_venue.append({
             "district": r["district"],
             "venue": r["venue"],
             "activated": activated,
             "present": round(present, 1) if present is not None else None,
-            "attendance_rate": rate,
+            "attendance_rate": _rate(present, activated),
+            "attendance_rate_female": _rate(present_female, activated_female),
+            "attendance_rate_male": _rate(present_male, activated_male),
+            "all_sessions_count": r.get("all_sessions_count") or 0,
+            "eighty_pct_sessions_count": r.get("eighty_pct_sessions_count") or 0,
+        })
+
+    by_venue_day = []
+    for r in venue_day_rows:
+        a = activated_by_venue.get(_norm_venue_key(r["venue"]))
+        if not a:
+            continue
+        activated = a.get("activated") or 0
+        activated_female = a.get("activated_female") or 0
+        activated_male = a.get("activated_male") or 0
+        by_venue_day.append({
+            "district": a["district"],
+            "venue": r["venue"],
+            "event_date": r["event_date"],
+            "activated": activated,
+            "present": r.get("present"),
+            "attendance_rate": _rate(r.get("present"), activated),
+            # activated_female/activated_male are carried alongside (not just
+            # the rate) so the frontend's district-level rollup for a clicked
+            # day can sum them across that district's venues and recompute a
+            # correctly weighted rate, rather than averaging per-venue rates.
+            "activated_female": activated_female,
+            "present_female": r.get("present_female"),
+            "attendance_rate_female": _rate(r.get("present_female"), activated_female),
+            "activated_male": activated_male,
+            "present_male": r.get("present_male"),
+            "attendance_rate_male": _rate(r.get("present_male"), activated_male),
         })
 
     return {
-        "daily":    daily,
-        "by_venue": by_venue,
-        "lessons":  [],
+        "daily":        daily,
+        "by_venue":     by_venue,
+        "by_venue_day": by_venue_day,
+        "lessons":      [],
     }
 
 

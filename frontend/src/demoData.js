@@ -388,13 +388,34 @@ export const DEMO = {
     ],
   },
 
+  // Mirrors the live endpoint's shape post-measure-filter-fix (ATTENDANCE_
+  // SUMMARY's 'attendance' rows only, not 'attendance_targets') — daily/
+  // by_venue/by_venue_day all carry real gender-split present counts;
+  // by_venue's all_sessions_count/eighty_pct_sessions_count are raw
+  // youth_100pct_lessons/youth_80pct_lessons counts (SITE_FUNNEL_METRICS),
+  // for the two gauges — summed against activated the same way activated
+  // itself already is, not pre-computed into a rate here.
   "/api/implementation/attendance": {
     daily: [
-      { event_date: "2026-05-06", present: 3820, net_churn: -12 },
-      { event_date: "2026-05-07", present: 3790, net_churn: -30 },
-      { event_date: "2026-05-08", present: 3750, net_churn: -40 },
-      { event_date: "2026-05-11", present: 3700, net_churn: -50 },
-      { event_date: "2026-05-12", present: 3680, net_churn: -20 },
+      { event_date: "2026-05-06", present: 3820, absent: 180, present_female: 2350, present_male: 1470, absent_female: 110, absent_male: 70, net_churn: -12 },
+      { event_date: "2026-05-07", present: 3790, absent: 210, present_female: 2330, present_male: 1460, absent_female: 125, absent_male: 85, net_churn: -30 },
+      { event_date: "2026-05-08", present: 3750, absent: 250, present_female: 2305, present_male: 1445, absent_female: 145, absent_male: 105, net_churn: -40 },
+      { event_date: "2026-05-11", present: 3700, absent: 300, present_female: 2270, present_male: 1430, absent_female: 170, absent_male: 130, net_churn: -50 },
+      { event_date: "2026-05-12", present: 3680, absent: 320, present_female: 2255, present_male: 1425, absent_female: 180, absent_male: 140, net_churn: -20 },
+    ],
+    by_venue: [
+      { district: "MAYUGE", venue: "Kigandalo HS", activated: 300, present: 275, attendance_rate: 91.7, attendance_rate_female: 93.5, attendance_rate_male: 88.9, all_sessions_count: 210, eighty_pct_sessions_count: 265 },
+      { district: "BUGWERI", venue: "Busembatia CC", activated: 280, present: 258, attendance_rate: 92.1, attendance_rate_female: 90.8, attendance_rate_male: 94.2, all_sessions_count: 195, eighty_pct_sessions_count: 250 },
+      { district: "KAMULI", venue: "Namwendwa VTC", activated: 240, present: 205, attendance_rate: 85.4, attendance_rate_female: 87.0, attendance_rate_male: 82.6, all_sessions_count: 160, eighty_pct_sessions_count: 200 },
+      { district: "BUGIRI", venue: "Isegero VTC", activated: 190, present: 152, attendance_rate: 80.0, attendance_rate_female: 78.5, attendance_rate_male: 82.1, all_sessions_count: 110, eighty_pct_sessions_count: 148 },
+      { district: "MAYUGE", venue: "Bwondha Primary school", activated: 150, present: 108, attendance_rate: 72.0, attendance_rate_female: 74.2, attendance_rate_male: 68.9, all_sessions_count: 78, eighty_pct_sessions_count: 100 },
+    ],
+    // Single-day grain (unlike by_venue's avg-across-days present above) —
+    // feeds the Daily attendance chart's district/venue drill.
+    by_venue_day: [
+      { district: "MAYUGE", venue: "Kigandalo HS", event_date: "2026-05-12", activated: 300, present: 271, attendance_rate: 90.3, activated_female: 185, present_female: 172, attendance_rate_female: 93.0, activated_male: 115, present_male: 99, attendance_rate_male: 86.1 },
+      { district: "BUGWERI", venue: "Busembatia CC", event_date: "2026-05-12", activated: 280, present: 253, attendance_rate: 90.4, activated_female: 170, present_female: 154, attendance_rate_female: 90.6, activated_male: 110, present_male: 99, attendance_rate_male: 90.0 },
+      { district: "KAMULI", venue: "Namwendwa VTC", event_date: "2026-05-12", activated: 240, present: 198, attendance_rate: 82.5, activated_female: 150, present_female: 130, attendance_rate_female: 86.7, activated_male: 90, present_male: 68, attendance_rate_male: 75.6 },
     ],
     lessons: [],
   },

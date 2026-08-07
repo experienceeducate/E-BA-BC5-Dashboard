@@ -4013,6 +4013,7 @@ function AttendanceTab({ filters }) {
   const { data, loading, error } = useApi(`/api/implementation/attendance${buildParams(filters)}`);
   const daily = data?.daily || [];
   const venueRows = data?.by_venue || [];
+  const venueDayRows = data?.by_venue_day || [];
 
   const totalActivated = sumBy(venueRows, "activated");
   const avgPresent = daily.length ? sumBy(daily, "present") / daily.length : null;
@@ -4020,6 +4021,24 @@ function AttendanceTab({ filters }) {
   const avgChurnRate = avgPresent ? Math.round((1000 * avgChurn) / avgPresent) / 10 : null;
   const latestDay = daily[daily.length - 1];
   const latestAttendanceRate = latestDay && totalActivated ? Math.round((1000 * latestDay.present) / totalActivated) / 10 : null;
+
+  // Mean of each day's own present÷activated (and absent÷activated) —
+  // "average attendance"/"absenteeism rate" across every day reported, using
+  // the same total-activated denominator as Latest attendance rate above, not
+  // a raw headcount average (which wouldn't be a %).
+  const mean = (arr) => (arr.length ? Math.round((10 * arr.reduce((s, v) => s + v, 0)) / arr.length) / 10 : null);
+  const dailyRates = daily.map((d) => (totalActivated ? (100 * (d.present || 0)) / totalActivated : null)).filter((v) => v != null);
+  const avgAttendanceRate = mean(dailyRates);
+  const dailyAbsentRates = daily.map((d) => (totalActivated ? (100 * (d.absent || 0)) / totalActivated : null)).filter((v) => v != null);
+  const avgAbsenteeismRate = mean(dailyAbsentRates);
+
+  // Gauges — real per-youth lesson-completion counts (SITE_FUNNEL_METRICS'
+  // youth_100pct_lessons/youth_80pct_lessons), summed the same way
+  // totalActivated already is, not a fabricated pace projection.
+  const totalAllSessions = sumBy(venueRows, "all_sessions_count");
+  const totalEightyPctSessions = sumBy(venueRows, "eighty_pct_sessions_count");
+  const pctAllSessions = totalActivated ? Math.round((1000 * totalAllSessions) / totalActivated) / 10 : null;
+  const pct80pctSessions = totalActivated ? Math.round((1000 * totalEightyPctSessions) / totalActivated) / 10 : null;
 
   const rateFns = { attendance_rate: (d) => (d.activated ? Math.round((1000 * d.present) / d.activated) / 10 : null) };
   const districtRows = groupByDistrict(venueRows, ["activated", "present"], rateFns);
@@ -4041,6 +4060,55 @@ function AttendanceTab({ filters }) {
     });
   }
 
+  // Click a point on the Daily attendance chart -> that day's district
+  // rollup (root, ranked by attendance rate), then drill into a district for
+  // its venues that same day. District rows are summed from that day's own
+  // venue rows (weighted), not an average of per-venue rates.
+  const dayDrillColumns = [
+    { key: "activated", label: "Activated", align: "right", render: (v) => fmtNum(v) },
+    { key: "present", label: "Present", align: "right", render: (v) => fmtNum(v) },
+    { key: "attendance_rate", label: "Attendance rate", align: "right", render: renderRateCell("attendance_rate") },
+    { key: "present_female", label: "Present (F)", align: "right", render: (v) => fmtNum(v) },
+    { key: "attendance_rate_female", label: "Attendance rate (F)", align: "right", render: renderRateCell("attendance_rate") },
+    { key: "present_male", label: "Present (M)", align: "right", render: (v) => fmtNum(v) },
+    { key: "attendance_rate_male", label: "Attendance rate (M)", align: "right", render: renderRateCell("attendance_rate") },
+  ];
+  function openDayDrill(date) {
+    const rowsForDay = venueDayRows.filter((v) => v.event_date === date);
+    const byDistrict = {};
+    rowsForDay.forEach((v) => {
+      const d = byDistrict[v.district] || (byDistrict[v.district] = {
+        district: v.district, activated: 0, present: 0, present_female: 0, present_male: 0,
+        activated_female: 0, activated_male: 0,
+      });
+      d.activated += v.activated || 0;
+      d.present += v.present || 0;
+      d.activated_female += v.activated_female || 0;
+      d.present_female += v.present_female || 0;
+      d.activated_male += v.activated_male || 0;
+      d.present_male += v.present_male || 0;
+    });
+    const rootRows = Object.values(byDistrict).map((d) => ({
+      district: d.district,
+      activated: d.activated,
+      present: d.present,
+      attendance_rate: d.activated ? Math.round((1000 * d.present) / d.activated) / 10 : null,
+      present_female: d.present_female,
+      attendance_rate_female: d.activated_female ? Math.round((1000 * d.present_female) / d.activated_female) / 10 : null,
+      present_male: d.present_male,
+      attendance_rate_male: d.activated_male ? Math.round((1000 * d.present_male) / d.activated_male) / 10 : null,
+    })).sort((a, b) => (b.attendance_rate ?? -1) - (a.attendance_rate ?? -1));
+    drill.open({
+      title: `Attendance — ${date}`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns: dayDrillColumns,
+      rootRows,
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => rowsForDay.filter((v) => v.district === root.district).sort((a, b) => (b.attendance_rate ?? -1) - (a.attendance_rate ?? -1)),
+    });
+  }
+
   return (
     <div>
       <Grid cols={4}>
@@ -4056,7 +4124,23 @@ function AttendanceTab({ filters }) {
           onClick={() => openMetricDrill("attendance_rate", "Attendance rate", fmtPct)}
         />
         <KpiTile label="Youth present (latest)" value={fmtNum(latestDay?.present)} sub={latestDay?.event_date} tag="REAL" onClick={() => openMetricDrill("present", "Present")} />
+        <KpiTile label="Average attendance" value={fmtPct(avgAttendanceRate)} sub={daily.length ? `mean of ${fmtNum(daily.length)} days reported, present ÷ activated` : undefined} tag="REAL" />
+        <KpiTile label="Absenteeism rate" value={fmtPct(avgAbsenteeismRate)} sub={daily.length ? `mean of ${fmtNum(daily.length)} days reported, absent ÷ activated` : undefined} tag="REAL" />
+        <KpiTile label="Females present (latest)" value={fmtNum(latestDay?.present_female)} sub={latestDay?.event_date} tag="REAL" />
+        <KpiTile label="Males present (latest)" value={fmtNum(latestDay?.present_male)} sub={latestDay?.event_date} tag="REAL" />
       </Grid>
+
+      <ExecBand num="◆" title="Session completion" />
+      <Card
+        title="Youth attending sessions"
+        subtitle="Real per-youth lesson-completion counts from SITE_FUNNEL_METRICS (youth_100pct_lessons / youth_80pct_lessons), against activated — not a fabricated pace projection."
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && venueRows.length === 0}>
+          <Gauge label="% who attended all sessions" pct={pctAllSessions} target={75} />
+          <Gauge label="% who attended ≥80% of sessions" pct={pct80pctSessions} target={85} />
+        </State>
+      </Card>
 
       <ExecBand num="◆" title="Attendance by district" />
       <State loading={loading} error={error} empty={!loading && districtRows.length === 0}>
@@ -4075,15 +4159,19 @@ function AttendanceTab({ filters }) {
       </Insight>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="Daily attendance" subtitle="Programme-wide youth present by day" chip="REAL">
+        <Card title="Daily attendance" subtitle="Programme-wide youth present by day. Click a point to drill into that day by district, then venue." chip="REAL">
           <State loading={loading} error={error} empty={!loading && daily.length === 0}>
             <ResponsiveContainer width="100%" height={260}>
-              <LineChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <LineChart
+                data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}
+                onClick={(e) => { if (e?.activeLabel) openDayDrill(e.activeLabel); }}
+                style={{ cursor: "pointer" }}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
                 <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip />
-                <Line type="monotone" dataKey="present" name="Present" stroke={C.teal} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="present" name="Present" stroke={C.teal} strokeWidth={2} dot={false} activeDot={{ r: 5 }} />
               </LineChart>
             </ResponsiveContainer>
           </State>
@@ -4105,15 +4193,16 @@ function AttendanceTab({ filters }) {
         </Card>
       </div>
 
-      <Card title="Attendance rate — bottom 5 venues" subtitle="Lowest-attendance venues: present ÷ activated." chip="REAL">
+      <Card title="Attendance rate — bottom 5 venues" subtitle="Lowest-attendance venues: present ÷ activated, overall and by gender." chip="REAL">
         <State loading={loading} error={error} empty={!loading && bottom5Venues.length === 0}>
           <DataTable
             columns={[
               { key: "venue", label: "Venue" },
               { key: "district", label: "District" },
               { key: "activated", label: "Activated", align: "right", render: (v) => fmtNum(v) },
-              { key: "present", label: "Present (avg)", align: "right", render: (v) => fmtNum(v) },
               { key: "attendance_rate", label: "Attendance rate", align: "right", render: renderRateCell("attendance_rate") },
+              { key: "attendance_rate_female", label: "Attendance rate (F)", align: "right", render: renderRateCell("attendance_rate") },
+              { key: "attendance_rate_male", label: "Attendance rate (M)", align: "right", render: renderRateCell("attendance_rate") },
             ]}
             rows={bottom5Venues}
           />
