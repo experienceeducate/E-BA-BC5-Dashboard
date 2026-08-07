@@ -866,6 +866,7 @@ const RATE_TARGETS = {
   acquisition_rate:  { good: 80, warn: 70, label: "Acquisition" },
   activation_rate:   { good: 90, warn: 80, label: "Activation" },
   retention_rate:    { good: 85, warn: 75, label: "Retention" },
+  all_sessions_rate: { good: 75, warn: 60, label: "All-sessions attendance" },
   attendance_rate:   { good: 95, warn: 90, label: "Attendance" },
   reach_rate:        { good: 70, warn: 60, label: "Reach" },
   timely_rate:       { good: 90, warn: 75, label: "Timely reporting" },
@@ -3888,6 +3889,7 @@ function RetentionTab({ filters }) {
   const rows = data?.by_venue || [];
   const targetActivation = data?.targets?.activation ?? 90;
   const targetRetention = data?.targets?.retention ?? 85;
+  const targetAllSessions = data?.targets?.all_sessions ?? 75;
   const rateFns = {
     activation_rate: (d) => (d.acquired ? Math.round((1000 * d.activated) / d.acquired) / 10 : null),
     retention_rate: (d) => (d.activated ? Math.round((1000 * d.retained) / d.activated) / 10 : null),
@@ -3900,6 +3902,72 @@ function RetentionTab({ filters }) {
   const overallActivationRate = totalAcquired ? Math.round((1000 * totalActivated) / totalAcquired) / 10 : null;
   const overallRetentionRate = totalActivated ? Math.round((1000 * totalRetained) / totalActivated) / 10 : null;
   const pctFemaleOfRetained = totalRetained ? Math.round((1000 * totalRetainedFemale) / totalRetained) / 10 : null;
+
+  // Session completion — real per-youth lesson-completion counts from
+  // SITE_FUNNEL_METRICS (youth_100pct_lessons/youth_80pct_lessons), the same
+  // mart this whole tab already reads. retained/retention_rate above IS the
+  // >=80%-of-lessons metric; all_sessions_count/all_sessions_rate is the
+  // >=100%-of-lessons metric alongside it -- moved here from the Attendance
+  // tab since both live on this mart, not a daily-attendance one.
+  const totalAllSessions = sumBy(rows, "all_sessions_count");
+  const overallAllSessionsRate = totalActivated ? Math.round((1000 * totalAllSessions) / totalActivated) / 10 : null;
+
+  // One click on either gauge opens a single drill comparing BOTH metrics
+  // side by side, gendered, by district then venue -- rather than six
+  // separate single-metric gauges each needing their own click to compare.
+  function openSessionCompletionDrill() {
+    const rate = (n, d) => (d ? Math.round((1000 * (n || 0)) / d) / 10 : null);
+    const byDistrict = {};
+    rows.forEach((v) => {
+      const d = byDistrict[v.district] || (byDistrict[v.district] = {
+        district: v.district, activated: 0, activated_female: 0, activated_male: 0,
+        all_sessions_count: 0, all_sessions_count_female: 0, all_sessions_count_male: 0,
+        retained: 0, retained_female: 0, retained_male: 0,
+      });
+      d.activated += v.activated || 0;
+      d.activated_female += v.activated_female || 0;
+      d.activated_male += v.activated_male || 0;
+      d.all_sessions_count += v.all_sessions_count || 0;
+      d.all_sessions_count_female += v.all_sessions_count_female || 0;
+      d.all_sessions_count_male += v.all_sessions_count_male || 0;
+      d.retained += v.retained || 0;
+      d.retained_female += v.retained_female || 0;
+      d.retained_male += v.retained_male || 0;
+    });
+    const rollUp = (d) => ({
+      activated: d.activated,
+      all_sessions_rate: rate(d.all_sessions_count, d.activated),
+      all_sessions_rate_female: rate(d.all_sessions_count_female, d.activated_female),
+      all_sessions_rate_male: rate(d.all_sessions_count_male, d.activated_male),
+      retention_rate: rate(d.retained, d.activated),
+      retention_rate_female: rate(d.retained_female, d.activated_female),
+      retention_rate_male: rate(d.retained_male, d.activated_male),
+    });
+    const rootRows = Object.entries(byDistrict)
+      .map(([district, d]) => ({ district, ...rollUp(d) }))
+      .sort((a, b) => (b.retention_rate ?? -1) - (a.retention_rate ?? -1));
+    const columns = [
+      { key: "activated", label: "Activated", align: "right", render: fmtNum },
+      { key: "all_sessions_rate", label: "≥100% sessions", align: "right", render: renderRateCell("all_sessions_rate") },
+      { key: "all_sessions_rate_female", label: "≥100% (F)", align: "right", render: renderRateCell("all_sessions_rate") },
+      { key: "all_sessions_rate_male", label: "≥100% (M)", align: "right", render: renderRateCell("all_sessions_rate") },
+      { key: "retention_rate", label: "≥80% sessions", align: "right", render: renderRateCell("retention_rate") },
+      { key: "retention_rate_female", label: "≥80% (F)", align: "right", render: renderRateCell("retention_rate") },
+      { key: "retention_rate_male", label: "≥80% (M)", align: "right", render: renderRateCell("retention_rate") },
+    ];
+    drill.open({
+      title: "Session completion — all vs ≥80% of lessons, by gender — by district",
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      columns,
+      rootRows,
+      childKey: "venue", childLabel: "Venue",
+      getChildRows: (root) => rows
+        .filter((v) => v.district === root.district)
+        .map((v) => ({ venue: v.venue, ...rollUp(v) }))
+        .sort((a, b) => (b.retention_rate ?? -1) - (a.retention_rate ?? -1)),
+    });
+  }
 
   const districtRows = groupByDistrict(rows, ["acquired", "activated", "retained"], rateFns);
   // Lowest-first — the venues needing retention support surface at the top,
@@ -3941,6 +4009,20 @@ function RetentionTab({ filters }) {
           tag="REAL"
         />
       </Grid>
+
+      <ExecBand num="◆" title="Session completion" />
+      <Card
+        title="Youth attending sessions"
+        subtitle="Real per-youth lesson-completion counts from SITE_FUNNEL_METRICS (youth_100pct_lessons / youth_80pct_lessons), against activated — not a fabricated pace projection. Click either gauge to compare both metrics, by gender, district then venue in one drill."
+        chip="REAL"
+      >
+        <State loading={loading} error={error} empty={!loading && rows.length === 0}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+            <Gauge label="% who attended all sessions" pct={overallAllSessionsRate} target={targetAllSessions} onClick={openSessionCompletionDrill} />
+            <Gauge label="% who attended ≥80% of sessions" pct={overallRetentionRate} target={targetRetention} onClick={openSessionCompletionDrill} />
+          </div>
+        </State>
+      </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <Card title="Funnel by district" chip="REAL">
@@ -4061,56 +4143,6 @@ function AttendanceOverviewPage({ filters }) {
   const dailyAbsentRates = daily.map((d) => (totalActivated ? (100 * (d.absent || 0)) / totalActivated : null)).filter((v) => v != null);
   const avgAbsenteeismRate = mean(dailyAbsentRates);
 
-  // Gauges — real per-youth lesson-completion counts (SITE_FUNNEL_METRICS'
-  // youth_100pct_lessons/youth_80pct_lessons), summed the same way
-  // totalActivated already is, not a fabricated pace projection. Female/male
-  // totals use by_venue's always-both-genders raw fields (never affected by
-  // the page's own gender filter), so both split gauges stay real and
-  // populated regardless of which gender (if any) is selected up top.
-  const totalAllSessions = sumBy(venueRows, "all_sessions_count");
-  const totalEightyPctSessions = sumBy(venueRows, "eighty_pct_sessions_count");
-  const pctAllSessions = totalActivated ? Math.round((1000 * totalAllSessions) / totalActivated) / 10 : null;
-  const pct80pctSessions = totalActivated ? Math.round((1000 * totalEightyPctSessions) / totalActivated) / 10 : null;
-
-  const totalActivatedFemale = sumBy(venueRows, "activated_female");
-  const totalActivatedMale = sumBy(venueRows, "activated_male");
-  const pctAllSessionsFemale = totalActivatedFemale ? Math.round((1000 * sumBy(venueRows, "all_sessions_count_female")) / totalActivatedFemale) / 10 : null;
-  const pctAllSessionsMale = totalActivatedMale ? Math.round((1000 * sumBy(venueRows, "all_sessions_count_male")) / totalActivatedMale) / 10 : null;
-  const pct80pctSessionsFemale = totalActivatedFemale ? Math.round((1000 * sumBy(venueRows, "eighty_pct_sessions_count_female")) / totalActivatedFemale) / 10 : null;
-  const pct80pctSessionsMale = totalActivatedMale ? Math.round((1000 * sumBy(venueRows, "eighty_pct_sessions_count_male")) / totalActivatedMale) / 10 : null;
-
-  // Click a gauge -> that session-completion metric, by district then venue
-  // (same district->venue drill shape as openMetricDrill below, just against
-  // all_sessions_count/eighty_pct_sessions_count instead of present).
-  function openSessionDrill(metricKey, label, target) {
-    const rateFor = (activated, count) => (activated ? Math.round((1000 * (count || 0)) / activated) / 10 : null);
-    const byDistrict = {};
-    venueRows.forEach((v) => {
-      const d = byDistrict[v.district] || (byDistrict[v.district] = { district: v.district, activated: 0, count: 0 });
-      d.activated += v.activated || 0;
-      d.count += v[metricKey] || 0;
-    });
-    const rootRows = Object.values(byDistrict)
-      .map((d) => ({ district: d.district, activated: d.activated, [metricKey]: d.count, rate: rateFor(d.activated, d.count) }))
-      .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
-    drill.open({
-      title: `${label} — by district`,
-      tone: "real", tagLabel: "REAL",
-      rootKey: "district", rootLabel: "District",
-      columns: [
-        { key: "activated", label: "Activated", align: "right", render: fmtNum },
-        { key: metricKey, label: "# " + label, align: "right", render: fmtNum },
-        { key: "rate", label, align: "right", render: (v) => <span style={{ color: v == null ? C.muted : v >= target ? C.green : C.coral, fontWeight: 700 }}>{fmtPct(v)}</span> },
-      ],
-      rootRows,
-      childKey: "venue", childLabel: "Venue",
-      getChildRows: (root) => venueRows
-        .filter((v) => v.district === root.district)
-        .map((v) => ({ venue: v.venue, activated: v.activated, [metricKey]: v[metricKey], rate: rateFor(v.activated, v[metricKey]) }))
-        .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1)),
-    });
-  }
-
   const rateFns = { attendance_rate: (d) => (d.activated ? Math.round((1000 * d.present) / d.activated) / 10 : null) };
   const districtRows = groupByDistrict(venueRows, ["activated", "present"], rateFns);
   // Every venue, worst-first — same priority read as the previous bottom-5
@@ -4205,26 +4237,6 @@ function AttendanceOverviewPage({ filters }) {
         <KpiTile label="Females present today" value={fmtNum(latestDay?.present_female)} sub={latestDay?.event_date} tag="REAL" />
         <KpiTile label="Males present today" value={fmtNum(latestDay?.present_male)} sub={latestDay?.event_date} tag="REAL" />
       </Grid>
-
-      <ExecBand num="◆" title="Session completion" />
-      <Card
-        title="Youth attending sessions"
-        subtitle="Real per-youth lesson-completion counts from SITE_FUNNEL_METRICS (youth_100pct_lessons / youth_80pct_lessons), against activated — not a fabricated pace projection. Click a gauge to drill by district, then venue."
-        chip="REAL"
-      >
-        <State loading={loading} error={error} empty={!loading && venueRows.length === 0}>
-          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 24, marginBottom: 8 }}>
-            <Gauge label="% who attended all sessions" pct={pctAllSessions} target={75} onClick={() => openSessionDrill("all_sessions_count", "% attended all sessions", 75)} />
-            <Gauge label="Female" pct={pctAllSessionsFemale} target={75} onClick={() => openSessionDrill("all_sessions_count_female", "% attended all sessions (F)", 75)} />
-            <Gauge label="Male" pct={pctAllSessionsMale} target={75} onClick={() => openSessionDrill("all_sessions_count_male", "% attended all sessions (M)", 75)} />
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 24 }}>
-            <Gauge label="% who attended ≥80% of sessions" pct={pct80pctSessions} target={85} onClick={() => openSessionDrill("eighty_pct_sessions_count", "% attended ≥80% of sessions", 85)} />
-            <Gauge label="Female" pct={pct80pctSessionsFemale} target={85} onClick={() => openSessionDrill("eighty_pct_sessions_count_female", "% attended ≥80% of sessions (F)", 85)} />
-            <Gauge label="Male" pct={pct80pctSessionsMale} target={85} onClick={() => openSessionDrill("eighty_pct_sessions_count_male", "% attended ≥80% of sessions (M)", 85)} />
-          </div>
-        </State>
-      </Card>
 
       <ExecBand num="◆" title="Attendance by district" />
       <State loading={loading} error={error} empty={!loading && districtRows.length === 0}>

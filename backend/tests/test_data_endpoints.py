@@ -961,7 +961,7 @@ def test_attendance_daily_includes_gender_and_absent_counts(as_staff, mock_run_q
     assert d["absent_male"] == 4
 
 
-def test_attendance_by_venue_gender_rate_and_session_counts(as_staff, mock_run_query):
+def test_attendance_by_venue_gender_rate(as_staff, mock_run_query):
     def side_effect(sql, params, role):
         if "AVG(total_youths_present)" in sql:
             return [{"venue": "Bugiri primary school", "present": 80, "present_female": 50, "present_male": 30}]
@@ -969,7 +969,6 @@ def test_attendance_by_venue_gender_rate_and_session_counts(as_staff, mock_run_q
             return [{
                 "district": "BUGIRI", "venue": "Bugiri primary school",
                 "activated": 100, "activated_female": 60, "activated_male": 40,
-                "all_sessions_count": 40, "eighty_pct_sessions_count": 70,
             }]
         return []
     mock_run_query.set_side_effect(side_effect)
@@ -979,8 +978,6 @@ def test_attendance_by_venue_gender_rate_and_session_counts(as_staff, mock_run_q
     assert v["attendance_rate"] == 80.0
     assert v["attendance_rate_female"] == round(100 * 50 / 60, 1)
     assert v["attendance_rate_male"] == 75.0
-    assert v["all_sessions_count"] == 40
-    assert v["eighty_pct_sessions_count"] == 70
 
 
 def test_attendance_by_venue_day_shape_and_rates(as_staff, mock_run_query):
@@ -991,7 +988,6 @@ def test_attendance_by_venue_day_shape_and_rates(as_staff, mock_run_query):
             return [{
                 "district": "BUGIRI", "venue": "Bugiri primary school",
                 "activated": 100, "activated_female": 60, "activated_male": 40,
-                "all_sessions_count": 40, "eighty_pct_sessions_count": 70,
             }]
         return []
     mock_run_query.set_side_effect(side_effect)
@@ -1044,8 +1040,6 @@ def test_attendance_gender_filter_picks_headline_without_collapsing_split(as_sta
             return [{
                 "district": "BUGIRI", "venue": "Bugiri primary school",
                 "activated": 100, "activated_female": 60, "activated_male": 40,
-                "all_sessions_count": 40, "all_sessions_count_female": 25, "all_sessions_count_male": 15,
-                "eighty_pct_sessions_count": 70, "eighty_pct_sessions_count_female": 45, "eighty_pct_sessions_count_male": 25,
             }]
         return []
     mock_run_query.set_side_effect(side_effect)
@@ -1055,8 +1049,6 @@ def test_attendance_gender_filter_picks_headline_without_collapsing_split(as_sta
     assert v["activated"] == 60
     assert v["present"] == 50.0
     assert v["attendance_rate"] == round(100 * 50 / 60, 1)
-    assert v["all_sessions_count"] == 25
-    assert v["eighty_pct_sessions_count"] == 45
     # Male-side split numbers must remain real, not collapsed by the filter.
     assert v["attendance_rate_male"] == 75.0
 
@@ -1154,3 +1146,41 @@ def test_attendance_lessons_accepts_district_gender_venue_filters(as_staff, mock
     assert "youth_district" in all_sql
     assert "youth_gender" in all_sql
     assert "venue_name" in all_sql
+
+
+def test_retention_computes_gendered_retention_and_all_sessions_rates(as_staff, mock_run_query):
+    """retention_rate is the existing >=80%-of-lessons metric; all_sessions_rate
+    is the >=100%-of-lessons metric ("Youth attending sessions" gauges, moved
+    here from /api/implementation/attendance since both read the same
+    SITE_FUNNEL_METRICS mart). Both need real per-gender denominators
+    (activated_female/male), not just the overall rate."""
+    mock_run_query.set_rows([{
+        "district": "BUGIRI", "venue": "Bugiri primary school",
+        "acquired": 120, "activated": 100, "activated_female": 60, "activated_male": 40,
+        "retained": 85, "retained_female": 54, "retained_male": 31,
+        "all_sessions_count": 70, "all_sessions_count_female": 45, "all_sessions_count_male": 25,
+    }])
+    r = as_staff.get("/api/implementation/retention")
+    assert r.status_code == 200
+    v = r.json()["by_venue"][0]
+    assert v["retention_rate"] == 85.0
+    assert v["retention_rate_female"] == 90.0
+    assert v["retention_rate_male"] == round(100 * 31 / 40, 1)
+    assert v["all_sessions_rate"] == 70.0
+    assert v["all_sessions_rate_female"] == 75.0
+    assert v["all_sessions_rate_male"] == round(100 * 25 / 40, 1)
+    assert r.json()["targets"]["all_sessions"] == 75
+
+
+def test_retention_all_sessions_rate_null_when_activated_zero(as_staff, mock_run_query):
+    mock_run_query.set_rows([{
+        "district": "BUGIRI", "venue": "Empty venue",
+        "acquired": 0, "activated": 0, "activated_female": 0, "activated_male": 0,
+        "retained": 0, "retained_female": 0, "retained_male": 0,
+        "all_sessions_count": 0, "all_sessions_count_female": 0, "all_sessions_count_male": 0,
+    }])
+    r = as_staff.get("/api/implementation/retention")
+    v = r.json()["by_venue"][0]
+    assert v["all_sessions_rate"] is None
+    assert v["all_sessions_rate_female"] is None
+    assert v["retention_rate"] is None
