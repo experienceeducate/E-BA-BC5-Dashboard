@@ -24,6 +24,8 @@ from app.core.tables import (
     SITE_FUNNEL_METRICS,
     SITE_FUNNEL_MEASURE_ACTUAL,
     ATTENDANCE_SUMMARY,
+    LESSON_ATTENDANCE,
+    LESSON_TIMELY_REPORT_SQL,
     TRAINER_OBSERVATIONS,
     TRAINER_BC4_START_DATE,
     TRAINER_BC4_END_DATE,
@@ -301,6 +303,127 @@ def attendance(
         "by_venue":     by_venue,
         "by_venue_day": by_venue_day,
         "lessons":      [],
+    }
+
+
+def _rate_pct(numer, denom):
+    return round(100 * numer / denom, 1) if numer is not None and denom else None
+
+
+@router.get("/api/implementation/attendance-lessons")
+def attendance_lessons(
+    user: User = Depends(current_user),
+    district: List[str] = Query(default=[]),
+    gender: Optional[str] = Query(None),
+    venue: List[str] = Query(default=[]),
+    cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORTS
+):
+    """Per-lesson, per-session (Morning/Afternoon) attendance rate, plus a
+    report-timeliness flag -- backed by the live LESSON_ATTENDANCE record
+    (one row per youth per lesson, see tables.py). A genuinely different,
+    finer grain than /api/implementation/attendance's daily venue-level
+    ATTENDANCE_SUMMARY -- that mart has no per-lesson breakdown at all.
+
+    Timeliness is a property of the REPORT (report_id), not each youth row
+    inside it -- every youth in the same report shares one submission_time --
+    so "reports"/"timely reports" below always COUNT(DISTINCT report_id),
+    never a raw row count, and LESSON_TIMELY_REPORT_SQL (the Morning-before-
+    noon / Afternoon-by-5pm cutoff, converted to Africa/Kampala local time)
+    is evaluated once per distinct report via that same DISTINCT.
+
+    by_session groups by lesson_time only (Morning vs Afternoon) -- the
+    session-level attendance/timely rate split.
+
+    by_lesson_venue is the (lesson x district x venue) grain, feeding the
+    "by lesson" table's district/venue drill for whichever lesson is clicked
+    -- mirrors /api/implementation/attendance's by_venue_day drill pattern.
+
+    by_reporter ranks report_created_by -- an opaque, already-de-identified
+    auth-system user ID, not a name -- by timely-reporting rate. It's a
+    data-quality/coverage signal, not a performance ranking of named staff.
+
+    gender is a real WHERE filter here (youth_gender is a genuine per-row
+    column on this table, unlike ATTENDANCE_SUMMARY's row-level-absent split)
+    -- no _attendance_pick-style headline-picking needed.
+    """
+    where, params = build_where(
+        districts=district, gender=gender, venues=venue,
+        extra=[active_cohort_clause("al")], prefix="al",
+        district_col="youth_district", venue_col="venue_name", gender_col="youth_gender",
+    )
+
+    def _with_rates(rows):
+        out = []
+        for r in rows:
+            total = r.get("total") or 0
+            total_reports = r.get("total_reports") or 0
+            out.append({
+                **r,
+                "attendance_rate": _rate_pct(r.get("present"), total),
+                "timely_rate": _rate_pct(r.get("timely_reports"), total_reports),
+            })
+        return out
+
+    by_lesson_sql = f"""
+    SELECT lesson_id, lesson_name, lesson_time,
+           COUNT(*) AS total,
+           COUNTIF(status = 'PRESENT') AS present,
+           COUNT(DISTINCT report_id) AS total_reports,
+           COUNT(DISTINCT IF({LESSON_TIMELY_REPORT_SQL}, report_id, NULL)) AS timely_reports
+    FROM {LESSON_ATTENDANCE}
+    WHERE {where} AND lesson_id IS NOT NULL
+    GROUP BY lesson_id, lesson_name, lesson_time
+    ORDER BY lesson_id
+    """
+    by_lesson = _with_rates(database.run_query(by_lesson_sql, params, role=user.role))
+
+    by_session_sql = f"""
+    SELECT lesson_time,
+           COUNT(*) AS total,
+           COUNTIF(status = 'PRESENT') AS present,
+           COUNT(DISTINCT report_id) AS total_reports,
+           COUNT(DISTINCT IF({LESSON_TIMELY_REPORT_SQL}, report_id, NULL)) AS timely_reports
+    FROM {LESSON_ATTENDANCE}
+    WHERE {where} AND lesson_time IN ('Morning', 'Afternoon')
+    GROUP BY lesson_time
+    """
+    by_session = _with_rates(database.run_query(by_session_sql, params, role=user.role))
+
+    by_lesson_venue_sql = f"""
+    SELECT lesson_id, lesson_name, UPPER(youth_district) AS district, venue_name AS venue,
+           COUNT(*) AS total,
+           COUNTIF(status = 'PRESENT') AS present,
+           COUNT(DISTINCT report_id) AS total_reports,
+           COUNT(DISTINCT IF({LESSON_TIMELY_REPORT_SQL}, report_id, NULL)) AS timely_reports
+    FROM {LESSON_ATTENDANCE}
+    WHERE {where} AND lesson_id IS NOT NULL AND venue_name IS NOT NULL
+    GROUP BY lesson_id, lesson_name, district, venue
+    """
+    by_lesson_venue = _with_rates(database.run_query(by_lesson_venue_sql, params, role=user.role))
+
+    by_reporter_sql = f"""
+    SELECT report_created_by AS reporter,
+           COUNT(DISTINCT report_id) AS total_reports,
+           COUNT(DISTINCT IF({LESSON_TIMELY_REPORT_SQL}, report_id, NULL)) AS timely_reports
+    FROM {LESSON_ATTENDANCE}
+    WHERE {where} AND report_created_by IS NOT NULL
+    GROUP BY reporter
+    ORDER BY reporter
+    """
+    by_reporter_raw = database.run_query(by_reporter_sql, params, role=user.role)
+    by_reporter = []
+    for r in by_reporter_raw:
+        total_reports = r.get("total_reports") or 0
+        by_reporter.append({
+            **r,
+            "timely_rate": _rate_pct(r.get("timely_reports"), total_reports),
+        })
+
+    return {
+        "by_lesson":       by_lesson,
+        "by_session":      by_session,
+        "by_lesson_venue": by_lesson_venue,
+        "by_reporter":     by_reporter,
     }
 
 

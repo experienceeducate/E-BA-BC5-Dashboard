@@ -337,9 +337,34 @@ SITE_FUNNEL_MEASURE_ACTUAL = "site_metrics"
 SITE_FUNNEL_METRICS = f"{_GOLD}.eba_bootcamp_site_level_funnel_metrics"
 
 # Attendance: daily present/absent/churn per venue. Backs
-# /api/implementation/attendance (daily series only — no per-lesson table exists
-# yet, so the "lessons" part of that response stays empty until one is confirmed).
+# /api/implementation/attendance's daily/by_venue/by_venue_day.
 ATTENDANCE_SUMMARY = f"{_GOLD}.eba_bootcamp_attendance_summary"
+
+# Per-youth, per-lesson attendance RECORD (confirmed live 2026-08-07) --
+# genuinely different grain from ATTENDANCE_SUMMARY above (that's a daily
+# venue-level aggregate; this is one row per youth per lesson, with a real
+# lesson_id/lesson_name/lesson_time). site_name == venue_name in every sample
+# checked -- "site" isn't a distinct grain here, just venue's other name in
+# this table. report_created_by/submitted_by are opaque auth-system user IDs
+# (e.g. "user_3Cyn4wLkPlFZf3JhkTcbmLwj8ly"), not names -- already
+# de-identified, no PII masking needed to show a "reported by" breakdown.
+# Backs /api/implementation/attendance-lessons.
+LESSON_ATTENDANCE = f"{_SILVER}.eba_bootcamp_attendance"
+
+# A report's on-time flag, per the recruitment team's cutoff: a Morning
+# lesson's report is timely if submitted before 12:00 noon LOCAL time; an
+# Afternoon lesson's report is timely if submitted at/before 17:00 LOCAL.
+# submission_time is stored in UTC (confirmed live -- Morning reports cluster
+# 05:00-08:00 UTC, i.e. 08:00-11:00 EAT, right before the actual local
+# cutoff; Afternoon reports cluster 10:00-12:00 UTC, i.e. 13:00-15:00 EAT),
+# so this converts to Africa/Kampala (EAT, UTC+3, no DST) before comparing.
+# `report_id` (not this row alone) is the real unit a "timely" flag applies
+# to -- every youth row in the same report shares one submission_time.
+LESSON_TIMELY_REPORT_SQL = """CASE
+      WHEN lesson_time = 'Morning' THEN TIME(DATETIME(submission_time, 'Africa/Kampala')) < TIME(12, 0, 0)
+      WHEN lesson_time = 'Afternoon' THEN TIME(DATETIME(submission_time, 'Africa/Kampala')) <= TIME(17, 0, 0)
+      ELSE NULL
+    END"""
 
 # Trainer quality: raw per-lesson observation form export (ODK-style — every
 # column is STRING, one row per classroom observation). Has no bootcamp_cycle
@@ -560,7 +585,6 @@ TAM_COVERAGE         = f"{_GOLD}.eba_tam_coverage"            # TODO: confirm �
 MOBILISER_PERF       = f"{_GOLD}.eba_mobiliser_performance"   # TODO: confirm — per-mobiliser reached/confirmed
 CHANNEL_PERF         = f"{_GOLD}.eba_channel_performance"     # TODO: confirm — online vs offline channel funnel
 ATTENDANCE_DAILY     = f"{_GOLD}.eba_attendance_daily"        # TODO: confirm — daily present/churn per venue
-ATTENDANCE_LESSON    = f"{_GOLD}.eba_attendance_lesson"       # TODO: confirm — per-lesson attendance %
 RETENTION_VENUE      = f"{_GOLD}.eba_retention_venue"         # TODO: confirm — acquired/activated/retained per venue
 TRAINER_QUALITY      = f"{_GOLD}.eba_trainer_quality"         # TODO: confirm — trainer observation scores
 YOUTH_NPS            = f"{_GOLD}.eba_youth_experience_nps"    # TODO: confirm — programme/venue/meals NPS by week

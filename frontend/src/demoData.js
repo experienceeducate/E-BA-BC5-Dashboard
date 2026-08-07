@@ -424,6 +424,36 @@ export const DEMO = {
     lessons: [],
   },
 
+  // Per-lesson, per-session (Morning/Afternoon) grain from silver_eba.
+  // eba_bootcamp_attendance -- genuinely finer than "/attendance" above,
+  // which has no per-lesson breakdown. timely_rate = % of DISTINCT reports
+  // filed on time (Morning before 12:00, Afternoon by 17:00, Africa/Kampala).
+  "/api/implementation/attendance-lessons": {
+    by_lesson: [
+      { lesson_id: "L07", lesson_name: "Tree of Life", lesson_time: "Afternoon", total: 620, present: 527, total_reports: 62, timely_reports: 39, attendance_rate: 85.0, timely_rate: 62.9 },
+      { lesson_id: "L03", lesson_name: "Yes I Can", lesson_time: "Morning", total: 640, present: 563, total_reports: 64, timely_reports: 55, attendance_rate: 88.0, timely_rate: 85.9 },
+      { lesson_id: "L11", lesson_name: "Passion Match", lesson_time: "Afternoon", total: 615, present: 553, total_reports: 61, timely_reports: 44, attendance_rate: 89.9, timely_rate: 72.1 },
+      { lesson_id: "L01", lesson_name: "Planning to Earn", lesson_time: "Morning", total: 645, present: 597, total_reports: 65, timely_reports: 60, attendance_rate: 92.6, timely_rate: 92.3 },
+      { lesson_id: "L14", lesson_name: "My Vision- My Future Plan", lesson_time: "Afternoon", total: 610, present: 570, total_reports: 61, timely_reports: 50, attendance_rate: 93.4, timely_rate: 82.0 },
+    ],
+    by_session: [
+      { lesson_time: "Morning", total: 6420, present: 5836, total_reports: 642, timely_reports: 574, attendance_rate: 90.9, timely_rate: 89.4 },
+      { lesson_time: "Afternoon", total: 6180, present: 5439, total_reports: 618, timely_reports: 421, attendance_rate: 88.0, timely_rate: 68.1 },
+    ],
+    by_lesson_venue: [
+      { lesson_id: "L07", lesson_name: "Tree of Life", district: "MAYUGE", venue: "Kigandalo HS", total: 130, present: 118, total_reports: 13, timely_reports: 10, attendance_rate: 90.8, timely_rate: 76.9 },
+      { lesson_id: "L07", lesson_name: "Tree of Life", district: "BUGWERI", venue: "Busembatia CC", total: 120, present: 96, total_reports: 12, timely_reports: 6, attendance_rate: 80.0, timely_rate: 50.0 },
+      { lesson_id: "L07", lesson_name: "Tree of Life", district: "BUGIRI", venue: "Isegero VTC", total: 95, present: 74, total_reports: 10, timely_reports: 5, attendance_rate: 77.9, timely_rate: 50.0 },
+    ],
+    // reporter is an opaque, already-de-identified auth-system user ID
+    // (not a name) -- a data-quality/coverage read, not a staff ranking.
+    by_reporter: [
+      { reporter: "user_3Cyn4wLkPlFZf3JhkTcbmLwj8ly", total_reports: 84, timely_reports: 41, timely_rate: 48.8 },
+      { reporter: "user_9QpXr2vNkLdE7hTmZaWc4RfBoy1", total_reports: 76, timely_reports: 55, timely_rate: 72.4 },
+      { reporter: "user_5MbYs8Jz1PqK6nWvAdCe3TgHiu0", total_reports: 91, timely_reports: 82, timely_rate: 90.1 },
+    ],
+  },
+
   "/api/implementation/retention-calls": {
     daily: [
       { event_date: "2026-05-11", called: 210, reached: 160, promised: 120, returned: 95 },
