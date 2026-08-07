@@ -225,7 +225,11 @@ def attendance(
     SELECT venue_name AS venue, report_date AS event_date,
            total_youths_present AS present,
            total_females_present AS present_female,
-           total_males_present AS present_male
+           total_males_present AS present_male,
+           total_youths_absent AS absent,
+           total_females_absent AS absent_female,
+           total_males_absent AS absent_male,
+           youths_churned AS net_churn
     FROM {ATTENDANCE_SUMMARY}
     WHERE {venue_day_where} AND measure = 'attendance' AND report_date IS NOT NULL
     """
@@ -287,12 +291,23 @@ def attendance(
         present = r.get("present")
         present_female = r.get("present_female")
         present_male = r.get("present_male")
+        absent = r.get("absent")
+        absent_female = r.get("absent_female")
+        absent_male = r.get("absent_male")
         by_venue_day.append({
             "district": a["district"],
             "venue": r["venue"],
             "event_date": r["event_date"],
             "activated": _attendance_pick(activated, activated_female, activated_male, gender),
             "present": _attendance_pick(present, present_female, present_male, gender),
+            # absent/net_churn -- added so the frontend's local venue search/
+            # multi-select can recompute a filtered Daily attendance/net churn
+            # series (matching the same real ATTENDANCE_SUMMARY columns
+            # daily_sql already sums programme-wide) instead of those two
+            # charts staying unfiltered while every other venue-grain visual
+            # on the page responds to the filter.
+            "absent": _attendance_pick(absent, absent_female, absent_male, gender),
+            "net_churn": r.get("net_churn"),
             "attendance_rate": _attendance_pick(_rate(present, activated), _rate(present_female, activated_female), _rate(present_male, activated_male), gender),
             # activated_female/activated_male are carried alongside (not just
             # the rate) so the frontend's district-level rollup for a clicked
@@ -449,6 +464,7 @@ def attendance_lessons(
 def retention(
     user: User = Depends(current_user),
     district: List[str] = Query(default=[]),
+    gender: Optional[str] = Query(None),
     venue: List[str] = Query(default=[]),
     cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORTS
 ):
@@ -460,6 +476,16 @@ def retention(
     snapshot per venue×gender with no date column at all (confirmed against
     the live schema), unlike ATTENDANCE_SUMMARY/LESSON_ATTENDANCE.
 
+    gender is deliberately NOT a WHERE filter (same reasoning as
+    _attendance_pick, reused here) -- WHERE-filtering this venue×gender-grain
+    table by gender would collapse the *other* gender's acquired/activated/
+    retained/all_sessions counts to zero, breaking the always-both-genders
+    _female/_male columns the Session-completion drill also needs. Instead
+    every headline field (acquired, activated, retained, all_sessions_count,
+    and every rate derived from them) is picked from the real overall/female/
+    male sums via _attendance_pick, the same way /api/implementation/
+    attendance's by_venue already does.
+
     Backed by the live SITE_FUNNEL_METRICS mart: retained = youth_80pct_lessons
     (80%-of-lessons completion, confirmed by the recruitment team as the
     "retained" definition); activation/retention rates are computed from the
@@ -468,7 +494,7 @@ def retention(
     site_metrics rows are venue×gender-grain (see tables.py), so
     retained_female/male sum the same youth_80pct_lessons column filtered to
     gender rather than needing a second query -- same pattern for
-    all_sessions_count(_female/_male) off youth_100pct_lessons.
+    acquired_female/male and all_sessions_count(_female/_male).
 
     all_sessions_count/all_sessions_rate ("Youth attending sessions" -- the
     100%-of-lessons gauge) lives here, not on /api/implementation/attendance,
@@ -484,6 +510,8 @@ def retention(
     sql = f"""
     SELECT UPPER(district) AS district, venue_name AS venue,
            SUM(acquired_youth) AS acquired,
+           SUM(IF(UPPER(gender) = 'FEMALE', acquired_youth, 0)) AS acquired_female,
+           SUM(IF(UPPER(gender) = 'MALE', acquired_youth, 0)) AS acquired_male,
            SUM(activated_youth) AS activated,
            SUM(IF(UPPER(gender) = 'FEMALE', activated_youth, 0)) AS activated_female,
            SUM(IF(UPPER(gender) = 'MALE', activated_youth, 0)) AS activated_male,
@@ -503,17 +531,41 @@ def retention(
     def _rate(numer, denom):
         return round(100 * numer / denom, 1) if numer is not None and denom else None
 
+    picked_rows = []
     for r in rows:
-        acq, act = r.get("acquired") or 0, r.get("activated") or 0
-        act_f, act_m = r.get("activated_female") or 0, r.get("activated_male") or 0
-        r["activation_rate"] = round(100 * act / acq, 1) if acq else None
-        r["retention_rate"]         = _rate(r.get("retained"), act)
-        r["retention_rate_female"]  = _rate(r.get("retained_female"), act_f)
-        r["retention_rate_male"]    = _rate(r.get("retained_male"), act_m)
-        r["all_sessions_rate"]        = _rate(r.get("all_sessions_count"), act)
-        r["all_sessions_rate_female"] = _rate(r.get("all_sessions_count_female"), act_f)
-        r["all_sessions_rate_male"]   = _rate(r.get("all_sessions_count_male"), act_m)
-    return {"by_venue": rows, "targets": {"activation": 90, "retention": 85, "all_sessions": 75}}
+        acq, acq_f, acq_m = r.get("acquired") or 0, r.get("acquired_female") or 0, r.get("acquired_male") or 0
+        act, act_f, act_m = r.get("activated") or 0, r.get("activated_female") or 0, r.get("activated_male") or 0
+        ret, ret_f, ret_m = r.get("retained") or 0, r.get("retained_female") or 0, r.get("retained_male") or 0
+        as_, as_f, as_m = r.get("all_sessions_count") or 0, r.get("all_sessions_count_female") or 0, r.get("all_sessions_count_male") or 0
+
+        picked_acquired  = _attendance_pick(acq, acq_f, acq_m, gender)
+        picked_activated = _attendance_pick(act, act_f, act_m, gender)
+        picked_retained  = _attendance_pick(ret, ret_f, ret_m, gender)
+        picked_all_sessions = _attendance_pick(as_, as_f, as_m, gender)
+
+        picked_rows.append({
+            **r,
+            "acquired": picked_acquired,
+            "activated": picked_activated,
+            "retained": picked_retained,
+            "all_sessions_count": picked_all_sessions,
+            "activation_rate": _rate(picked_activated, picked_acquired),
+            "retention_rate":        _rate(picked_retained, picked_activated),
+            "retention_rate_female": _rate(ret_f, act_f),
+            "retention_rate_male":   _rate(ret_m, act_m),
+            "all_sessions_rate":        _rate(picked_all_sessions, picked_activated),
+            "all_sessions_rate_female": _rate(as_f, act_f),
+            "all_sessions_rate_male":   _rate(as_m, act_m),
+            # Always-both-genders raw counts (never gender-picked) -- so the
+            # Session-completion drill's Female/Male columns and "Female
+            # retained" KPI stay real and populated regardless of which
+            # gender (if any) the page filter has selected.
+            "acquired_female": acq_f, "acquired_male": acq_m,
+            "activated_female": act_f, "activated_male": act_m,
+            "retained_female": ret_f, "retained_male": ret_m,
+            "all_sessions_count_female": as_f, "all_sessions_count_male": as_m,
+        })
+    return {"by_venue": picked_rows, "targets": {"activation": 90, "retention": 85, "all_sessions": 75}}
 
 
 @router.get("/api/implementation/retention-calls")

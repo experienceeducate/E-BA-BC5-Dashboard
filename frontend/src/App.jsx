@@ -4161,17 +4161,12 @@ function AttendanceTab({ filters }) {
 function AttendanceOverviewPage({ filters, dateFrom, dateTo }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/attendance${withDateRange(filters, dateFrom, dateTo)}`);
-  const daily = data?.daily || [];
   const venueRowsRaw = data?.by_venue || [];
   const venueDayRowsRaw = data?.by_venue_day || [];
 
   // Free-text search (matches venue or district) + Venues multi-select --
   // same "as is on Milestones tab" local-filter pattern (fetch once, slice
-  // client-side, no refetch per keystroke/selection). Scopes every venue-
-  // grain visual below (district table, all-venues table, their drills) --
-  // the top KPI tiles and Daily attendance/net-churn charts stay programme-
-  // wide (unfiltered) since net_churn has no per-venue breakdown at all in
-  // the backend response to scope them by.
+  // client-side, no refetch per keystroke/selection).
   const [venueSearch, setVenueSearch] = useState("");
   const [selectedVenues, setSelectedVenues] = useState([]);
   const q = venueSearch.trim().toLowerCase();
@@ -4179,8 +4174,33 @@ function AttendanceOverviewPage({ filters, dateFrom, dateTo }) {
     (!q || (r.venue || "").toLowerCase().includes(q) || (r.district || "").toLowerCase().includes(q)) &&
     (selectedVenues.length === 0 || selectedVenues.includes(r.venue));
   const venueOptions = distinctValues(venueRowsRaw, "venue");
+  const filtering = Boolean(q) || selectedVenues.length > 0;
   const venueRows = venueRowsRaw.filter(matchesVenue);
   const venueDayRows = venueDayRowsRaw.filter(matchesVenue);
+
+  // Daily attendance/net-churn (present/absent/net_churn, programme-wide by
+  // default) are re-derived from the filtered venueDayRows when a search/
+  // venue filter is active, so those two charts and every KPI built from
+  // them respond to the filter too -- not just the venue-grain tables below.
+  // venueDayRows only carries venues with a real SITE_FUNNEL_METRICS
+  // activated match (see backend), so this is only used while filtering,
+  // never as the unfiltered default (which would silently undercount venues
+  // with attendance but no activation match).
+  const dailyFromVenues = (() => {
+    const byDate = {};
+    venueDayRows.forEach((v) => {
+      const d = byDate[v.event_date] || (byDate[v.event_date] = {
+        event_date: v.event_date, present: 0, absent: 0, present_female: 0, present_male: 0, net_churn: 0,
+      });
+      d.present += v.present || 0;
+      d.absent += v.absent || 0;
+      d.present_female += v.present_female || 0;
+      d.present_male += v.present_male || 0;
+      d.net_churn += v.net_churn || 0;
+    });
+    return Object.values(byDate).sort((a, b) => (a.event_date < b.event_date ? -1 : 1));
+  })();
+  const daily = filtering ? dailyFromVenues : (data?.daily || []);
 
   const totalActivated = sumBy(venueRows, "activated");
   const avgPresent = daily.length ? sumBy(daily, "present") / daily.length : null;
@@ -4321,7 +4341,7 @@ function AttendanceOverviewPage({ filters, dateFrom, dateTo }) {
       </Insight>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="Daily attendance" subtitle="Programme-wide youth present by day. Click a point to drill into that day by district, then venue." chip="REAL">
+        <Card title="Daily attendance" subtitle={filtering ? `Scoped to ${fmtNum(venueRows.length)} filtered venue${venueRows.length === 1 ? "" : "s"}. Click a point to drill into that day by district, then venue.` : "Programme-wide youth present by day. Click a point to drill into that day by district, then venue."} chip="REAL">
           <State loading={loading} error={error} empty={!loading && daily.length === 0}>
             <ResponsiveContainer width="100%" height={260}>
               <LineChart
