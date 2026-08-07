@@ -3886,7 +3886,22 @@ function groupByDistrict(rows, countKeys, rateFns) {
 function RetentionTab({ filters }) {
   const drill = useDrill();
   const { data, loading, error } = useApi(`/api/implementation/retention${buildParams(filters)}`);
-  const rows = data?.by_venue || [];
+  const rowsRaw = data?.by_venue || [];
+
+  // Free-text search (matches venue or district) + Venues multi-select --
+  // same "as is on Milestones tab" local-filter pattern (fetch once, slice
+  // client-side). No date range here -- SITE_FUNNEL_METRICS is a cumulative-
+  // to-date snapshot with no date column at all (confirmed against the live
+  // schema), unlike Attendance's ATTENDANCE_SUMMARY/LESSON_ATTENDANCE.
+  const [venueSearch, setVenueSearch] = useState("");
+  const [selectedVenues, setSelectedVenues] = useState([]);
+  const q = venueSearch.trim().toLowerCase();
+  const matchesVenue = (r) =>
+    (!q || (r.venue || "").toLowerCase().includes(q) || (r.district || "").toLowerCase().includes(q)) &&
+    (selectedVenues.length === 0 || selectedVenues.includes(r.venue));
+  const venueOptions = distinctValues(rowsRaw, "venue");
+  const rows = rowsRaw.filter(matchesVenue);
+
   const targetActivation = data?.targets?.activation ?? 90;
   const targetRetention = data?.targets?.retention ?? 85;
   const targetAllSessions = data?.targets?.all_sessions ?? 75;
@@ -3991,6 +4006,16 @@ function RetentionTab({ filters }) {
 
   return (
     <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+        <input
+          type="text"
+          value={venueSearch}
+          onChange={(e) => setVenueSearch(e.target.value)}
+          placeholder="Search district or venue…"
+          style={{ flex: "1 1 240px", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5 }}
+        />
+        <MultiSelectDropdown label="Venues" options={venueOptions} selected={selectedVenues} onChange={setSelectedVenues} />
+      </div>
       <Grid cols={4}>
         <KpiTile label="Acquired" value={fmtNum(totalAcquired)} sub="waiver signed" tag="REAL" onClick={() => openMetricDrill("acquired", "Acquired")} />
         <KpiTile
@@ -4098,6 +4123,11 @@ function RetentionTab({ filters }) {
 
 function AttendanceTab({ filters }) {
   const [page, setPage] = useState("overview");
+  // One shared date range for every sub-page on this tab (report_date, real
+  // on both ATTENDANCE_SUMMARY and LESSON_ATTENDANCE) -- same "kept at this
+  // level so switching sub-tabs doesn't reset it" convention as Mobilisation.
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   return (
     <div>
       <h2 style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Attendance</h2>
@@ -4105,6 +4135,15 @@ function AttendanceTab({ filters }) {
         Daily and per-venue attendance against activation, session-completion gauges, and a
         lesson-by-lesson breakdown with report timeliness.
       </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Date range (all Attendance pages)</span>
+        <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} style={{ fontSize: 12, padding: "6px 8px", border: `1px solid ${C.line}`, borderRadius: 5, color: C.text }} />
+        <span style={{ fontSize: 11, color: C.muted }}>to</span>
+        <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} style={{ fontSize: 12, padding: "6px 8px", border: `1px solid ${C.line}`, borderRadius: 5, color: C.text }} />
+        {(dateFrom || dateTo) && (
+          <button onClick={() => { setDateFrom(""); setDateTo(""); }} style={PAGER_BTN}>Clear dates</button>
+        )}
+      </div>
       <PageNav
         active={page}
         onChange={setPage}
@@ -4113,18 +4152,35 @@ function AttendanceTab({ filters }) {
           { key: "lessons", label: "Lesson Attendance" },
         ]}
       />
-      {page === "overview" && <AttendanceOverviewPage filters={filters} />}
-      {page === "lessons" && <AttendanceLessonsPage filters={filters} />}
+      {page === "overview" && <AttendanceOverviewPage filters={filters} dateFrom={dateFrom} dateTo={dateTo} />}
+      {page === "lessons" && <AttendanceLessonsPage filters={filters} dateFrom={dateFrom} dateTo={dateTo} />}
     </div>
   );
 }
 
-function AttendanceOverviewPage({ filters }) {
+function AttendanceOverviewPage({ filters, dateFrom, dateTo }) {
   const drill = useDrill();
-  const { data, loading, error } = useApi(`/api/implementation/attendance${buildParams(filters)}`);
+  const { data, loading, error } = useApi(`/api/implementation/attendance${withDateRange(filters, dateFrom, dateTo)}`);
   const daily = data?.daily || [];
-  const venueRows = data?.by_venue || [];
-  const venueDayRows = data?.by_venue_day || [];
+  const venueRowsRaw = data?.by_venue || [];
+  const venueDayRowsRaw = data?.by_venue_day || [];
+
+  // Free-text search (matches venue or district) + Venues multi-select --
+  // same "as is on Milestones tab" local-filter pattern (fetch once, slice
+  // client-side, no refetch per keystroke/selection). Scopes every venue-
+  // grain visual below (district table, all-venues table, their drills) --
+  // the top KPI tiles and Daily attendance/net-churn charts stay programme-
+  // wide (unfiltered) since net_churn has no per-venue breakdown at all in
+  // the backend response to scope them by.
+  const [venueSearch, setVenueSearch] = useState("");
+  const [selectedVenues, setSelectedVenues] = useState([]);
+  const q = venueSearch.trim().toLowerCase();
+  const matchesVenue = (r) =>
+    (!q || (r.venue || "").toLowerCase().includes(q) || (r.district || "").toLowerCase().includes(q)) &&
+    (selectedVenues.length === 0 || selectedVenues.includes(r.venue));
+  const venueOptions = distinctValues(venueRowsRaw, "venue");
+  const venueRows = venueRowsRaw.filter(matchesVenue);
+  const venueDayRows = venueDayRowsRaw.filter(matchesVenue);
 
   const totalActivated = sumBy(venueRows, "activated");
   const avgPresent = daily.length ? sumBy(daily, "present") / daily.length : null;
@@ -4219,6 +4275,16 @@ function AttendanceOverviewPage({ filters }) {
 
   return (
     <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+        <input
+          type="text"
+          value={venueSearch}
+          onChange={(e) => setVenueSearch(e.target.value)}
+          placeholder="Search district or venue…"
+          style={{ flex: "1 1 240px", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5 }}
+        />
+        <MultiSelectDropdown label="Venues" options={venueOptions} selected={selectedVenues} onChange={setSelectedVenues} />
+      </div>
       <Grid cols={4}>
         <KpiTile label="Venues reporting" value={String(venueRows.length)} sub="attendance × activation joined" tag="REAL" />
         <KpiTile
@@ -4328,13 +4394,57 @@ function AttendanceOverviewPage({ filters }) {
 // team's own cutoff: a Morning lesson's report is on time if submitted
 // before 12:00 noon local (Africa/Kampala) time; an Afternoon report is on
 // time at/before 17:00 local -- see LESSON_TIMELY_REPORT_SQL in tables.py.
-function AttendanceLessonsPage({ filters }) {
+// Sums total/present/total_reports/timely_reports across matching by_lesson_
+// venue rows, grouped by the given key fields, and recomputes attendance_
+// rate/timely_rate from those sums -- used when a venue search/multi-select
+// is active, so by_lesson/by_session reflect only the matching venues rather
+// than the backend's unfiltered programme-wide aggregates.
+function aggregateLessonVenue(rows, keys) {
+  const groups = {};
+  rows.forEach((r) => {
+    const k = keys.map((key) => r[key]).join("||");
+    const g = groups[k] || (groups[k] = { total: 0, present: 0, total_reports: 0, timely_reports: 0 });
+    keys.forEach((key) => { g[key] = r[key]; });
+    g.total += r.total || 0;
+    g.present += r.present || 0;
+    g.total_reports += r.total_reports || 0;
+    g.timely_reports += r.timely_reports || 0;
+  });
+  return Object.values(groups).map((g) => ({
+    ...g,
+    attendance_rate: g.total ? Math.round((1000 * g.present) / g.total) / 10 : null,
+    timely_rate: g.total_reports ? Math.round((1000 * g.timely_reports) / g.total_reports) / 10 : null,
+  }));
+}
+
+function AttendanceLessonsPage({ filters, dateFrom, dateTo }) {
   const drill = useDrill();
-  const { data, loading, error } = useApi(`/api/implementation/attendance-lessons${buildParams(filters)}`);
-  const byLesson = data?.by_lesson || [];
-  const bySession = data?.by_session || [];
-  const byLessonVenue = data?.by_lesson_venue || [];
+  const { data, loading, error } = useApi(`/api/implementation/attendance-lessons${withDateRange(filters, dateFrom, dateTo)}`);
+  const byLessonVenueRaw = data?.by_lesson_venue || [];
   const byReporter = data?.by_reporter || [];
+
+  // Free-text search (matches venue or district) + Venues multi-select --
+  // same local-filter pattern as Attendance Overview/Milestones. by_lesson
+  // and by_session have no venue of their own, so a filter re-aggregates
+  // them from the matching by_lesson_venue rows instead of just narrowing a
+  // list; by_reporter has no venue dimension at all in the backend response,
+  // so it stays unfiltered regardless.
+  const [venueSearch, setVenueSearch] = useState("");
+  const [selectedVenues, setSelectedVenues] = useState([]);
+  const q = venueSearch.trim().toLowerCase();
+  const matchesVenue = (r) =>
+    (!q || (r.venue || "").toLowerCase().includes(q) || (r.district || "").toLowerCase().includes(q)) &&
+    (selectedVenues.length === 0 || selectedVenues.includes(r.venue));
+  const venueOptions = distinctValues(byLessonVenueRaw, "venue");
+  const filtering = Boolean(q) || selectedVenues.length > 0;
+  const byLessonVenue = filtering ? byLessonVenueRaw.filter(matchesVenue) : byLessonVenueRaw;
+
+  const byLesson = filtering
+    ? aggregateLessonVenue(byLessonVenue, ["lesson_id", "lesson_name", "lesson_time"])
+    : data?.by_lesson || [];
+  const bySession = filtering
+    ? aggregateLessonVenue(byLessonVenue, ["lesson_time"])
+    : data?.by_session || [];
 
   const morning = bySession.find((s) => s.lesson_time === "Morning");
   const afternoon = bySession.find((s) => s.lesson_time === "Afternoon");
@@ -4356,6 +4466,9 @@ function AttendanceLessonsPage({ filters }) {
   const pagedLessons = sortedLessons.slice(lessonPageClamped * lessonPageSize, lessonPageClamped * lessonPageSize + lessonPageSize);
 
   function openLessonDrill(lesson) {
+    // Sourced from the (possibly venue-filtered) byLessonVenue, not the raw
+    // fetch -- so the drill only ever shows venues consistent with whatever
+    // the page's own search/multi-select currently narrows to.
     const rowsForLesson = byLessonVenue.filter((v) => v.lesson_id === lesson.lesson_id);
     const byDistrict = {};
     rowsForLesson.forEach((v) => {
@@ -4399,6 +4512,16 @@ function AttendanceLessonsPage({ filters }) {
 
   return (
     <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+        <input
+          type="text"
+          value={venueSearch}
+          onChange={(e) => setVenueSearch(e.target.value)}
+          placeholder="Search district or venue…"
+          style={{ flex: "1 1 240px", fontSize: 12, padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 5 }}
+        />
+        <MultiSelectDropdown label="Venues" options={venueOptions} selected={selectedVenues} onChange={setSelectedVenues} />
+      </div>
       <Grid cols={4}>
         <KpiTile label="Lessons tracked" value={String(lessonsTracked)} sub="silver_eba.eba_bootcamp_attendance" tag="REAL" />
         <KpiTile label="Reports analyzed" value={fmtNum(totalReports)} sub="distinct report_id" tag="REAL" />
@@ -4459,6 +4582,11 @@ function AttendanceLessonsPage({ filters }) {
         subtitle="Lowest timely-reporting rate first. reporter is an opaque, already-de-identified auth-system ID (not a name) — this is a data-quality/coverage signal, not a performance ranking of named staff."
         chip="REAL"
       >
+        {filtering && (
+          <p style={{ fontSize: 11, color: C.muted, marginTop: -6, marginBottom: 10 }}>
+            The venue search/filter above doesn't apply here — reports aren't tied to a single venue in this breakdown.
+          </p>
+        )}
         <State loading={loading} error={error} empty={!loading && sortedReporters.length === 0}>
           <DataTable
             columns={[

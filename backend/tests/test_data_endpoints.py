@@ -1053,6 +1053,31 @@ def test_attendance_gender_filter_picks_headline_without_collapsing_split(as_sta
     assert v["attendance_rate_male"] == 75.0
 
 
+def test_attendance_accepts_date_range(as_staff, mock_run_query):
+    """date_from/date_to filter report_date on the ATTENDANCE_SUMMARY-based
+    queries (daily/venue-avg/venue-day) -- never on the SITE_FUNNEL_METRICS
+    activated query, which has no date column."""
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/implementation/attendance", params={"date_from": "2026-05-01", "date_to": "2026-05-31"})
+    assert r.status_code == 200
+    daily_call = next(c for c in mock_run_query.calls if "GROUP BY event_date" in c["sql"])
+    assert "report_date >=" in daily_call["sql"]
+    assert "report_date <=" in daily_call["sql"]
+    venue_call = next(c for c in mock_run_query.calls if "AVG(total_youths_present)" in c["sql"])
+    assert "report_date >=" in venue_call["sql"]
+    activated_call = next(c for c in mock_run_query.calls if "SUM(activated_youth) AS activated" in c["sql"])
+    assert "report_date" not in activated_call["sql"]
+
+
+def test_attendance_date_range_is_optional(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/implementation/attendance")
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "report_date >=" not in all_sql
+    assert "report_date <=" not in all_sql
+
+
 def test_attendance_lessons_by_lesson_computes_rates(as_staff, mock_run_query):
     def side_effect(sql, params, role):
         if "GROUP BY lesson_id, lesson_name, lesson_time" in sql:
@@ -1118,9 +1143,9 @@ def test_attendance_lessons_by_reporter_ranks_timeliness(as_staff, mock_run_quer
 
 def test_attendance_lessons_by_lesson_venue_drill_shape(as_staff, mock_run_query):
     def side_effect(sql, params, role):
-        if "GROUP BY lesson_id, lesson_name, district, venue" in sql:
+        if "GROUP BY lesson_id, lesson_name, lesson_time, district, venue" in sql:
             return [{
-                "lesson_id": "L1", "lesson_name": "Planning to Earn",
+                "lesson_id": "L1", "lesson_name": "Planning to Earn", "lesson_time": "Morning",
                 "district": "BUGIRI", "venue": "Bugiri primary school",
                 "total": 40, "present": 36, "total_reports": 4, "timely_reports": 3,
             }]
@@ -1146,6 +1171,29 @@ def test_attendance_lessons_accepts_district_gender_venue_filters(as_staff, mock
     assert "youth_district" in all_sql
     assert "youth_gender" in all_sql
     assert "venue_name" in all_sql
+
+
+def test_attendance_lessons_accepts_date_range(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    r = as_staff.get(
+        "/api/implementation/attendance-lessons",
+        params={"date_from": "2026-05-01", "date_to": "2026-05-31"},
+    )
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "report_date >=" in all_sql
+    assert "report_date <=" in all_sql
+
+
+def test_retention_accepts_district_filter(as_staff, mock_run_query):
+    """district previously had no effect on this endpoint at all -- it
+    accepted no district param, so the global district dropdown silently
+    did nothing here."""
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/implementation/retention", params={"district": "BUGIRI"})
+    assert r.status_code == 200
+    all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
+    assert "district" in all_sql
 
 
 def test_retention_computes_gendered_retention_and_all_sessions_rates(as_staff, mock_run_query):

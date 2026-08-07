@@ -14,7 +14,7 @@ from app.core import database  # module import — required for the run_query te
 from app.core.database import _scalar
 from app.core.pii import mask_name, name_from_trainer_key
 from app.core.pii import trainer_key as compute_trainer_key
-from app.core.sql import build_where, cohort_clause
+from app.core.sql import build_where, cohort_clause, date_clauses
 from app.core.tables import (
     ATTENDANCE_DAILY,
     MILESTONES,
@@ -46,6 +46,18 @@ def _filter_extra(cohort, prefix):
     if coh_clause:
         extra.append((coh_clause, coh_params))
     return extra
+
+
+# Wraps date_clauses' (clauses_list, params_list) into a build_where `extra`
+# entry -- same helper as recruitment.py's _date_extra, duplicated locally so
+# this router doesn't reach across domains for one line. Only ever spliced
+# onto a query against a table with a genuine per-record date column
+# (report_date, confirmed live on ATTENDANCE_SUMMARY and LESSON_ATTENDANCE) --
+# never onto SITE_FUNNEL_METRICS, which is a cumulative snapshot with no date
+# column at all (confirmed against the live schema).
+def _date_extra(date_col_expr, date_from, date_to, prefix):
+    clauses, params = date_clauses(date_col_expr, date_from, date_to, prefix)
+    return [(" AND ".join(clauses), params)] if clauses else []
 
 
 @router.get("/api/implementation/arrival")
@@ -102,6 +114,8 @@ def attendance(
     gender: Optional[str] = Query(None),
     venue: List[str] = Query(default=[]),
     cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORTS
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
 ):
     """Daily attendance & churn, plus a real per-venue attendance rate.
 
@@ -145,9 +159,15 @@ def attendance(
     here -- it's a lesson-completion metric off the same SITE_FUNNEL_METRICS
     mart /api/implementation/retention already reads, not a daily-attendance
     one, so it moved there instead of being duplicated on both endpoints.
+
+    date_from/date_to filter on report_date (confirmed live) -- only spliced
+    onto the ATTENDANCE_SUMMARY queries below, never onto SITE_FUNNEL_METRICS
+    (activated_sql), which has no date column to filter by.
     """
     where_d, params_d = build_where(
-        districts=district, venues=venue, extra=[active_cohort_clause("ad")], prefix="ad",
+        districts=district, venues=venue,
+        extra=[active_cohort_clause("ad")] + _date_extra("report_date", date_from, date_to, "adfd"),
+        prefix="ad",
         district_col="youth_district", venue_col="venue_name",
     )
     daily_sql = f"""
@@ -174,7 +194,9 @@ def attendance(
         })
 
     present_where, present_params = build_where(
-        districts=district, venues=venue, extra=[active_cohort_clause("adv")], prefix="adv",
+        districts=district, venues=venue,
+        extra=[active_cohort_clause("adv")] + _date_extra("report_date", date_from, date_to, "advfd"),
+        prefix="adv",
         district_col="youth_district", venue_col="venue_name",
     )
     present_sql = f"""
@@ -194,7 +216,9 @@ def attendance(
     # Single-day grain (unlike present_by_venue's AVG-across-days rollup
     # above) -- feeds by_venue_day, the Daily attendance chart's drill.
     venue_day_where, venue_day_params = build_where(
-        districts=district, venues=venue, extra=[active_cohort_clause("advd")], prefix="advd",
+        districts=district, venues=venue,
+        extra=[active_cohort_clause("advd")] + _date_extra("report_date", date_from, date_to, "advdfd"),
+        prefix="advd",
         district_col="youth_district", venue_col="venue_name",
     )
     venue_day_sql = f"""
@@ -301,6 +325,8 @@ def attendance_lessons(
     gender: Optional[str] = Query(None),
     venue: List[str] = Query(default=[]),
     cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORTS
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
 ):
     """Per-lesson, per-session (Morning/Afternoon) attendance rate, plus a
     report-timeliness flag -- backed by the live LESSON_ATTENDANCE record
@@ -329,10 +355,18 @@ def attendance_lessons(
     gender is a real WHERE filter here (youth_gender is a genuine per-row
     column on this table, unlike ATTENDANCE_SUMMARY's row-level-absent split)
     -- no _attendance_pick-style headline-picking needed.
+
+    date_from/date_to filter on report_date (confirmed live on this table,
+    same column ATTENDANCE_SUMMARY uses).
+
+    by_lesson_venue also carries lesson_time (not just lesson_id) so the
+    frontend can re-aggregate a venue/search-filtered by_lesson AND by_session
+    from this one grain, rather than needing a second endpoint call.
     """
     where, params = build_where(
         districts=district, gender=gender, venues=venue,
-        extra=[active_cohort_clause("al")], prefix="al",
+        extra=[active_cohort_clause("al")] + _date_extra("report_date", date_from, date_to, "alfd"),
+        prefix="al",
         district_col="youth_district", venue_col="venue_name", gender_col="youth_gender",
     )
 
@@ -374,14 +408,14 @@ def attendance_lessons(
     by_session = _with_rates(database.run_query(by_session_sql, params, role=user.role))
 
     by_lesson_venue_sql = f"""
-    SELECT lesson_id, lesson_name, UPPER(youth_district) AS district, venue_name AS venue,
+    SELECT lesson_id, lesson_name, lesson_time, UPPER(youth_district) AS district, venue_name AS venue,
            COUNT(*) AS total,
            COUNTIF(status = 'PRESENT') AS present,
            COUNT(DISTINCT report_id) AS total_reports,
            COUNT(DISTINCT IF({LESSON_TIMELY_REPORT_SQL}, report_id, NULL)) AS timely_reports
     FROM {LESSON_ATTENDANCE}
     WHERE {where} AND lesson_id IS NOT NULL AND venue_name IS NOT NULL
-    GROUP BY lesson_id, lesson_name, district, venue
+    GROUP BY lesson_id, lesson_name, lesson_time, district, venue
     """
     by_lesson_venue = _with_rates(database.run_query(by_lesson_venue_sql, params, role=user.role))
 
@@ -414,10 +448,17 @@ def attendance_lessons(
 @router.get("/api/implementation/retention")
 def retention(
     user: User = Depends(current_user),
+    district: List[str] = Query(default=[]),
     venue: List[str] = Query(default=[]),
     cohort: List[str] = Query(default=[]),  # accepted but unused — see ACTIVE_COHORTS
 ):
     """Acquired -> activated -> retained per venue, against activation/retention targets.
+
+    district is a real WHERE filter (the global district dropdown previously
+    had zero effect here -- this endpoint accepted no district param at all).
+    No date_from/date_to -- SITE_FUNNEL_METRICS is a cumulative-to-date
+    snapshot per venue×gender with no date column at all (confirmed against
+    the live schema), unlike ATTENDANCE_SUMMARY/LESSON_ATTENDANCE.
 
     Backed by the live SITE_FUNNEL_METRICS mart: retained = youth_80pct_lessons
     (80%-of-lessons completion, confirmed by the recruitment team as the
@@ -437,7 +478,7 @@ def retention(
     the frontend) rather than duplicating it across both endpoints.
     """
     where, params = build_where(
-        venues=venue, extra=[active_cohort_clause("rt")], prefix="rt",
+        districts=district, venues=venue, extra=[active_cohort_clause("rt")], prefix="rt",
         venue_col="venue_name",
     )
     sql = f"""
