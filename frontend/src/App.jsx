@@ -4483,6 +4483,13 @@ function AttendanceOverviewPage({ filters, dateFrom, dateTo }) {
   const daily = filtering ? dailyFromVenues : (data?.daily || []);
 
   const totalActivated = sumBy(venueRows, "activated");
+  // Same present÷activated definition as every other rate on this page
+  // (capped -- see capRate), attached per day so the Daily attendance chart
+  // can plot it as a second line alongside the raw present count.
+  const dailyWithRate = daily.map((d) => ({
+    ...d,
+    attendance_rate: totalActivated ? capRate(Math.round((1000 * (d.present || 0)) / totalActivated) / 10) : null,
+  }));
   const avgPresent = daily.length ? sumBy(daily, "present") / daily.length : null;
   const avgChurn = daily.length ? sumBy(daily, "net_churn") / daily.length : null;
   const avgChurnRate = avgPresent ? Math.round((1000 * avgChurn) / avgPresent) / 10 : null;
@@ -4622,40 +4629,41 @@ function AttendanceOverviewPage({ filters, dateFrom, dateTo }) {
         <b>Present ÷ activated,</b> not a fabricated pace projection — activated comes from SITE_FUNNEL_METRICS (same source as the Retention tab), joined against ATTENDANCE_SUMMARY's real per-venue present counts.
       </Insight>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <Card title="Daily attendance" subtitle={filtering ? `Scoped to ${fmtNum(venueRows.length)} filtered venue${venueRows.length === 1 ? "" : "s"}. Click a point to drill into that day by district, then venue.` : "Programme-wide youth present by day. Click a point to drill into that day by district, then venue."} chip="REAL">
-          <State loading={loading} error={error} empty={!loading && daily.length === 0}>
-            <ResponsiveContainer width="100%" height={260}>
-              <LineChart
-                data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}
-                onClick={(e) => { if (e?.activeLabel) openDayDrill(e.activeLabel); }}
-                style={{ cursor: "pointer" }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-                <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip />
-                <Line type="monotone" dataKey="present" name="Present" stroke={C.teal} strokeWidth={2} dot={false} activeDot={{ r: 5 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </State>
-        </Card>
-        <Card title="Daily net churn" subtitle="Negative bars = net growth (returns > drop-offs)" chip="REAL">
-          <State loading={loading} error={error} empty={!loading && daily.length === 0}>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
-                <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip />
-                <Bar dataKey="net_churn" name="Net churn" radius={[4, 4, 0, 0]}>
-                  {daily.map((d, i) => <Cell key={i} fill={(d.net_churn ?? 0) <= 0 ? C.green : C.coral} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </State>
-        </Card>
-      </div>
+      <Card title="Daily attendance" subtitle={filtering ? `Scoped to ${fmtNum(venueRows.length)} filtered venue${venueRows.length === 1 ? "" : "s"}. Click a point to drill into that day by district, then venue.` : "Programme-wide youth present by day, against attendance rate (present ÷ activated). Click a point to drill into that day by district, then venue."} chip="REAL">
+        <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart
+              data={dailyWithRate} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}
+              onClick={(e) => { if (e?.activeLabel) openDayDrill(e.activeLabel); }}
+              style={{ cursor: "pointer" }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+              <YAxis yAxisId="present" tick={{ fontSize: 11 }} />
+              <YAxis yAxisId="rate" orientation="right" domain={[0, 100]} tick={{ fontSize: 11 }} tickFormatter={(v) => `${v}%`} />
+              <Tooltip />
+              <Legend />
+              <Line yAxisId="present" type="monotone" dataKey="present" name="Present" stroke={C.teal} strokeWidth={2} dot={false} activeDot={{ r: 5 }} />
+              <Line yAxisId="rate" type="monotone" dataKey="attendance_rate" name="Attendance rate" stroke={C.gold} strokeWidth={2} dot={false} activeDot={{ r: 5 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
+      <Card title="Daily net churn" subtitle="Negative bars = net growth (returns > drop-offs)" chip="REAL">
+        <State loading={loading} error={error} empty={!loading && daily.length === 0}>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={daily} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="event_date" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="net_churn" name="Net churn" radius={[4, 4, 0, 0]}>
+                {daily.map((d, i) => <Cell key={i} fill={(d.net_churn ?? 0) <= 0 ? C.green : C.coral} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </State>
+      </Card>
 
       <Card title={`Attendance rate — all ${fmtNum(sortedVenues.length)} venues`} subtitle="Every reporting venue, lowest-attendance first: present ÷ activated, overall and by gender." chip="REAL">
         <State loading={loading} error={error} empty={!loading && sortedVenues.length === 0}>
