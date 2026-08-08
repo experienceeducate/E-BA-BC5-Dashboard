@@ -1204,6 +1204,14 @@ def mobilisation_heatmap(
     lookup built from targets_by_venue, the only source with a reliable
     parish for a venue name (same reasoning as district_by_parish below).
 
+    Every level (by_district/by_parish/by_venue) ALSO carries the unblended
+    online_reached/online_confirmed/online_confirmed_female and
+    offline_reached/offline_confirmed/offline_confirmed_female alongside the
+    blended reached/confirmed/confirmed_female — enough for the frontend to
+    build a per-entity Online vs Offline drill at any grain (district, then
+    parish, then venue), not just the program-wide split mobilisation()
+    already exposes via its own online/offline segments.
+
     IMPORTANT — agent_district is not a reliable district for the actual
     (call-center) side. Confirmed live, 2026-08-04: it's where the CALLING
     AGENT is based, not the youth's/venue's district — e.g. a Bugiri-based
@@ -1286,12 +1294,19 @@ def mobilisation_heatmap(
     # rows instead of one, splitting a venue's real numbers apart (one row
     # with assigned/target, the other with reached/confirmed) rather than
     # combining them.
+    # Named online_* (not reached/confirmed) — venue_parish IS NOT NULL
+    # already scopes this to Online rows in practice (Offline never sets it,
+    # see below), but the explicit collection_type filter makes that
+    # intentional rather than incidental, and the online_* naming carries
+    # through the merge below so callers (e.g. a per-venue Online vs Offline
+    # drill) can see both channels' own figures, not just the blended total.
     by_venue_sql = f"""
     SELECT {canonical_parish_sql("venue_parish")} AS parish, {canonical_venue_sql("venue_name")} AS venue,
-           SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed,
-           SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS confirmed_female
+           SUM(total_youth_reached) AS online_reached, SUM(total_acquired_youth) AS online_confirmed,
+           SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS online_confirmed_female
     FROM {DAILY_ACQUISITION_SUMMARY}
-    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND venue_name IS NOT NULL AND venue_parish IS NOT NULL
+    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND collection_type = '{ONLINE_COLLECTION_TYPE}'
+      AND venue_name IS NOT NULL AND venue_parish IS NOT NULL
     GROUP BY parish, venue
     ORDER BY parish, venue
     """
@@ -1307,8 +1322,8 @@ def mobilisation_heatmap(
     # mobilisation().
     offline_by_venue_sql = f"""
     SELECT {canonical_venue_sql("venue_name")} AS venue,
-           SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed,
-           SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS confirmed_female
+           SUM(total_youth_reached) AS offline_reached, SUM(total_acquired_youth) AS offline_confirmed,
+           SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS offline_confirmed_female
     FROM {DAILY_ACQUISITION_SUMMARY}
     WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND collection_type = '{OFFLINE_COLLECTION_TYPE}' AND venue_name IS NOT NULL
     GROUP BY venue
@@ -1378,38 +1393,47 @@ def mobilisation_heatmap(
     # 2026-08-08: no venue name recurs under two different parishes in
     # targets_by_venue) — last-write-wins if that ever stops holding.
     #
-    # Builds a FRESH list of dicts rather than mutating by_venue's rows in
+    # Always rebuilds a FRESH list of dicts (never mutating by_venue's rows in
     # place — those come straight from database.run_query(), which may hand
     # back the exact object cache.py's TTLCache is holding; an in-place "+="
-    # would compound Offline's numbers on every cache hit (confirmed live,
-    # 2026-08-08 — reached/confirmed climbed on every repeated request until
-    # this was fixed. Same rule this file already documents at mobilisation()
-    # for mo_row).
+    # would compound Offline's numbers on every cache hit, confirmed live
+    # 2026-08-08) — unconditionally, not just when offline_by_venue is
+    # non-empty, so online_reached/online_confirmed/online_confirmed_female
+    # are always present alongside the blended reached/confirmed/
+    # confirmed_female, for a per-venue Online vs Offline drill.
     venue_to_parish = {v: p for (p, v) in targets_by_venue}
-    if offline_by_venue:
-        merged_by_venue = []
-        seen_venues = set()
-        for r in by_venue:
-            o = offline_by_venue.get(r["venue"])
-            merged_by_venue.append(r if o is None else {
-                **r,
-                "reached": (r.get("reached") or 0) + (o.get("reached") or 0),
-                "confirmed": (r.get("confirmed") or 0) + (o.get("confirmed") or 0),
-                "confirmed_female": (r.get("confirmed_female") or 0) + (o.get("confirmed_female") or 0),
-            })
-            seen_venues.add(r["venue"])
-        for venue, o in offline_by_venue.items():
-            if venue in seen_venues:
-                continue
-            parish = venue_to_parish.get(venue)
-            if parish is None:
-                continue  # no known parish for this venue at all — out of scope, same as elsewhere in this function
-            merged_by_venue.append({
-                "parish": parish, "venue": venue,
-                "reached": o.get("reached") or 0, "confirmed": o.get("confirmed") or 0,
-                "confirmed_female": o.get("confirmed_female") or 0,
-            })
-        by_venue = merged_by_venue
+    merged_by_venue = []
+    seen_venues = set()
+    for r in by_venue:
+        o = offline_by_venue.get(r["venue"]) or {}
+        online_reached, online_confirmed = r.get("online_reached") or 0, r.get("online_confirmed") or 0
+        online_confirmed_female = r.get("online_confirmed_female") or 0
+        offline_reached, offline_confirmed = o.get("offline_reached") or 0, o.get("offline_confirmed") or 0
+        offline_confirmed_female = o.get("offline_confirmed_female") or 0
+        merged_by_venue.append({
+            **r,
+            "online_reached": online_reached, "online_confirmed": online_confirmed, "online_confirmed_female": online_confirmed_female,
+            "offline_reached": offline_reached, "offline_confirmed": offline_confirmed, "offline_confirmed_female": offline_confirmed_female,
+            "reached": online_reached + offline_reached,
+            "confirmed": online_confirmed + offline_confirmed,
+            "confirmed_female": online_confirmed_female + offline_confirmed_female,
+        })
+        seen_venues.add(r["venue"])
+    for venue, o in offline_by_venue.items():
+        if venue in seen_venues:
+            continue
+        parish = venue_to_parish.get(venue)
+        if parish is None:
+            continue  # no known parish for this venue at all — out of scope, same as elsewhere in this function
+        offline_reached, offline_confirmed = o.get("offline_reached") or 0, o.get("offline_confirmed") or 0
+        offline_confirmed_female = o.get("offline_confirmed_female") or 0
+        merged_by_venue.append({
+            "parish": parish, "venue": venue,
+            "online_reached": 0, "online_confirmed": 0, "online_confirmed_female": 0,
+            "offline_reached": offline_reached, "offline_confirmed": offline_confirmed, "offline_confirmed_female": offline_confirmed_female,
+            "reached": offline_reached, "confirmed": offline_confirmed, "confirmed_female": offline_confirmed_female,
+        })
+    by_venue = merged_by_venue
 
     # Actual (call-center) rows are grouped by PARISH here, deliberately NOT
     # by agent_district — confirmed with the recruitment team, 2026-08-04:
@@ -1427,10 +1451,10 @@ def mobilisation_heatmap(
 
     parish_actual_sql = f"""
     SELECT {canonical_parish_sql("venue_parish")} AS parish,
-           SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed,
-           SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS confirmed_female
+           SUM(total_youth_reached) AS online_reached, SUM(total_acquired_youth) AS online_confirmed,
+           SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS online_confirmed_female
     FROM {DAILY_ACQUISITION_SUMMARY}
-    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND venue_parish IS NOT NULL
+    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND collection_type = '{ONLINE_COLLECTION_TYPE}' AND venue_parish IS NOT NULL
     GROUP BY parish
     """
     actual_by_parish_raw = {r["parish"]: r for r in database.run_query(parish_actual_sql, params, role=user.role)}
@@ -1439,9 +1463,19 @@ def mobilisation_heatmap(
     # with actual data but no match in district_by_parish (a genuinely
     # different program's parish, e.g. Kampala-area noise seen live) has no
     # known district and is dropped here — it was never going to survive the
-    # target-scoping below anyway.
+    # target-scoping below anyway. offline_* seeded at 0 here — filled in by
+    # the merge loop below wherever an Offline venue maps into this parish —
+    # so every entry always carries both channels' fields for a per-parish
+    # Online vs Offline drill, not just the blended reached/confirmed/
+    # confirmed_female used elsewhere in this function.
     actual_by_parish = {
-        (district_by_parish[p], p): r
+        (district_by_parish[p], p): {
+            **r,
+            "offline_reached": 0, "offline_confirmed": 0, "offline_confirmed_female": 0,
+            "reached": r.get("online_reached") or 0,
+            "confirmed": r.get("online_confirmed") or 0,
+            "confirmed_female": r.get("online_confirmed_female") or 0,
+        }
         for p, r in actual_by_parish_raw.items()
         if p in district_by_parish
     }
@@ -1451,27 +1485,33 @@ def mobilisation_heatmap(
     # rows up directly, venue_parish is always NULL for them). Same
     # fresh-dict rule as by_venue above — actual_by_parish's values are the
     # exact row objects database.run_query() returned (possibly the cached
-    # ones), so an in-place "+=" here would compound too.
+    # ones), so an in-place "+=" here would compound too. Reads back through
+    # `existing` (not the original query row) so two Offline venues sharing a
+    # parish accumulate correctly across iterations.
     for venue, o in offline_by_venue.items():
         parish = venue_to_parish.get(venue)
         district = district_by_parish.get(parish)
         if parish is None or district is None:
             continue
         key = (district, parish)
-        existing = actual_by_parish.get(key)
-        if existing is not None:
-            actual_by_parish[key] = {
-                **existing,
-                "reached": (existing.get("reached") or 0) + (o.get("reached") or 0),
-                "confirmed": (existing.get("confirmed") or 0) + (o.get("confirmed") or 0),
-                "confirmed_female": (existing.get("confirmed_female") or 0) + (o.get("confirmed_female") or 0),
-            }
-        else:
-            actual_by_parish[key] = {
-                "parish": parish,
-                "reached": o.get("reached") or 0, "confirmed": o.get("confirmed") or 0,
-                "confirmed_female": o.get("confirmed_female") or 0,
-            }
+        existing = actual_by_parish.get(key) or {
+            "parish": parish,
+            "online_reached": 0, "online_confirmed": 0, "online_confirmed_female": 0,
+            "offline_reached": 0, "offline_confirmed": 0, "offline_confirmed_female": 0,
+            "reached": 0, "confirmed": 0, "confirmed_female": 0,
+        }
+        offline_reached = (existing.get("offline_reached") or 0) + (o.get("offline_reached") or 0)
+        offline_confirmed = (existing.get("offline_confirmed") or 0) + (o.get("offline_confirmed") or 0)
+        offline_confirmed_female = (existing.get("offline_confirmed_female") or 0) + (o.get("offline_confirmed_female") or 0)
+        actual_by_parish[key] = {
+            **existing,
+            "offline_reached": offline_reached,
+            "offline_confirmed": offline_confirmed,
+            "offline_confirmed_female": offline_confirmed_female,
+            "reached": (existing.get("online_reached") or 0) + offline_reached,
+            "confirmed": (existing.get("online_confirmed") or 0) + offline_confirmed,
+            "confirmed_female": (existing.get("online_confirmed_female") or 0) + offline_confirmed_female,
+        }
 
     # Per-parish auto-confirm (awareness) numbers and treatment-target share —
     # see mobilisation()'s `combined` section for the same blend at program
@@ -1512,7 +1552,10 @@ def mobilisation_heatmap(
     # share of PARISH_TARGETS_BC5's awareness-stage eligible target (BC5-only
     # — that table has no cohort column, so it's 0 for other cohorts).
     # `target`/`confirmed`/`reached`/`confirmed_female` stay as the combined
-    # totals too, for anything that just wants one number.
+    # totals too, for anything that just wants one number. online_*/offline_*
+    # are ALSO carried at this grain (unblended) — for a per-parish Online vs
+    # Offline drill; they sum to call_centre_reached/call_centre_confirmed/
+    # call_centre_confirmed_female by construction.
     all_parishes = sorted(set(targets_by_parish))
     by_parish = []
     for key in all_parishes:
@@ -1522,8 +1565,12 @@ def mobilisation_heatmap(
         auto = auto_by_parish.get(key, {})
         mobilisation_target = t.get("target") or 0
         treatment_target = treatment_target_by_parish.get(key, 0)
-        call_centre_reached, call_centre_confirmed = a.get("reached") or 0, a.get("confirmed") or 0
-        call_centre_confirmed_female = a.get("confirmed_female") or 0
+        online_reached, online_confirmed = a.get("online_reached") or 0, a.get("online_confirmed") or 0
+        online_confirmed_female = a.get("online_confirmed_female") or 0
+        offline_reached, offline_confirmed = a.get("offline_reached") or 0, a.get("offline_confirmed") or 0
+        offline_confirmed_female = a.get("offline_confirmed_female") or 0
+        call_centre_reached, call_centre_confirmed = online_reached + offline_reached, online_confirmed + offline_confirmed
+        call_centre_confirmed_female = online_confirmed_female + offline_confirmed_female
         auto_confirmed, auto_confirmed_female = auto.get("n") or 0, auto.get("nf") or 0
         by_parish.append({
             "district": d,
@@ -1532,6 +1579,12 @@ def mobilisation_heatmap(
             "mobilisation_target": mobilisation_target,
             "treatment_target": treatment_target,
             "target": mobilisation_target + treatment_target,
+            "online_reached": online_reached,
+            "online_confirmed": online_confirmed,
+            "online_confirmed_female": online_confirmed_female,
+            "offline_reached": offline_reached,
+            "offline_confirmed": offline_confirmed,
+            "offline_confirmed_female": offline_confirmed_female,
             "call_centre_reached": call_centre_reached,
             "call_centre_confirmed": call_centre_confirmed,
             "call_centre_confirmed_female": call_centre_confirmed_female,
@@ -1546,22 +1599,21 @@ def mobilisation_heatmap(
     # district-grain query) so the two levels can never disagree. Only
     # districts with a real target row for this cohort, same reasoning as
     # all_parishes above.
+    _DISTRICT_SUM_DEFAULTS = {
+        "assigned": 0, "mobilisation_target": 0, "treatment_target": 0,
+        "online_reached": 0, "online_confirmed": 0, "online_confirmed_female": 0,
+        "offline_reached": 0, "offline_confirmed": 0, "offline_confirmed_female": 0,
+        "call_centre_reached": 0, "call_centre_confirmed": 0, "call_centre_confirmed_female": 0,
+        "auto_confirmed": 0, "auto_confirmed_female": 0,
+    }
     by_district_acc = {}
     for p in by_parish:
-        e = by_district_acc.setdefault(p["district"], {
-            "assigned": 0, "mobilisation_target": 0, "treatment_target": 0,
-            "call_centre_reached": 0, "call_centre_confirmed": 0, "call_centre_confirmed_female": 0,
-            "auto_confirmed": 0, "auto_confirmed_female": 0,
-        })
+        e = by_district_acc.setdefault(p["district"], dict(_DISTRICT_SUM_DEFAULTS))
         for k in e:
             e[k] += p[k]
     by_district = []
     for d in sorted(set(targets_by_district)):
-        e = by_district_acc.get(d, {
-            "assigned": 0, "mobilisation_target": 0, "treatment_target": 0,
-            "call_centre_reached": 0, "call_centre_confirmed": 0, "call_centre_confirmed_female": 0,
-            "auto_confirmed": 0, "auto_confirmed_female": 0,
-        })
+        e = by_district_acc.get(d, dict(_DISTRICT_SUM_DEFAULTS))
         by_district.append({
             "district": d,
             **e,
@@ -1615,6 +1667,15 @@ def mobilisation_heatmap(
             "venue": v,
             "assigned": assigned,
             "target": target,
+            # Unblended per-channel figures, carried alongside the blended
+            # reached/confirmed/confirmed_female below — for a per-venue
+            # Online vs Offline drill (see by_venue's merge above).
+            "online_reached": a.get("online_reached") or 0,
+            "online_confirmed": a.get("online_confirmed") or 0,
+            "online_confirmed_female": a.get("online_confirmed_female") or 0,
+            "offline_reached": a.get("offline_reached") or 0,
+            "offline_confirmed": a.get("offline_confirmed") or 0,
+            "offline_confirmed_female": a.get("offline_confirmed_female") or 0,
             "reached": a.get("reached") or 0,
             "confirmed": a.get("confirmed") or 0,
             "confirmed_female": a.get("confirmed_female") or 0,

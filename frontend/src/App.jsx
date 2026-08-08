@@ -2888,6 +2888,82 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
     });
   }
 
+  // Full metric set (reached/confirmed/mobilisation rate/% female) for one
+  // channel, derived client-side from whatever reached/confirmed/
+  // confirmed_female pair is passed in — reused by both the per-row drill
+  // below (district/parish/venue tables) and the geo drill further down
+  // (mobilisation_heatmap's district/parish/venue online_*/offline_*
+  // fields), so the two drills compute rates identically.
+  function modeMetrics(reached, confirmed, confirmedFemale) {
+    const r = reached || 0, c = confirmed || 0;
+    return {
+      reached: r, confirmed: c,
+      mobilisation_rate: r ? Math.round((1000 * c) / r) / 10 : null,
+      pct_female: c ? Math.round((1000 * (confirmedFemale || 0)) / c) / 10 : null,
+    };
+  }
+  const MODE_DRILL_COLUMNS = [
+    { key: "reached", label: "Reached", align: "right", render: fmtNum },
+    { key: "confirmed", label: "Confirmed", align: "right", render: fmtNum },
+    { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: fmtPct },
+    { key: "pct_female", label: "% Female", align: "right", render: fmtPct },
+  ];
+
+  // Per-row Online vs Offline breakdown for one specific district/parish/
+  // venue — zero-fetch, using the online_*/offline_* fields buildSourceRow/
+  // venueRows already carry through from mobilisation_heatmap(). Distinct
+  // from openModeDrill above (which is the page-wide split); this is scoped
+  // to whichever row was clicked.
+  function openEntityModeDrill(entityLabel, row) {
+    drill.open({
+      title: `${entityLabel} — Online vs Offline`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "mode", rootLabel: "Mode",
+      columns: MODE_DRILL_COLUMNS,
+      rootRows: [
+        { mode: "Online", ...modeMetrics(row.onlineReached, row.onlineConfirmed, row.onlineConfirmedFemale) },
+        { mode: "Offline", ...modeMetrics(row.offlineReached, row.offlineConfirmed, row.offlineConfirmedFemale) },
+      ],
+    });
+  }
+
+  // District -> Parish -> Venue drill for ONE mode (Online or Offline),
+  // covering all four metrics at once — off the same heatmap data the
+  // Performance categorisation tables below already use, filtered to one
+  // channel via mobilisation_heatmap()'s online_*/offline_* fields (see its
+  // docstring). Parish names are assumed unique across districts, same
+  // convention the backend itself already relies on (district_by_parish).
+  function openModeGeoDrill(mode) {
+    const prefix = mode === "Online" ? "online" : "offline";
+    const districtRows = (heatmap.data?.by_district || []).map((d) => ({
+      district: d.district,
+      ...modeMetrics(d[`${prefix}_reached`], d[`${prefix}_confirmed`], d[`${prefix}_confirmed_female`]),
+    })).sort((a, b) => (b.confirmed || 0) - (a.confirmed || 0));
+    drill.open({
+      title: `${mode} mobilisation — by district`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "district", rootLabel: "District",
+      childKey: "parish", childLabel: "Parish",
+      grandchildKey: "venue", grandchildLabel: "Venue",
+      columns: MODE_DRILL_COLUMNS,
+      rootRows: districtRows,
+      getChildRows: (root) => (heatmap.data?.by_parish || [])
+        .filter((p) => p.district === root.district)
+        .map((p) => ({
+          parish: p.parish,
+          ...modeMetrics(p[`${prefix}_reached`], p[`${prefix}_confirmed`], p[`${prefix}_confirmed_female`]),
+        }))
+        .sort((a, b) => (b.confirmed || 0) - (a.confirmed || 0)),
+      getGrandchildRows: (child) => (heatmap.data?.by_venue || [])
+        .filter((v) => v.parish === child.parish)
+        .map((v) => ({
+          venue: v.venue,
+          ...modeMetrics(v[`${prefix}_reached`], v[`${prefix}_confirmed`], v[`${prefix}_confirmed_female`]),
+        }))
+        .sort((a, b) => (b.confirmed || 0) - (a.confirmed || 0)),
+    });
+  }
+
   // `target`/`assigned` are live per-venue where the cohort's target measure
   // carries venue_name (confirmed for BOOTCAMP_5's 'venue_targets'), else
   // `target` falls back to the hardcoded VENUE_MOBILISATION_TARGET and
@@ -2915,6 +2991,11 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
       district: v.district, parish: v.parish, venue: v.venue, assigned, reached, confirmed, pctFemale, target,
       rate, conversionCategory: categorizeRate(rate), progressPct, category: categorizeRate(progressPct),
       autoConfirmed, autoPctFemale, treatmentTarget, autoProgressPct,
+      // Passed straight through from mobilisation_heatmap()'s per-venue
+      // online_*/offline_* fields — for this row's Online vs Offline drill
+      // (openEntityModeDrill), not otherwise used by this table.
+      onlineReached: v.online_reached || 0, onlineConfirmed: v.online_confirmed || 0, onlineConfirmedFemale: v.online_confirmed_female || 0,
+      offlineReached: v.offline_reached || 0, offlineConfirmed: v.offline_confirmed || 0, offlineConfirmedFemale: v.offline_confirmed_female || 0,
     };
   }).sort((a, b) => b.confirmed - a.confirmed);
 
@@ -2957,6 +3038,11 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
       reached, confirmed,
       pctFemale: confirmed ? Math.round((100 * confirmedFemale) / confirmed) : null,
       progressPct, category: categorizeRate(progressPct),
+      // Passed straight through from mobilisation_heatmap()'s district/parish
+      // online_*/offline_* fields — for this row's Online vs Offline drill
+      // (openEntityModeDrill), not otherwise used by this table.
+      onlineReached: p.online_reached || 0, onlineConfirmed: p.online_confirmed || 0, onlineConfirmedFemale: p.online_confirmed_female || 0,
+      offlineReached: p.offline_reached || 0, offlineConfirmed: p.offline_confirmed || 0, offlineConfirmedFemale: p.offline_confirmed_female || 0,
     };
   }
 
@@ -3120,7 +3206,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
 
         <Card
           title="Mobilisation mode — Online vs Offline"
-          subtitle={`Online (call-center) vs Offline (in-person) acquisition — ${fmtPct(data?.online_offline_share?.online_pct)} of confirmed came in Online, ${fmtPct(data?.online_offline_share?.offline_pct)} Offline. Click Youth reached/confirmed above for the same split.`}
+          subtitle={`Online (call-center) vs Offline (in-person) acquisition — ${fmtPct(data?.online_offline_share?.online_pct)} of confirmed came in Online, ${fmtPct(data?.online_offline_share?.offline_pct)} Offline. Click Youth reached/confirmed above for the same split, or a row below for its District → Parish → Venue breakdown.`}
           chip="REAL"
         >
           <DataTable
@@ -3132,9 +3218,10 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
               { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
             ]}
             rows={[
-              { label: "Online (call-center)", ...data?.online },
-              { label: "Offline (in-person)", ...data?.offline },
+              { label: "Online (call-center)", mode: "Online", ...data?.online },
+              { label: "Offline (in-person)", mode: "Offline", ...data?.offline },
             ]}
+            onRowClick={(r) => openModeGeoDrill(r.mode)}
             stickyHeader
           />
         </Card>
@@ -3215,7 +3302,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
       <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && parishRows.length === 0 && venueRows.length === 0}>
         <Card
           title="District totals"
-          subtitle="Same disaggregation as the parish table below, summed to district grain — Mobilisation (Online + Offline) vs auto-confirmed (awareness), each checked against its own target."
+          subtitle="Same disaggregation as the parish table below, summed to district grain — Mobilisation (Online + Offline) vs auto-confirmed (awareness), each checked against its own target. Click a row for its Online vs Offline split."
           chip="REAL"
         >
           <GroupedDataTable
@@ -3223,6 +3310,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
             groups={sourceGroups}
             trailing={sourceTrailingColumns}
             rows={districtTotalRows}
+            onRowClick={(r) => openEntityModeDrill(r.district, r)}
             stickyHeader
           />
         </Card>
@@ -3251,9 +3339,9 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
         <CategoryFilterTiles counts={mobGrain === "parish" ? parishCatCounts : venueCatCounts} active={parishCat} onChange={setParishCat} entityLabelPlural={mobGrain === "parish" ? "parishes" : "venues"} />
         <Card
           title={mobGrain === "parish" ? "Parish performance vs target" : "Venue performance vs target"}
-          subtitle={mobGrain === "parish"
+          subtitle={(mobGrain === "parish"
             ? `Mobilisation confirmed (vs mobilisation target) and auto-confirmed from awareness-eligible youth (vs treatment target) shown separately, plus the total confirmed vs combined target. 5 parishes visible at a time — scroll down for the rest.`
-            : "Mobilisation confirmed (vs mobilisation target) shown alongside its parish's auto-confirmed figure (vs treatment target) — awareness records carry no venue at all, only district/parish, so that middle block is the same number on every venue in that parish, not venue-specific. Total stays Mobilisation-only, to avoid double-counting a shared parish figure across sibling venues."}
+            : "Mobilisation confirmed (vs mobilisation target) shown alongside its parish's auto-confirmed figure (vs treatment target) — awareness records carry no venue at all, only district/parish, so that middle block is the same number on every venue in that parish, not venue-specific. Total stays Mobilisation-only, to avoid double-counting a shared parish figure across sibling venues.") + " Click a row for its Online vs Offline split."}
           chip="REAL"
         >
           {mobGrain === "parish" ? (
@@ -3271,6 +3359,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
               groups={sourceGroups}
               trailing={sourceTrailingColumns}
               rows={filteredParishRows}
+              onRowClick={(r) => openEntityModeDrill(`${r.parish} (${r.district})`, r)}
               stickyLeading
               stickyHeader
               maxBodyHeight={300}
@@ -3281,6 +3370,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
               groups={venueGroups}
               trailing={venueTrailingColumns}
               rows={filteredVenueRows}
+              onRowClick={(r) => openEntityModeDrill(`${r.venue} (${r.parish})`, r)}
               stickyHeader
               maxBodyHeight={300}
             />
