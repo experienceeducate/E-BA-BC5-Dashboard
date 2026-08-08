@@ -138,11 +138,17 @@ def _stage_counts(district, gender, role, cohort=None):
         f"SELECT SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed "
         f"FROM {DAILY_ACQUISITION_SUMMARY} WHERE {mor_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'",
         mor_params, role=role) or [{}])[0]
-    # Auto-confirmed pilot-subcounty youth never entered the preload list
-    # either — added onto both assigned and confirmed (see tables.py).
+    # Auto-confirmed pilot-subcounty youth never entered the preload list at
+    # all — added onto confirmed (see tables.py) but deliberately NOT onto
+    # assigned, per the recruitment team, 2026-08-08: Mobilisation Overview's
+    # own headline "Assigned to treatment" is preload-only (the pilot
+    # population is shown separately there, in two_half_week/combined), and
+    # this page's Assigned used to silently include it too (2,981 vs
+    # Mobilisation's 2,073 for the same live data) — the same number meaning
+    # two different things on two pages read as a bug, not a design choice.
     auto_confirmed = _auto_confirmed_count(district, gender, role, cohort)
     mo = {
-        "assigned": preload_assigned + auto_confirmed,
+        "assigned": preload_assigned,
         "reached": mo_row.get("reached") or 0,
         "confirmed": (mo_row.get("confirmed") or 0) + auto_confirmed,
     }

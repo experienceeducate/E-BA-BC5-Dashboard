@@ -27,7 +27,21 @@ _BRONZE = f"`{PROJECT_ID}`.bronze_eba"
 # not "BC2".."BC5". Every live-table query below is pinned to this list of active
 # cycles rather than exposing the frontend's BC2..BC5 cohort filter (which doesn't
 # apply to these tables). Add/remove a cycle here — nothing else needs to change.
-ACTIVE_COHORTS = ["BOOTCAMP_4", "BOOTCAMP_5"]
+#
+# BOOTCAMP_4 dropped, 2026-08-08 (per Afra): confirmed live — BC4's last
+# DAILY_ACQUISITION_SUMMARY activity is call_date 2026-07-24, BC5's first is
+# 2026-07-27, a clean non-overlapping cutover, and BC4 is fully closed out.
+# Blending a closed cohort into the unfiltered/"all cohorts" default was
+# actively producing wrong numbers, not just stale ones: BC4's preload_youth
+# (Assigned) and youth_gender are BOTH 100% NULL on every one of its rows, so
+# any combined view showed Assigned undercounted against Reached/Confirmed
+# (reach_rate >100%, reproduced live) and a diluted/wrong female share.
+# BC4 is still explicitly selectable from the cohort dropdown (its rows are
+# real and its own single-cohort numbers are fine) — this only removes it
+# from the silent default blend. Reinstate here (and re-verify the same two
+# NULL columns aren't still an issue) if BC4 numbers are ever needed in a
+# combined view again.
+ACTIVE_COHORTS = ["BOOTCAMP_5"]
 
 # Awareness: district-level daily rollup — registered/interested/eligible counts
 # (+ female/male splits) per mobiliser/day/district. Backs /api/recruitment/awareness.
@@ -68,6 +82,25 @@ AWARENESS_SUMMARY = f"{_GOLD}.eba_bootcamp_daily_awareness_summary_cleaned"
 DAILY_ACQ_MEASURE_ACTUAL = "daily_aggregates"
 DAILY_ACQ_MEASURE_TARGET = "targets"
 DAILY_ACQUISITION_SUMMARY = f"{_GOLD}.eba_bootcamp_daily_acquisition_summary"
+
+# 'daily_aggregates' rows also carry a `collection_type` column distinguishing
+# two genuinely different acquisition channels — "Mobilisation" as a whole is
+# both together. Confirmed live, 2026-08-08, re-verified same day after an
+# upstream data-model change (values below were originally NULL/'MOBILIZATION'
+# with Offline's total_youth_reached always 0 — that first cut is what
+# produced Confirmed > Reached, mobilisation_rate >100%, reproduced live; the
+# upstream fix gave Offline its own genuine total_youth_reached, so a plain
+# SUM across both collection_types is correct again for reached/confirmed —
+# no more special-casing needed there). Current values:
+#   'ONLINE'  — the call-center pathway this mart originally modeled.
+#   'OFFLINE' — an in-person channel, live since call_date 2026-08-07, with
+#               its own real total_youth_reached/total_acquired_youth pair.
+# Still split by this column wherever the ONLINE-vs-OFFLINE breakdown itself
+# is the point (mobilisation()'s `online`/`offline` segments, the share
+# display, drill-downs) — just not required anymore to get a correct blended
+# reached/confirmed total.
+ONLINE_COLLECTION_TYPE = "ONLINE"
+OFFLINE_COLLECTION_TYPE = "OFFLINE"
 
 # The 'targets'/'venue_targets' rows are a live per-venue snapshot LOG, not
 # one static row per venue — confirmed 2026-08-05, reading every column:

@@ -55,6 +55,24 @@ def test_overview_funnel_orders_and_computes_pct(as_staff, mock_run_query):
     assert by_stage["Interested"]["lost"] == 20
 
 
+def test_overview_funnel_assigned_excludes_auto_confirm_pilot(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        if "SUM(preload_youth) AS assigned" in sql:
+            return [{"assigned": 2073}]
+        if "elligible = TRUE AND is_treatment = TRUE" in sql:
+            return [{"n": 908}]
+        return [{}]
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/overview/funnel")
+    assert r.status_code == 200
+    by_stage = {s["stage"]: s for s in r.json()["stages"]}
+    # Assigned is the call-center preload list alone -- NOT blended with the
+    # auto-confirm pilot population (908), matching Mobilisation Overview's
+    # own "Assigned to treatment" scope. The two used to disagree (2073 vs
+    # 2981 for the same live data), which read as a bug, not a design choice.
+    assert by_stage["Assigned"]["count"] == 2073
+
+
 def test_overview_kpis_rates(as_staff, mock_run_query):
     def side_effect(sql, params, role):
         if AWARENESS_KYC in sql:
@@ -816,6 +834,55 @@ def test_milestones_by_cohort_week_ignores_selected_cohort_filter(as_staff, mock
 # (DAILY_ACQUISITION_TARGETS_DEDUPED, PARISH_TARGETS_BC5), which has no date
 # column to filter by. See _date_extra, recruitment.py.
 
+def test_mobilisation_blends_online_and_offline_for_headline(as_staff, mock_run_query):
+    # Both channels (collection_type = ONLINE_COLLECTION_TYPE / OFFLINE_
+    # COLLECTION_TYPE) now have their own genuine reached/confirmed pair
+    # (confirmed live, 2026-08-08, after an upstream data-model change --
+    # Offline's total_youth_reached used to always be 0, which made summing
+    # it into Confirmed alone produce Confirmed > Reached, mobilisation_rate
+    # >100%, reproduced live under that earlier shape). "Mobilisation"
+    # (four_week) is now just their plain sum on both reached and confirmed.
+    def side_effect(sql, params, role):
+        if "online_reached" in sql:
+            return [{"online_reached": 800, "online_confirmed": 700, "offline_reached": 320, "offline_confirmed": 300}]
+        if "online_confirmed_female" in sql:
+            return [{"online_confirmed_female": 400, "offline_confirmed_female": 50}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/recruitment/mobilisation", params={"cohort": "BOOTCAMP_5"})
+    assert r.status_code == 200
+    body = r.json()
+    # Blended headline: reached = 800+320, confirmed = 700+300 -- always sane
+    # since each channel individually has confirmed <= reached.
+    assert body["reached"] == 1120
+    assert body["confirmed"] == 1000
+    assert body["mobilisation_rate"] == round(100 * 1000 / 1120, 1)
+    assert body["confirmed_female"] == 450  # 400 online + 50 offline, blended
+    # Pure per-channel breakdowns, for the Online vs Offline drill-down.
+    assert body["online"]["reached"] == 800
+    assert body["online"]["confirmed"] == 700
+    assert body["online"]["mobilisation_rate"] == 87.5
+    assert body["online"]["pct_female"] == round(100 * 400 / 700, 1)
+    assert body["offline"]["reached"] == 320
+    assert body["offline"]["confirmed"] == 300
+    assert body["offline"]["mobilisation_rate"] == round(100 * 300 / 320, 1)
+    assert body["offline"]["pct_female"] == round(100 * 50 / 300, 1)
+    # Neither channel has its own Assigned/preload list (None, not 0).
+    assert body["online"]["assigned"] is None
+    assert body["offline"]["assigned"] is None
+    # Share uses the PURE per-channel confirmed (700/300), not the blended 1000.
+    assert body["online_offline_share"]["online_confirmed"] == 700
+    assert body["online_offline_share"]["offline_confirmed"] == 300
+    assert body["online_offline_share"]["online_pct"] == 70.0
+    assert body["online_offline_share"]["offline_pct"] == 30.0
+    # combined.total_so_far sums PURE online + auto-confirm pilot + offline
+    # (700+0+300), not the blended four_week["confirmed"] (which would
+    # double-count Offline).
+    assert body["combined"]["call_centre_confirmed"] == 700
+    assert body["combined"]["offline_confirmed"] == 300
+    assert body["combined"]["total_so_far"] == 1000
+
+
 def test_mobilisation_accepts_date_range(as_staff, mock_run_query):
     mock_run_query.set_rows([])
     r = as_staff.get(
@@ -823,7 +890,7 @@ def test_mobilisation_accepts_date_range(as_staff, mock_run_query):
         params={"date_from": "2026-01-01", "date_to": "2026-01-31"},
     )
     assert r.status_code == 200
-    actual_call = next(c for c in mock_run_query.calls if "SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed" in c["sql"])
+    actual_call = next(c for c in mock_run_query.calls if "online_reached" in c["sql"])
     assert "call_date >=" in actual_call["sql"]
     assert "call_date <=" in actual_call["sql"]
     called_call = next(c for c in mock_run_query.calls if "COUNT(DISTINCT youth_id) AS n" in c["sql"])
@@ -859,6 +926,83 @@ def test_mobilisation_heatmap_date_range_is_optional(as_staff, mock_run_query):
     as_staff.get("/api/recruitment/mobilisation-heatmap")
     all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
     assert "call_date" not in all_sql
+
+
+def test_mobilisation_heatmap_merges_offline_into_venue_and_parish(as_staff, mock_run_query):
+    # Offline rows (collection_type = OFFLINE_COLLECTION_TYPE) never have
+    # venue_parish populated, so they can't join by_venue_sql/parish_actual_sql
+    # directly -- queried separately by venue name, then merged in via
+    # venue_to_parish (built from targets_by_venue) so Mobilisation progress
+    # at parish/venue grain includes both acquisition channels.
+    # cohort=BOOTCAMP_4 sidesteps the BC5-only PARISH_TARGETS_BC5 branches.
+    def side_effect(sql, params, role):
+        if "GROUP BY district, parish, venue" in sql:
+            return [{"district": "TESTDISTRICT", "parish": "TESTPARISH", "venue": "TEST SCHOOL", "assigned": 10, "target": 20}]
+        if "collection_type = 'OFFLINE'" in sql:
+            return [{"venue": "TEST SCHOOL", "reached": 5, "confirmed": 4, "confirmed_female": 2}]
+        if "GROUP BY parish, venue" in sql:
+            return [{"parish": "TESTPARISH", "venue": "TEST SCHOOL", "reached": 10, "confirmed": 8, "confirmed_female": 3}]
+        if "GROUP BY parish\n" in sql:
+            return [{"parish": "TESTPARISH", "reached": 10, "confirmed": 8, "confirmed_female": 3}]
+        if "GROUP BY district, parish" in sql:
+            return [{"district": "TESTDISTRICT", "parish": "TESTPARISH", "assigned": 10, "target": 20}]
+        if "GROUP BY district\n" in sql:
+            return [{"district": "TESTDISTRICT", "assigned": 10, "target": 20}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/recruitment/mobilisation-heatmap", params={"cohort": "BOOTCAMP_4"})
+    assert r.status_code == 200
+    body = r.json()
+    venue = next(v for v in body["by_venue"] if v["venue"] == "TEST SCHOOL")
+    assert venue["reached"] == 15  # 10 online + 5 offline
+    assert venue["confirmed"] == 12  # 8 online + 4 offline
+    parish = next(p for p in body["by_parish"] if p["parish"] == "TESTPARISH")
+    assert parish["call_centre_reached"] == 15
+    assert parish["call_centre_confirmed"] == 12
+
+
+def test_mobilisation_heatmap_offline_merge_does_not_mutate_cached_rows(as_staff, mock_run_query):
+    # database.run_query's cache can hand back the EXACT row objects from a
+    # previous call (see cache.py) -- the offline merge above must never
+    # mutate those in place, or repeated requests (e.g. two page views
+    # hitting a warm cache) would compound Offline's numbers on top of
+    # themselves every time. Reproduced live, 2026-08-08: reached/confirmed
+    # climbed on every repeated request until this was fixed. Same fixed
+    # dict objects returned on every call here, simulating a cache hit.
+    online_venue_row = {"parish": "TESTPARISH", "venue": "TEST SCHOOL", "reached": 10, "confirmed": 8, "confirmed_female": 3}
+    online_parish_row = {"parish": "TESTPARISH", "reached": 10, "confirmed": 8, "confirmed_female": 3}
+    offline_row = {"venue": "TEST SCHOOL", "reached": 5, "confirmed": 4, "confirmed_female": 2}
+
+    def side_effect(sql, params, role):
+        if "GROUP BY district, parish, venue" in sql:
+            return [{"district": "TESTDISTRICT", "parish": "TESTPARISH", "venue": "TEST SCHOOL", "assigned": 10, "target": 20}]
+        if "collection_type = 'OFFLINE'" in sql:
+            return [offline_row]
+        if "GROUP BY parish, venue" in sql:
+            return [online_venue_row]
+        if "GROUP BY parish\n" in sql:
+            return [online_parish_row]
+        if "GROUP BY district, parish" in sql:
+            return [{"district": "TESTDISTRICT", "parish": "TESTPARISH", "assigned": 10, "target": 20}]
+        if "GROUP BY district\n" in sql:
+            return [{"district": "TESTDISTRICT", "assigned": 10, "target": 20}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+
+    for _ in range(2):
+        r = as_staff.get("/api/recruitment/mobilisation-heatmap", params={"cohort": "BOOTCAMP_4"})
+        assert r.status_code == 200
+        body = r.json()
+        venue = next(v for v in body["by_venue"] if v["venue"] == "TEST SCHOOL")
+        assert venue["reached"] == 15  # always 10 online + 5 offline, never climbing
+        assert venue["confirmed"] == 12
+        parish = next(p for p in body["by_parish"] if p["parish"] == "TESTPARISH")
+        assert parish["call_centre_reached"] == 15
+        assert parish["call_centre_confirmed"] == 12
+    # The "cached" row objects themselves must be untouched, not just the
+    # response -- proves the fix rebuilds dicts instead of mutating in place.
+    assert online_venue_row["reached"] == 10
+    assert online_parish_row["reached"] == 10
 
 
 def test_mobilisation_forecast_accepts_date_range(as_staff, mock_run_query):
