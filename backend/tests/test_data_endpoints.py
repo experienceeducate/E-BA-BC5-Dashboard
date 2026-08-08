@@ -12,7 +12,7 @@ import pytest
 import app.core.pii as pii_module
 from app.core.question_themes import classify_question
 from app.core.sql import multiselect_array_sql, normalized_parish_sql
-from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES, venue_mobilisation_target, canonical_venue_sql, QA_CALLS_START_DATE, LAST_ACQUISITION_CALL_DATE
+from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES, venue_mobilisation_target, canonical_venue_sql, QA_CALLS_START_DATE, LAST_ACQUISITION_CALL_DATE, QUALITY_ASSURANCE_BC5, QA_MEASURE_CUMULATIVE, QA_MEASURE_DAILY
 from app.routers.implementation import TRAINER_COHORTS
 
 
@@ -940,16 +940,30 @@ def test_call_centre_insights_caps_date_to_at_last_acquisition_call_date(as_staf
 
 def test_qa_calls_no_date_range_params(as_staff, mock_run_query):
     # Passing date_from/date_to (as every other Mobilisation sub-page accepts)
-    # must have no effect -- no query parameter is ever bound from them. The
-    # `daily` breakdown legitimately uses DATE(created_at) unconditionally
-    # (see qa_calls' docstring), so this checks for a bound @param, not the
-    # mere presence of the DATE() function.
+    # must have no effect -- every filter here is a hardcoded literal
+    # (bootcamp_cycle, measure), never a bound query parameter.
     mock_run_query.set_rows([])
     r = as_staff.get("/api/recruitment/qa-calls", params={"date_from": "2026-01-01", "date_to": "2026-01-31"})
     assert r.status_code == 200
     all_params = [p for c in mock_run_query.calls for p in c["params"]]
     assert not all_params
     assert r.json()["since"] == QA_CALLS_START_DATE
+
+
+def test_qa_calls_filters_cumulative_measure_not_daily(as_staff, mock_run_query):
+    # QUALITY_ASSURANCE_BC5 carries a 'daily' row per venue x call_date
+    # summing to the SAME totals as 'cumulative' -- every aggregate query here
+    # must filter to 'cumulative' or it silently doubles every number.
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/qa-calls")
+    aggregate_calls = [c["sql"] for c in mock_run_query.calls if QUALITY_ASSURANCE_BC5 in c["sql"] and "call_date AS date" not in c["sql"]]
+    assert aggregate_calls, "expected at least one aggregate query against the gold rollup"
+    for sql in aggregate_calls:
+        assert f"measure = '{QA_MEASURE_CUMULATIVE}'" in sql
+    daily_calls = [c["sql"] for c in mock_run_query.calls if "call_date AS date" in c["sql"]]
+    assert daily_calls
+    for sql in daily_calls:
+        assert f"measure = '{QA_MEASURE_DAILY}'" in sql
 
 
 def test_qa_calls_shape_and_rates(as_staff, mock_run_query):
@@ -1014,7 +1028,7 @@ def test_qa_calls_breakdowns_by_district_venue_gender_and_daily(as_staff, mock_r
                 "reached_f": 40, "reached_m": 20, "unique_reached_f": 32, "unique_reached_m": 18,
                 "confirmed_f": 28, "confirmed_m": 12, "name_matches_f": 30, "name_matches_m": 15,
             }]
-        if "DATE(created_at) AS date" in sql:
+        if "call_date AS date" in sql:
             return [{"date": "2026-08-07", "called": 50, "reached": 30}]
         return []
     mock_run_query.set_side_effect(side_effect)

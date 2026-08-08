@@ -44,6 +44,8 @@ from app.core.tables import (
     QA_CALLS_START_DATE,
     QUALITY_ASSURANCE_BC5,
     QUALITY_ASSURANCE_SILVER,
+    QA_MEASURE_CUMULATIVE,
+    QA_MEASURE_DAILY,
     active_cohort_clause,
     resolve_active_cohorts,
     venue_mobilisation_target,
@@ -2020,10 +2022,13 @@ def qa_calls(user: User = Depends(current_user)):
     has no time dimension at all), so this page doesn't take a date range —
     unlike every other Mobilisation sub-page.
 
-    Numeric KPIs/breakdowns come from QUALITY_ASSURANCE_BC5 (gold, 27 rows —
-    venue x mobilizer x cycle, pre-summed incl. by gender) rather than
-    aggregating the 607-row silver table client-side. Denominators, confirmed
-    live 2026-08-08 by reading every row's totals:
+    Numeric KPIs/breakdowns come from QUALITY_ASSURANCE_BC5 (gold, venue x
+    mobilizer x cycle grain, pre-summed incl. by gender) rather than
+    aggregating the 607-row silver table client-side — always filtered to
+    measure = QA_MEASURE_CUMULATIVE (see tables.py: this mart carries a
+    SEPARATE 'daily' row per venue x call_date summing to the exact same
+    totals, so an unfiltered SUM double-counts everything). Denominators,
+    confirmed live 2026-08-08 by reading every row's totals:
     - reach_rate is total_unique_reached_youth ÷ total_unique_youth_called —
       per the recruitment team's ask, 2026-08-08 — a per-youth grain (not
       total_call_status_reached ÷ total_call_attempts, which double-counts a
@@ -2049,14 +2054,14 @@ def qa_calls(user: User = Depends(current_user)):
     call-centre-insights' would be overfitting), including a literal "none"
     value as-is rather than inferring it means no support was needed.
 
-    by_district/by_venue/by_gender reuse the same gold rollup, just grouped
-    instead of summed whole. by_venue is sorted by name_mismatch_rate
-    DESCENDING (highest mismatch first, per the recruitment team's ask,
-    2026-08-08) — it exists to surface which venues need a name-verification
-    follow-up, not to rank best performers. daily is the one exception
-    sourced from QUALITY_ASSURANCE_SILVER instead (grouped by DATE(created_at),
-    the same reliable column call-centre-insights uses) since the gold rollup
-    has no date dimension at all to chart a trend from.
+    by_district/by_venue/by_gender reuse the same gold rollup (measure =
+    QA_MEASURE_CUMULATIVE), just grouped instead of summed whole. by_venue is
+    sorted by name_mismatch_rate DESCENDING (highest mismatch first, per the
+    recruitment team's ask, 2026-08-08) — it exists to surface which venues
+    need a name-verification follow-up, not to rank best performers. daily is
+    the one query on measure = QA_MEASURE_DAILY instead (one row per venue x
+    call_date, added by Afra 2026-08-08 specifically for this trend) — grouped
+    by call_date rather than re-deriving a trend from the silver per-call table.
     """
     totals_sql = f"""
     SELECT
@@ -2076,7 +2081,7 @@ def qa_calls(user: User = Depends(current_user)):
       SUM(total_call_status_wrong_number) AS wrong_number,
       SUM(total_call_status_hung_up) AS hung_up
     FROM {QUALITY_ASSURANCE_BC5}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5'
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_CUMULATIVE}'
     """
     t = (database.run_query(totals_sql, role=user.role) or [{}])[0]
 
@@ -2138,7 +2143,7 @@ def qa_calls(user: User = Depends(current_user)):
       SUM(total_confirmed_youth) AS confirmed,
       SUM(total_name_matches) AS name_matches
     FROM {QUALITY_ASSURANCE_BC5}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND youth_district IS NOT NULL
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_CUMULATIVE}' AND youth_district IS NOT NULL
     GROUP BY district ORDER BY district
     """
     by_district = []
@@ -2166,7 +2171,7 @@ def qa_calls(user: User = Depends(current_user)):
       SUM(total_call_status_reached) AS reached,
       SUM(total_name_matches) AS name_matches
     FROM {QUALITY_ASSURANCE_BC5}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND venue_name IS NOT NULL
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_CUMULATIVE}' AND venue_name IS NOT NULL
     GROUP BY venue, district
     """
     by_venue = []
@@ -2194,7 +2199,7 @@ def qa_calls(user: User = Depends(current_user)):
       SUM(total_confirmed_female) AS confirmed_f, SUM(total_confirmed_male) AS confirmed_m,
       SUM(total_name_matches_female) AS name_matches_f, SUM(total_name_matches_male) AS name_matches_m
     FROM {QUALITY_ASSURANCE_BC5}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5'
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_CUMULATIVE}'
     """
     g = (database.run_query(gender_sql, role=user.role) or [{}])[0]
 
@@ -2214,21 +2219,18 @@ def qa_calls(user: User = Depends(current_user)):
         },
     ]
 
-    # Daily call volume — the gold rollup has no date dimension at all (venue x
-    # mobilizer x cycle grain only), so this one chart comes from the SILVER
-    # per-call table instead, grouped by DATE(created_at) -- the same reliable
-    # date column call-centre-insights uses (see that endpoint's docstring).
-    # COUNT(DISTINCT youth_id), not COUNT(*), for the same reason reach_rate
-    # above uses unique_reached/called rather than call-attempt counts — a
-    # youth called more than once in a day shouldn't inflate the total. A
-    # simple day-by-day bar count, not a trend line — one QA pilot week
-    # doesn't have enough days yet for a trend to mean anything.
+    # Daily call volume — measure = QA_MEASURE_DAILY gives one row per venue x
+    # call_date (added by Afra, 2026-08-08, specifically for this trend), so
+    # this sums the SAME two per-youth columns as the totals above, just
+    # grouped by call_date instead of collapsed to one cumulative row. Never
+    # mix with QA_MEASURE_CUMULATIVE rows in this query (see tables.py) — they
+    # sum to the same grand totals, so combining them would double-count.
     daily_sql = f"""
-    SELECT DATE(created_at) AS date,
-      COUNT(DISTINCT youth_id) AS called,
-      COUNT(DISTINCT IF(call_status = 'Reached', youth_id, NULL)) AS reached
-    FROM {QUALITY_ASSURANCE_SILVER}
-    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND created_at IS NOT NULL
+    SELECT call_date AS date,
+      SUM(total_unique_youth_called) AS called,
+      SUM(total_unique_reached_youth) AS reached
+    FROM {QUALITY_ASSURANCE_BC5}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_DAILY}' AND call_date IS NOT NULL
     GROUP BY date ORDER BY date
     """
     daily = database.run_query(daily_sql, role=user.role)

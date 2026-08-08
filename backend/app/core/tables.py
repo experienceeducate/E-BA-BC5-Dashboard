@@ -539,10 +539,24 @@ BC5_ACQUISITION_CALLS = f"{_SILVER}.eba_bc5_acquisition"
 # not a later date range within it (confirmed live, 2026-08-08: BC5_ACQUISITION_
 # CALLS has zero rows after LAST_ACQUISITION_CALL_DATE — QA call activity is
 # loaded into these two tables instead once the call-centre team switches over).
-# GOLD is a pre-aggregated rollup (venue x mobilizer x cycle grain, 27 rows for
-# BOOTCAMP_5) with call-status/confirmed-identity/name-verification counts
-# already summed, incl. by gender — use this for every numeric KPI/breakdown,
-# it's far lighter than re-aggregating the per-call SILVER table client-side.
+# GOLD is a pre-aggregated rollup (venue x mobilizer x cycle grain) with
+# call-status/confirmed-identity/name-verification counts already summed,
+# incl. by gender — use this for every numeric KPI/breakdown, it's far
+# lighter than re-aggregating the per-call SILVER table client-side.
+#
+# ⚠️ Added by Afra, 2026-08-08: GOLD carries TWO row types under `measure`,
+# same double-counting trap as every other `measure`-column mart in this
+# codebase (AWARENESS_SUMMARY, DAILY_ACQUISITION_SUMMARY, ...) — verified
+# live, both sum to IDENTICAL totals (792 total_call_attempts each):
+#   - 'cumulative': one row per venue x mobilizer, no call_date — the whole-
+#     campaign-to-date totals. Use this for every aggregate KPI/breakdown
+#     (by_district/by_venue/by_gender/overall totals).
+#   - 'daily': one row per venue x mobilizer x call_date — use this (and
+#     ONLY this) for a day-by-day trend, grouped by call_date. Never sum
+#     both measures together in the same query.
+# Always filter to exactly one of QA_MEASURE_CUMULATIVE/QA_MEASURE_DAILY.
+QA_MEASURE_CUMULATIVE = "cumulative"
+QA_MEASURE_DAILY = "daily"
 # SILVER is the per-call record (607 BOOTCAMP_5 rows) — only has a real
 # qualitative signal in `support_needed` (mirrors BC5_ACQUISITION_CALLS'
 # `attendance_support_notes`, but sparser here); query just that column from

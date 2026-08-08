@@ -3282,6 +3282,17 @@ function categorizeRate(rate) {
 }
 function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 
+// Venue name-mismatch categorisation — Quality Assurance Calls' venue table.
+// Inverted severity from RATE_CATEGORY_COLOR above (a HIGH rate is bad here,
+// not good), so this is its own small scheme rather than reusing that one.
+const VENUE_MISMATCH_ORDER = ["High mismatch", "Low mismatch", "No mismatch"];
+const VENUE_MISMATCH_COLOR = { "High mismatch": C.coral, "Low mismatch": C.gold, "No mismatch": C.green };
+function categorizeVenueMismatch(rate) {
+  if (rate == null || rate === 0) return "No mismatch";
+  if (rate > 20) return "High mismatch";
+  return "Low mismatch";
+}
+
 const PAGER_BTN = { fontSize: 11, fontWeight: 700, padding: "5px 10px", border: `1px solid ${C.line}`, borderRadius: 4, background: C.white, color: C.inkSoft, cursor: "pointer" };
 
 function EntityPagedTable({ title, subtitle, chip, chipTone, rows, metricA, metricB, entityKey, entityLabel }) {
@@ -3856,6 +3867,15 @@ function MobQualityAssuranceCallsPage() {
   const genderConfirmedGap = byGender.length === 2 ? Math.abs((byGender[0].identity_confirmed_rate || 0) - (byGender[1].identity_confirmed_rate || 0)) : null;
   const genderNameGap = byGender.length === 2 ? Math.abs((byGender[0].name_match_rate || 0) - (byGender[1].name_match_rate || 0)) : null;
 
+  // Defaults to "High mismatch" — the table exists to surface a follow-up
+  // list, not to show every venue at once.
+  const [venueMismatchFilter, setVenueMismatchFilter] = useState("High mismatch");
+  const byVenueCategorized = byVenue.map((v) => ({ ...v, category: categorizeVenueMismatch(v.name_mismatch_rate) }));
+  const venueMismatchCounts = Object.fromEntries(
+    VENUE_MISMATCH_ORDER.map((c) => [c, byVenueCategorized.filter((v) => v.category === c).length]),
+  );
+  const filteredByVenue = venueMismatchFilter === "All" ? byVenueCategorized : byVenueCategorized.filter((v) => v.category === venueMismatchFilter);
+
   return (
     <div>
       <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
@@ -3978,6 +3998,29 @@ function MobQualityAssuranceCallsPage() {
       <ExecBand num="◆" title="Venue name mismatches" />
       <Card title="Which venues have the most name mismatches" subtitle="Sorted worst-first by name mismatch rate — the venue-level follow-up list, not a leaderboard" chip="REAL">
         <State loading={qa.loading} error={qa.error} empty={!qa.loading && byVenue.length === 0}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14, alignItems: "center" }}>
+            {["All", ...VENUE_MISMATCH_ORDER].map((c) => {
+              const isActive = venueMismatchFilter === c;
+              const dotColor = c === "All" ? C.muted : VENUE_MISMATCH_COLOR[c];
+              const count = c === "All" ? byVenueCategorized.length : venueMismatchCounts[c];
+              return (
+                <span
+                  key={c}
+                  onClick={() => setVenueMismatchFilter(isActive && c !== "All" ? "All" : c)}
+                  style={{
+                    border: `1px solid ${isActive ? C.ink : C.line}`,
+                    background: isActive ? C.ink : C.white,
+                    color: isActive ? C.white : C.inkSoft,
+                    borderRadius: 20, padding: "6px 13px", fontSize: 12, fontWeight: 600,
+                    cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 7,
+                  }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor, display: "inline-block" }} />
+                  {c} <b>{count}</b>
+                </span>
+              );
+            })}
+          </div>
           <DataTable
             columns={[
               { key: "venue", label: "Venue" },
@@ -3986,11 +4029,14 @@ function MobQualityAssuranceCallsPage() {
               { key: "name_mismatches", label: "Mismatches", align: "right", render: (v) => fmtNum(v) },
               {
                 key: "name_mismatch_rate", label: "Mismatch rate", align: "right",
-                render: (v) => <span style={{ color: v != null && v > 20 ? C.coral : "inherit", fontWeight: v != null && v > 20 ? 700 : 400 }}>{fmtPct(v)}</span>,
+                render: (v, r) => <span style={{ color: VENUE_MISMATCH_COLOR[r.category], fontWeight: 700 }}>{fmtPct(v)}</span>,
               },
             ]}
-            rows={byVenue}
+            rows={filteredByVenue}
           />
+          {byVenue.length > 0 && filteredByVenue.length === 0 && (
+            <p style={{ fontSize: 11.5, color: C.muted, marginTop: 10 }}>No venues in this category.</p>
+          )}
         </State>
       </Card>
 
