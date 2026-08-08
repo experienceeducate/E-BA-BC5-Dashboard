@@ -12,7 +12,7 @@ import pytest
 import app.core.pii as pii_module
 from app.core.question_themes import classify_question
 from app.core.sql import multiselect_array_sql, normalized_parish_sql
-from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES, venue_mobilisation_target, canonical_venue_sql
+from app.core.tables import AWARENESS_SUMMARY, AWARENESS_KYC, FUNNEL_STAGES, venue_mobilisation_target, canonical_venue_sql, QA_CALLS_START_DATE, LAST_ACQUISITION_CALL_DATE, QUALITY_ASSURANCE_BC5, QA_MEASURE_CUMULATIVE, QA_MEASURE_DAILY
 from app.routers.implementation import TRAINER_COHORTS
 
 
@@ -913,10 +913,146 @@ def test_call_centre_insights_accepts_date_range(as_staff, mock_run_query):
 
 
 def test_call_centre_insights_date_range_is_optional(as_staff, mock_run_query):
+    # date_from is genuinely optional, but date_to is always applied (capped
+    # at LAST_ACQUISITION_CALL_DATE) even with no params at all -- see
+    # test_call_centre_insights_caps_date_to_at_last_acquisition_call_date.
     mock_run_query.set_rows([])
     as_staff.get("/api/recruitment/call-centre-insights")
     all_sql = " ".join(c["sql"] for c in mock_run_query.calls)
-    assert "created_at" not in all_sql
+    assert "DATE(created_at) >=" not in all_sql
+    assert all_sql.count("DATE(created_at) <=") == 7
+
+
+def test_call_centre_insights_caps_date_to_at_last_acquisition_call_date(as_staff, mock_run_query):
+    # The call-centre team switched to QA calling the day after
+    # LAST_ACQUISITION_CALL_DATE -- a caller asking for a later date_to must
+    # not pull QA-period rows into this page's acquisition-outcome metrics.
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/call-centre-insights", params={"date_to": "2026-12-31"})
+    all_params = [p for c in mock_run_query.calls for p in c["params"]]
+    assert any(getattr(p, "name", "").endswith("_to") and p.value == LAST_ACQUISITION_CALL_DATE for p in all_params)
+    assert not any(getattr(p, "name", "").endswith("_to") and p.value == "2026-12-31" for p in all_params)
+
+
+# qa_calls() is backed by a wholly separate pipeline from BC5_ACQUISITION_
+# CALLS (QUALITY_ASSURANCE_BC5, a pre-aggregated gold rollup with no date
+# column) -- unlike every other Mobilisation sub-page, it takes no date range.
+
+def test_qa_calls_no_date_range_params(as_staff, mock_run_query):
+    # Passing date_from/date_to (as every other Mobilisation sub-page accepts)
+    # must have no effect -- every filter here is a hardcoded literal
+    # (bootcamp_cycle, measure), never a bound query parameter.
+    mock_run_query.set_rows([])
+    r = as_staff.get("/api/recruitment/qa-calls", params={"date_from": "2026-01-01", "date_to": "2026-01-31"})
+    assert r.status_code == 200
+    all_params = [p for c in mock_run_query.calls for p in c["params"]]
+    assert not all_params
+    assert r.json()["since"] == QA_CALLS_START_DATE
+
+
+def test_qa_calls_filters_cumulative_measure_not_daily(as_staff, mock_run_query):
+    # QUALITY_ASSURANCE_BC5 carries a 'daily' row per venue x call_date
+    # summing to the SAME totals as 'cumulative' -- every aggregate query here
+    # must filter to 'cumulative' or it silently doubles every number.
+    mock_run_query.set_rows([])
+    as_staff.get("/api/recruitment/qa-calls")
+    aggregate_calls = [c["sql"] for c in mock_run_query.calls if QUALITY_ASSURANCE_BC5 in c["sql"] and "call_date AS date" not in c["sql"]]
+    assert aggregate_calls, "expected at least one aggregate query against the gold rollup"
+    for sql in aggregate_calls:
+        assert f"measure = '{QA_MEASURE_CUMULATIVE}'" in sql
+    daily_calls = [c["sql"] for c in mock_run_query.calls if "call_date AS date" in c["sql"]]
+    assert daily_calls
+    for sql in daily_calls:
+        assert f"measure = '{QA_MEASURE_DAILY}'" in sql
+
+
+def test_qa_calls_shape_and_rates(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        # Unique to totals_sql -- district_sql also selects called/attempts.
+        if "SUM(total_call_status_no_answer)" in sql:
+            return [{
+                "attempts": 100, "called": 80, "reached": 60, "unique_reached": 50,
+                "confirmed": 40, "no_youth": 8, "maybe_youth": 2, "name_matches": 45,
+                "no_answer": 30, "phone_off": 5, "call_back": 3, "busy": 1,
+                "rejected": 1, "wrong_number": 0, "hung_up": 0,
+            }]
+        if "support_needed AS note" in sql:
+            return [{"note": "she is still studying"}, {"note": "none"}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/recruitment/qa-calls")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["calls_analysed"] == 100
+    assert body["youth_called"] == 80
+    assert body["reached"] == 60
+    # reach_rate is unique_reached / called (per-youth), not reached / attempts.
+    assert body["reach_rate"] == 62.5
+    assert body["unique_reached"] == 50
+    # Confirmed/No/Maybe are shares of unique_reached (40+8+2 == 50 exactly).
+    assert body["confirmed"] == 40
+    assert body["identity_confirmed_rate"] == 80.0
+    by_status = {o["status"]: o for o in body["confirmation_outcome"]}
+    assert by_status["Confirmed"]["count"] == 40
+    assert by_status["No"]["pct"] == 16.0
+    # Name match is a share of reached (call-attempt grain), not unique_reached.
+    assert body["name_match_rate"] == 75.0
+    name_by_status = {o["status"]: o for o in body["name_breakdown"]}
+    assert name_by_status["Matches"]["count"] == 45
+    assert name_by_status["Not matched"]["count"] == 15
+    assert [o["status"] for o in body["call_outcomes"]][0] == "Reached"
+    assert body["support_needed"]["n"] == 2
+    assert "she is still studying" in [q.lower() for q in body["support_needed"]["quotes"]]
+
+
+def test_qa_calls_breakdowns_by_district_venue_gender_and_daily(as_staff, mock_run_query):
+    def side_effect(sql, params, role):
+        # Unique to totals_sql -- district_sql also selects called/attempts.
+        if "SUM(total_call_status_no_answer)" in sql:
+            return [{"attempts": 100, "called": 80, "reached": 60, "unique_reached": 50, "confirmed": 40, "name_matches": 45}]
+        # Check venue_sql before district_sql -- venue_sql also selects
+        # "youth_district AS district" (as a second column), so it would
+        # otherwise match the district branch first.
+        if "venue_name AS venue" in sql:
+            return [
+                {"venue": "High Mismatch School", "district": "MAYUGE", "reached": 20, "name_matches": 5},
+                {"venue": "Low Mismatch School", "district": "IGANGA", "reached": 20, "name_matches": 19},
+            ]
+        if "youth_district AS district" in sql:
+            return [
+                {"district": "MAYUGE", "attempts": 60, "called": 50, "reached": 40, "unique_reached": 35, "confirmed": 30, "name_matches": 32},
+                {"district": "IGANGA", "attempts": 40, "called": 30, "reached": 20, "unique_reached": 15, "confirmed": 10, "name_matches": 13},
+            ]
+        if "total_call_status_reached_female" in sql:
+            return [{
+                "reached_f": 40, "reached_m": 20, "unique_reached_f": 32, "unique_reached_m": 18,
+                "confirmed_f": 28, "confirmed_m": 12, "name_matches_f": 30, "name_matches_m": 15,
+            }]
+        if "call_date AS date" in sql:
+            return [{"date": "2026-08-07", "called": 50, "reached": 30}]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/recruitment/qa-calls")
+    assert r.status_code == 200
+    body = r.json()
+
+    by_district = {d["district"]: d for d in body["by_district"]}
+    # reach_rate is unique_reached / called (per-youth), not reached / attempts.
+    assert by_district["MAYUGE"]["reach_rate"] == round(100 * 35 / 50, 1)
+    assert by_district["MAYUGE"]["identity_confirmed_rate"] == round(100 * 30 / 35, 1)
+
+    # Sorted by name_mismatch_rate DESCENDING -- worst venue first.
+    assert body["by_venue"][0]["venue"] == "High Mismatch School"
+    assert body["by_venue"][0]["name_mismatches"] == 15
+    assert body["by_venue"][1]["venue"] == "Low Mismatch School"
+
+    by_gender = {g["gender"]: g for g in body["by_gender"]}
+    assert by_gender["Female"]["identity_confirmed_rate"] == round(100 * 28 / 32, 1)
+    assert by_gender["Male"]["name_match_rate"] == round(100 * 15 / 20, 1)
+
+    assert body["daily"][0]["date"] == "2026-08-07"
+    assert body["daily"][0]["called"] == 50
+    assert body["daily"][0]["reached"] == 30
 
 
 # --- Attendance ---------------------------------------------------------------

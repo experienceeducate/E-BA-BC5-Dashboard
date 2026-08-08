@@ -40,6 +40,12 @@ from app.core.tables import (
     CONTROL_CALLS_BC4,
     ACQUISITION_CALL_LOG,
     BC5_ACQUISITION_CALLS,
+    LAST_ACQUISITION_CALL_DATE,
+    QA_CALLS_START_DATE,
+    QUALITY_ASSURANCE_BC5,
+    QUALITY_ASSURANCE_SILVER,
+    QA_MEASURE_CUMULATIVE,
+    QA_MEASURE_DAILY,
     active_cohort_clause,
     resolve_active_cohorts,
     venue_mobilisation_target,
@@ -1815,8 +1821,16 @@ def call_centre_insights(
     date_from/date_to filter on created_at (a real per-record TIMESTAMP,
     confirmed live — call_timestamp exists too but is stored as STRING, not
     a proper date/timestamp type, so created_at is the reliable column).
+
+    date_to is capped at LAST_ACQUISITION_CALL_DATE (see tables.py) — the
+    call-centre team switched to quality-assurance calling the day after, and
+    this page's acquisition-outcome metrics would be meaningless for those
+    calls. A caller asking for a later date silently gets this cap instead of
+    QA-period rows leaking in; that period is covered by
+    /api/recruitment/qa-calls instead.
     """
-    date_where_clauses, date_params = date_clauses("DATE(created_at)", date_from, date_to, "cci")
+    effective_date_to = min(date_to, LAST_ACQUISITION_CALL_DATE) if date_to else LAST_ACQUISITION_CALL_DATE
+    date_where_clauses, date_params = date_clauses("DATE(created_at)", date_from, effective_date_to, "cci")
     date_where = (" AND " + " AND ".join(date_where_clauses)) if date_where_clauses else ""
 
     totals_sql = f"""
@@ -1993,6 +2007,252 @@ def call_centre_insights(
         "feedback_n": feedback_n,
         "feedback_themes": feedback_themes,
         "genuine_questions": _themed("Genuine question from youth", _QUESTION_SUBTHEMES),
+    }
+
+
+@router.get("/api/recruitment/qa-calls")
+def qa_calls(user: User = Depends(current_user)):
+    """Quality Assurance Calls — a SEPARATE pipeline from BC5_ACQUISITION_CALLS
+    (call-centre-insights' source), not a later date range within it: confirmed
+    live, 2026-08-08, BC5_ACQUISITION_CALLS has zero rows after
+    LAST_ACQUISITION_CALL_DATE (see tables.py) — once the call-centre team
+    switches to QA calling (re-confirming identity/name on already-registered
+    youth), that activity lands in QUALITY_ASSURANCE_BC5/QUALITY_ASSURANCE_
+    SILVER instead. No date column exists on either table (the gold rollup
+    has no time dimension at all), so this page doesn't take a date range —
+    unlike every other Mobilisation sub-page.
+
+    Numeric KPIs/breakdowns come from QUALITY_ASSURANCE_BC5 (gold, venue x
+    mobilizer x cycle grain, pre-summed incl. by gender) rather than
+    aggregating the 607-row silver table client-side — always filtered to
+    measure = QA_MEASURE_CUMULATIVE (see tables.py: this mart carries a
+    SEPARATE 'daily' row per venue x call_date summing to the exact same
+    totals, so an unfiltered SUM double-counts everything). Denominators,
+    confirmed live 2026-08-08 by reading every row's totals:
+    - reach_rate is total_unique_reached_youth ÷ total_unique_youth_called —
+      per the recruitment team's ask, 2026-08-08 — a per-youth grain (not
+      total_call_status_reached ÷ total_call_attempts, which double-counts a
+      youth reached across multiple call attempts).
+    - call_outcomes (Reached/No Answer/Phone Off/...) are shares of
+      total_call_attempts instead — the call-attempt grain, matching
+      call-centre-insights' "% of calls" framing (this breakdown is about
+      what attempts looked like, not how many distinct youth were reached).
+    - identity_confirmed_rate and the Confirmed/No/Maybe breakdown are shares
+      of total_unique_reached_youth — total_confirmed_youth + total_no_youth +
+      total_maybe_youth sums EXACTLY to it, confirming that's this outcome's
+      real denominator (a per-youth grain, not per-attempt).
+    - name_match_rate is a share of total_call_status_reached instead — name
+      verification is asked per call attempt, not deduped per youth like the
+      confirmation outcome above (total_name_matches can exceed
+      total_unique_reached_youth, which is why THAT denominator won't work
+      for this field specifically).
+
+    The one real qualitative signal — `support_needed` (free text, sparse:
+    4/607 rows) — is queried directly from QUALITY_ASSURANCE_SILVER, selecting
+    only that column (not the whole per-call row) to keep this page light.
+    Shown verbatim (n is small enough that a keyword theme classifier like
+    call-centre-insights' would be overfitting), including a literal "none"
+    value as-is rather than inferring it means no support was needed.
+
+    by_district/by_venue/by_gender reuse the same gold rollup (measure =
+    QA_MEASURE_CUMULATIVE), just grouped instead of summed whole. by_venue is
+    sorted by name_mismatch_rate DESCENDING (highest mismatch first, per the
+    recruitment team's ask, 2026-08-08) — it exists to surface which venues
+    need a name-verification follow-up, not to rank best performers. daily is
+    the one query on measure = QA_MEASURE_DAILY instead (one row per venue x
+    call_date, added by Afra 2026-08-08 specifically for this trend) — grouped
+    by call_date rather than re-deriving a trend from the silver per-call table.
+    """
+    totals_sql = f"""
+    SELECT
+      SUM(total_call_attempts) AS attempts,
+      SUM(total_unique_youth_called) AS called,
+      SUM(total_call_status_reached) AS reached,
+      SUM(total_unique_reached_youth) AS unique_reached,
+      SUM(total_confirmed_youth) AS confirmed,
+      SUM(total_no_youth) AS no_youth,
+      SUM(total_maybe_youth) AS maybe_youth,
+      SUM(total_name_matches) AS name_matches,
+      SUM(total_call_status_no_answer) AS no_answer,
+      SUM(total_call_status_phone_off) AS phone_off,
+      SUM(total_call_status_call_back) AS call_back,
+      SUM(total_call_status_busy) AS busy,
+      SUM(total_call_status_rejected) AS rejected,
+      SUM(total_call_status_wrong_number) AS wrong_number,
+      SUM(total_call_status_hung_up) AS hung_up
+    FROM {QUALITY_ASSURANCE_BC5}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_CUMULATIVE}'
+    """
+    t = (database.run_query(totals_sql, role=user.role) or [{}])[0]
+
+    def n(key):
+        return t.get(key) or 0
+
+    attempts = n("attempts")
+    called = n("called")
+    reached = n("reached")
+    unique_reached = n("unique_reached")
+    confirmed = n("confirmed")
+    no_youth = n("no_youth")
+    maybe_youth = n("maybe_youth")
+    name_matches = n("name_matches")
+
+    def _pct(part, whole):
+        return round(100 * part / whole, 1) if whole else None
+
+    call_outcomes = sorted(
+        [
+            {"status": "Reached", "count": reached},
+            {"status": "No Answer", "count": n("no_answer")},
+            {"status": "Phone Off", "count": n("phone_off")},
+            {"status": "Call Back", "count": n("call_back")},
+            {"status": "Busy", "count": n("busy")},
+            {"status": "Rejected", "count": n("rejected")},
+            {"status": "Wrong Number", "count": n("wrong_number")},
+            {"status": "Hung Up", "count": n("hung_up")},
+        ],
+        key=lambda r: -r["count"],
+    )
+    for r in call_outcomes:
+        r["pct"] = _pct(r["count"], attempts)
+
+    confirmation_outcome = [
+        {"status": "Confirmed", "count": confirmed, "pct": _pct(confirmed, unique_reached)},
+        {"status": "No", "count": no_youth, "pct": _pct(no_youth, unique_reached)},
+        {"status": "Maybe", "count": maybe_youth, "pct": _pct(maybe_youth, unique_reached)},
+    ]
+    name_breakdown = [
+        {"status": "Matches", "count": name_matches, "pct": _pct(name_matches, reached)},
+        {"status": "Not matched", "count": max(reached - name_matches, 0), "pct": _pct(max(reached - name_matches, 0), reached)},
+    ]
+
+    support_sql = f"""
+    SELECT support_needed AS note
+    FROM {QUALITY_ASSURANCE_SILVER}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND support_needed IS NOT NULL AND TRIM(support_needed) != ''
+    """
+    support_quotes = [_clean_quote(r["note"]) for r in database.run_query(support_sql, role=user.role)]
+
+    # District comparison — same gold rollup, grouped instead of summed whole.
+    district_sql = f"""
+    SELECT youth_district AS district,
+      SUM(total_call_attempts) AS attempts,
+      SUM(total_unique_youth_called) AS called,
+      SUM(total_call_status_reached) AS reached,
+      SUM(total_unique_reached_youth) AS unique_reached,
+      SUM(total_confirmed_youth) AS confirmed,
+      SUM(total_name_matches) AS name_matches
+    FROM {QUALITY_ASSURANCE_BC5}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_CUMULATIVE}' AND youth_district IS NOT NULL
+    GROUP BY district ORDER BY district
+    """
+    by_district = []
+    for r in database.run_query(district_sql, role=user.role):
+        d_called = r.get("called") or 0
+        d_reached = r.get("reached") or 0
+        d_unique_reached = r.get("unique_reached") or 0
+        d_confirmed = r.get("confirmed") or 0
+        d_name_matches = r.get("name_matches") or 0
+        by_district.append({
+            "district": r["district"],
+            "attempts": r.get("attempts") or 0,
+            "reached": d_reached,
+            "reach_rate": _pct(d_unique_reached, d_called),
+            "identity_confirmed_rate": _pct(d_confirmed, d_unique_reached),
+            "name_match_rate": _pct(d_name_matches, d_reached),
+        })
+
+    # By venue — same fields, grouped finer, sorted so the highest NAME
+    # MISMATCH rate (not match rate) sorts first: this table exists
+    # specifically to surface which venues need a name-verification follow-up,
+    # per the recruitment team's ask, 2026-08-08.
+    venue_sql = f"""
+    SELECT venue_name AS venue, youth_district AS district,
+      SUM(total_call_status_reached) AS reached,
+      SUM(total_name_matches) AS name_matches
+    FROM {QUALITY_ASSURANCE_BC5}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_CUMULATIVE}' AND venue_name IS NOT NULL
+    GROUP BY venue, district
+    """
+    by_venue = []
+    for r in database.run_query(venue_sql, role=user.role):
+        v_reached = r.get("reached") or 0
+        v_name_matches = r.get("name_matches") or 0
+        v_mismatches = max(v_reached - v_name_matches, 0)
+        by_venue.append({
+            "venue": r["venue"],
+            "district": r["district"],
+            "reached": v_reached,
+            "name_mismatches": v_mismatches,
+            "name_mismatch_rate": _pct(v_mismatches, v_reached),
+        })
+    by_venue.sort(key=lambda r: (-(r["name_mismatch_rate"] or 0), -r["reached"]))
+
+    # Gender comparison — same gold rollup's per-gender columns (confirmed
+    # with the recruitment team, 2026-08-08, to check for a reach/confirm/
+    # name-match gap between arms, the same kind of check Executive Summary's
+    # gender table already does for the main funnel).
+    gender_sql = f"""
+    SELECT
+      SUM(total_call_status_reached_female) AS reached_f, SUM(total_call_status_reached_male) AS reached_m,
+      SUM(total_unique_reached_female) AS unique_reached_f, SUM(total_unique_reached_male) AS unique_reached_m,
+      SUM(total_confirmed_female) AS confirmed_f, SUM(total_confirmed_male) AS confirmed_m,
+      SUM(total_name_matches_female) AS name_matches_f, SUM(total_name_matches_male) AS name_matches_m
+    FROM {QUALITY_ASSURANCE_BC5}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_CUMULATIVE}'
+    """
+    g = (database.run_query(gender_sql, role=user.role) or [{}])[0]
+
+    def gn(key):
+        return g.get(key) or 0
+
+    by_gender = [
+        {
+            "gender": "Female", "reached": gn("reached_f"),
+            "identity_confirmed_rate": _pct(gn("confirmed_f"), gn("unique_reached_f")),
+            "name_match_rate": _pct(gn("name_matches_f"), gn("reached_f")),
+        },
+        {
+            "gender": "Male", "reached": gn("reached_m"),
+            "identity_confirmed_rate": _pct(gn("confirmed_m"), gn("unique_reached_m")),
+            "name_match_rate": _pct(gn("name_matches_m"), gn("reached_m")),
+        },
+    ]
+
+    # Daily call volume — measure = QA_MEASURE_DAILY gives one row per venue x
+    # call_date (added by Afra, 2026-08-08, specifically for this trend), so
+    # this sums the SAME two per-youth columns as the totals above, just
+    # grouped by call_date instead of collapsed to one cumulative row. Never
+    # mix with QA_MEASURE_CUMULATIVE rows in this query (see tables.py) — they
+    # sum to the same grand totals, so combining them would double-count.
+    daily_sql = f"""
+    SELECT call_date AS date,
+      SUM(total_unique_youth_called) AS called,
+      SUM(total_unique_reached_youth) AS reached
+    FROM {QUALITY_ASSURANCE_BC5}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND measure = '{QA_MEASURE_DAILY}' AND call_date IS NOT NULL
+    GROUP BY date ORDER BY date
+    """
+    daily = database.run_query(daily_sql, role=user.role)
+
+    return {
+        "since": QA_CALLS_START_DATE,
+        "calls_analysed": attempts,
+        "youth_called": called,
+        "reached": reached,
+        "reach_rate": _pct(unique_reached, called),
+        "call_outcomes": call_outcomes,
+        "unique_reached": unique_reached,
+        "confirmed": confirmed,
+        "identity_confirmed_rate": _pct(confirmed, unique_reached),
+        "confirmation_outcome": confirmation_outcome,
+        "name_match_rate": _pct(name_matches, reached),
+        "name_breakdown": name_breakdown,
+        "support_needed": {"n": len(support_quotes), "quotes": support_quotes},
+        "by_district": by_district,
+        "by_venue": by_venue,
+        "by_gender": by_gender,
+        "daily": daily,
     }
 
 
