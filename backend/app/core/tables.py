@@ -27,7 +27,21 @@ _BRONZE = f"`{PROJECT_ID}`.bronze_eba"
 # not "BC2".."BC5". Every live-table query below is pinned to this list of active
 # cycles rather than exposing the frontend's BC2..BC5 cohort filter (which doesn't
 # apply to these tables). Add/remove a cycle here — nothing else needs to change.
-ACTIVE_COHORTS = ["BOOTCAMP_4", "BOOTCAMP_5"]
+#
+# BOOTCAMP_4 dropped, 2026-08-08 (per Afra): confirmed live — BC4's last
+# DAILY_ACQUISITION_SUMMARY activity is call_date 2026-07-24, BC5's first is
+# 2026-07-27, a clean non-overlapping cutover, and BC4 is fully closed out.
+# Blending a closed cohort into the unfiltered/"all cohorts" default was
+# actively producing wrong numbers, not just stale ones: BC4's preload_youth
+# (Assigned) and youth_gender are BOTH 100% NULL on every one of its rows, so
+# any combined view showed Assigned undercounted against Reached/Confirmed
+# (reach_rate >100%, reproduced live) and a diluted/wrong female share.
+# BC4 is still explicitly selectable from the cohort dropdown (its rows are
+# real and its own single-cohort numbers are fine) — this only removes it
+# from the silent default blend. Reinstate here (and re-verify the same two
+# NULL columns aren't still an issue) if BC4 numbers are ever needed in a
+# combined view again.
+ACTIVE_COHORTS = ["BOOTCAMP_5"]
 
 # Awareness: district-level daily rollup — registered/interested/eligible counts
 # (+ female/male splits) per mobiliser/day/district. Backs /api/recruitment/awareness.

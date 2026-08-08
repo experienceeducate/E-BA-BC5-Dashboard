@@ -35,10 +35,12 @@ def _warm_targets():
     # cohort=["BOOTCAMP_5"], NOT []: the frontend's actual default filter
     # state is `cohort: "BOOTCAMP_5"` (see App.jsx's useState default), not
     # "all cohorts" — confirmed live 2026-08-05 that warming with `cohort=[]`
-    # silently cached the WRONG variant (resolve_active_cohorts([]) falls
-    # back to ACTIVE_COHORTS = ["BOOTCAMP_4", "BOOTCAMP_5"] together, a
-    # different query/cache-key than what any real page load sends), so the
-    # real default request still missed and paid the full cold-query cost.
+    # silently cached the WRONG variant, a different query/cache-key than what
+    # any real page load sends, so the real default request still missed and
+    # paid the full cold-query cost. Now that ACTIVE_COHORTS is BOOTCAMP_5-only
+    # (BC4 dropped 2026-08-08, see tables.py), cohort=[] would actually resolve
+    # to the same thing — kept explicit anyway so this doesn't silently regress
+    # if ACTIVE_COHORTS ever changes again.
     return [
         (mobilisation, {"district": [], "gender": None, "cohort": ["BOOTCAMP_5"]}),
         (mobilisation_heatmap, {"district": [], "cohort": ["BOOTCAMP_5"]}),
