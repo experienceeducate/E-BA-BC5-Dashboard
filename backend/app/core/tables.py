@@ -315,6 +315,21 @@ AUTO_CONFIRM_REGISTERED_SINCE_BY_COHORT = {
     "BOOTCAMP_5": "2026-07-27",
 }
 
+# Per Afra (2026-08-08): starting this date the BC5 call-centre team switched
+# from acquisition calling to quality-assurance calling (re-confirming
+# identity/name on already-registered youth) — a SEPARATE pipeline
+# (QUALITY_ASSURANCE_BC5/QUALITY_ASSURANCE_SILVER below), not a later date
+# range within BC5_ACQUISITION_CALLS (confirmed live: that table has zero rows
+# after LAST_ACQUISITION_CALL_DATE, the day before — kept as its own literal,
+# not derived from this one, so nothing here depends on date arithmetic).
+# /api/recruitment/call-centre-insights caps its date_to at
+# LAST_ACQUISITION_CALL_DATE — even if a caller asks for a later date, its
+# acquisition-outcome metrics would be meaningless for a QA call.
+# QA_CALLS_START_DATE itself is display-only (surfaced in /api/recruitment/
+# qa-calls' response) — the QA tables have no date column at all to filter on.
+QA_CALLS_START_DATE = "2026-08-07"
+LAST_ACQUISITION_CALL_DATE = "2026-08-06"
+
 # Site-level funnel: venue×gender×cycle grain — arrival verification (verified/
 # acquired) AND retention (activated_youth, youth_80pct_lessons, ...). Backs
 # /api/recruitment/acquisition and /api/implementation/retention.
@@ -519,6 +534,21 @@ ACQUISITION_CALL_LOG = f"{_SILVER}.eba_bootcamp_acquisition"
 # exactly those two fields' sake, reading every other field under its native
 # name here rather than the cross-cohort mart's renamed version.
 BC5_ACQUISITION_CALLS = f"{_SILVER}.eba_bc5_acquisition"
+
+# Quality Assurance calls — a SEPARATE pipeline from BC5_ACQUISITION_CALLS,
+# not a later date range within it (confirmed live, 2026-08-08: BC5_ACQUISITION_
+# CALLS has zero rows after LAST_ACQUISITION_CALL_DATE — QA call activity is
+# loaded into these two tables instead once the call-centre team switches over).
+# GOLD is a pre-aggregated rollup (venue x mobilizer x cycle grain, 27 rows for
+# BOOTCAMP_5) with call-status/confirmed-identity/name-verification counts
+# already summed, incl. by gender — use this for every numeric KPI/breakdown,
+# it's far lighter than re-aggregating the per-call SILVER table client-side.
+# SILVER is the per-call record (607 BOOTCAMP_5 rows) — only has a real
+# qualitative signal in `support_needed` (mirrors BC5_ACQUISITION_CALLS'
+# `attendance_support_notes`, but sparser here); query just that column from
+# it, never the whole row, to keep this page's queries light.
+QUALITY_ASSURANCE_BC5 = f"{_GOLD}.eba_bootcamp_quality_assurance"
+QUALITY_ASSURANCE_SILVER = f"{_SILVER}.eba_bc5_quality_assurance"
 
 # Weekly per-youth business-plan pitch record — backs the Product Design >
 # Milestones page. `week` is a STRING ('Week 1'..'Week 4'); `business_plan_score`

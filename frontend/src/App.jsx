@@ -2824,6 +2824,7 @@ function MobilisationTab({ filters }) {
           { key: "mobilisers", label: "Mobiliser Performance" },
           { key: "control", label: "Control Mobilisation Calls" },
           { key: "insights", label: "Call Centre Insights" },
+          { key: "qa", label: "Quality Assurance Calls" },
         ]}
       />
       {page === "funnel" && <MobRecruitmentFunnelPage filters={filters} dateFrom={dateFrom} dateTo={dateTo} />}
@@ -2831,9 +2832,15 @@ function MobilisationTab({ filters }) {
       {page === "mobilisers" && <MobPerformancePage filters={filters} />}
       {page === "control" && <MobControlCallsPage dateFrom={dateFrom} dateTo={dateTo} />}
       {page === "insights" && <MobCallCentreInsightsPage dateFrom={dateFrom} dateTo={dateTo} />}
+      {page === "qa" && <MobQualityAssuranceCallsPage />}
       {page === "mobilisers" && (
         <p style={{ fontSize: 11, color: C.muted, marginTop: -10 }}>
           The date range above doesn't apply here — Mobiliser Performance has no live per-mobiliser table yet (see MOBILISER_PERF, tables.py), so there's nothing dated to filter.
+        </p>
+      )}
+      {page === "qa" && (
+        <p style={{ fontSize: 11, color: C.muted, marginTop: -10 }}>
+          The date range above doesn't apply here either — Quality Assurance Calls is backed by a pre-aggregated rollup with no date column at all (see QUALITY_ASSURANCE_BC5, tables.py).
         </p>
       )}
     </div>
@@ -3818,6 +3825,105 @@ function MobCallCentreInsightsPage({ dateFrom, dateTo }) {
           <b>Support needs are overwhelmingly one thing: transport.</b> "{topSupportCategory?.category}" alone accounts for {fmtPct(topSupportCategory?.pct)} of the {fmtNum(attendanceSupportNeeded?.n)} calls where a support need was logged — a concrete, fixable logistics gap, not a new benefit to design. {fmtPct(attendanceSupportNeeded?.categories?.find((c) => c.category === "No support needed")?.pct)} said they need no support at all.
         </Insight>
       </div>
+    </div>
+  );
+}
+
+function MobQualityAssuranceCallsPage() {
+  // No date range here (unlike every other Mobilisation sub-page) — the
+  // source table (gold rollup, venue x mobilizer x cycle grain) has no date
+  // column at all to filter on. Same 5-minute poll as Call Centre Insights.
+  const qa = useApi("/api/recruitment/qa-calls", { pollMs: 5 * 60 * 1000 });
+  const data = qa.data;
+  const outcomes = data?.call_outcomes || [];
+  const confirmationOutcome = data?.confirmation_outcome || [];
+  const nameBreakdown = data?.name_breakdown || [];
+  const supportQuotes = data?.support_needed?.quotes || [];
+  const pctColumns = [
+    { key: "count", label: "# Youth", align: "right", render: (v) => fmtNum(v) },
+    { key: "pct", label: "%", align: "right", render: (v) => fmtPct(v) },
+  ];
+
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>
+        BOOTCAMP_5 quality-assurance calls, {data?.since || "—"} onward — the call-centre team
+        switched from acquisition calling to re-confirming identity and name details on
+        already-registered youth on this date. A separate call log from Call Centre Insights, so
+        there's no shared date range to filter by. Refreshes automatically every 5 minutes against
+        live BigQuery.
+      </p>
+
+      <Grid cols={4}>
+        <KpiTile label="Youth called" value={fmtNum(data?.youth_called)} sub={`${fmtNum(data?.calls_analysed)} call attempts`} tag="REAL" />
+        <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} sub={`${fmtNum(data?.reached)} reached of ${fmtNum(data?.calls_analysed)} attempts`} tag="REAL" />
+        <KpiTile label="Identity confirmed" value={fmtPct(data?.identity_confirmed_rate)} sub={`of ${fmtNum(data?.unique_reached)} reached & surveyed`} tag="REAL" />
+        <KpiTile label="Name match rate" value={fmtPct(data?.name_match_rate)} sub={`of ${fmtNum(data?.reached)} reached calls`} tag="REAL" />
+      </Grid>
+
+      <ExecBand num="◆" title="Call status breakdown" />
+      <Card title="Call outcomes" subtitle="What happened when the call was placed" chip="REAL">
+        <State loading={qa.loading} error={qa.error} empty={!qa.loading && outcomes.length === 0}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={outcomes} layout="vertical" margin={{ left: 30 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="status" tick={{ fontSize: 11 }} width={100} />
+                <Tooltip />
+                <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                  {outcomes.map((o, i) => <Cell key={i} fill={o.status === "Reached" ? C.green : CHART_COLORS[i % CHART_COLORS.length]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <DataTable
+              columns={[{ key: "status", label: "Status" }, { key: "count", label: "# Attempts", align: "right", render: (v) => fmtNum(v) }, { key: "pct", label: "% of attempts", align: "right", render: (v) => fmtPct(v) }]}
+              rows={outcomes}
+            />
+          </div>
+        </State>
+      </Card>
+
+      <ExecBand num="◆" title="Identity & name verification" />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title={`Confirmation outcome (n=${fmtNum(data?.unique_reached)})`} subtitle="Did the youth reached confirm their identity — Confirmed / No / Maybe" chip="REAL">
+          <State loading={qa.loading} error={qa.error} empty={!qa.loading && confirmationOutcome.length === 0}>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={confirmationOutcome} layout="vertical" margin={{ left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="status" tick={{ fontSize: 11 }} width={80} />
+                <Tooltip />
+                <Bar dataKey="count" fill={C.teal} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <DataTable columns={[{ key: "status", label: "Status" }, ...pctColumns]} rows={confirmationOutcome} />
+          </State>
+        </Card>
+        <Card title={`Name verification (n=${fmtNum(data?.reached)})`} subtitle="Does the name on file match what the person gave — a second, independent check" chip="REAL">
+          <State loading={qa.loading} error={qa.error} empty={!qa.loading && nameBreakdown.length === 0}>
+            <ResponsiveContainer width="100%" height={140}>
+              <BarChart data={nameBreakdown} layout="vertical" margin={{ left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="status" tick={{ fontSize: 10 }} width={90} />
+                <Tooltip />
+                <Bar dataKey="count" fill={C.gold} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <DataTable columns={[{ key: "status", label: "Status" }, ...pctColumns]} rows={nameBreakdown} />
+          </State>
+        </Card>
+      </div>
+
+      <ExecBand num="◆" title="Support needed — verbatim" />
+      <Card title={`What support youth mentioned (n=${fmtNum(data?.support_needed?.n)})`} subtitle="A sparse free-text field on the QA call record — shown verbatim rather than themed, the sample is too small to categorise meaningfully" chip="SAMPLE" chipTone="sim">
+        <State loading={qa.loading} error={qa.error} empty={!qa.loading && supportQuotes.length === 0}>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: C.text, lineHeight: 1.7 }}>
+            {supportQuotes.map((q, i) => <li key={i}>{q}</li>)}
+          </ul>
+        </State>
+      </Card>
     </div>
   );
 }
@@ -6408,7 +6514,7 @@ const GUIDE_PAGES = [
     what: "4 sub-pages — Awareness Overview, Mobilisers, KYC / Youth Profile, Forecast. Registered → interested → eligible by district, parish and mobiliser; youth demographics; registration-pace forecast." },
   { group: "Recruitment", page: "Mobilisation", tone: "real", navGroup: "rec", navTab: "mob",
     summary: "Assigned → reached → confirmed, BC3 Control List vs Newly registered.",
-    what: "5 sub-pages — Mobilisation Overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights. Assigned → reached → confirmed, split BC3 Control List vs Newly registered pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls." },
+    what: "6 sub-pages — Mobilisation Overview, Mobilisation Forecasts, Mobiliser Performance, Control Mobilisation Calls, Call Centre Insights, Quality Assurance Calls. Assigned → reached → confirmed, split BC3 Control List vs Newly registered pilot cycles; day×venue heat map; the randomised control arm; barriers youth raise on calls; identity/name verification on QA calls." },
   { group: "Recruitment", page: "Acquisition", tone: "real", navGroup: "rec", navTab: "acq",
     summary: "Verified → acquired by district; venue risk categories.",
     what: "2 sub-pages — Overview, Arrival & Verification. Verified → acquired by district; venue risk categories (Target Achieved / On Track / Low Risk / High Risk)." },
