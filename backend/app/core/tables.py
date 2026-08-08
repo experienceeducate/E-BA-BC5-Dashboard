@@ -83,6 +83,25 @@ DAILY_ACQ_MEASURE_ACTUAL = "daily_aggregates"
 DAILY_ACQ_MEASURE_TARGET = "targets"
 DAILY_ACQUISITION_SUMMARY = f"{_GOLD}.eba_bootcamp_daily_acquisition_summary"
 
+# 'daily_aggregates' rows also carry a `collection_type` column distinguishing
+# two genuinely different acquisition channels — "Mobilisation" as a whole is
+# both together. Confirmed live, 2026-08-08, re-verified same day after an
+# upstream data-model change (values below were originally NULL/'MOBILIZATION'
+# with Offline's total_youth_reached always 0 — that first cut is what
+# produced Confirmed > Reached, mobilisation_rate >100%, reproduced live; the
+# upstream fix gave Offline its own genuine total_youth_reached, so a plain
+# SUM across both collection_types is correct again for reached/confirmed —
+# no more special-casing needed there). Current values:
+#   'ONLINE'  — the call-center pathway this mart originally modeled.
+#   'OFFLINE' — an in-person channel, live since call_date 2026-08-07, with
+#               its own real total_youth_reached/total_acquired_youth pair.
+# Still split by this column wherever the ONLINE-vs-OFFLINE breakdown itself
+# is the point (mobilisation()'s `online`/`offline` segments, the share
+# display, drill-downs) — just not required anymore to get a correct blended
+# reached/confirmed total.
+ONLINE_COLLECTION_TYPE = "ONLINE"
+OFFLINE_COLLECTION_TYPE = "OFFLINE"
+
 # The 'targets'/'venue_targets' rows are a live per-venue snapshot LOG, not
 # one static row per venue — confirmed 2026-08-05, reading every column:
 # preload_youth/mobilisation_target genuinely never change for a given venue

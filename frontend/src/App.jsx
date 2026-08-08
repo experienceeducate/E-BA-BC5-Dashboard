@@ -2871,6 +2871,23 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
     });
   }
 
+  // No fetch needed — data.online/data.offline are already in the same
+  // response this page already loaded. Offline's own "reached" is always
+  // None (no phone-reach step exists for it; see the backend docstring) —
+  // shown as "—", not 0, so it doesn't read as "zero people reached offline".
+  function openModeDrill(metricKey, label, formatter = fmtNum) {
+    drill.open({
+      title: `${label} — Online vs Offline`,
+      tone: "real", tagLabel: "REAL",
+      rootKey: "mode", rootLabel: "Mode",
+      columns: [{ key: "value", label, align: "right", render: formatter }],
+      rootRows: [
+        { mode: "Online", value: data?.online?.[metricKey] ?? null },
+        { mode: "Offline", value: data?.offline?.[metricKey] ?? null },
+      ],
+    });
+  }
+
   // `target`/`assigned` are live per-venue where the cohort's target measure
   // carries venue_name (confirmed for BOOTCAMP_5's 'venue_targets'), else
   // `target` falls back to the hardcoded VENUE_MOBILISATION_TARGET and
@@ -2980,7 +2997,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
   // Female via renderPctFemaleCell's own bands).
   const sourceGroups = [
     {
-      label: "Call-center", color: C.teal,
+      label: "Mobilisation", color: C.teal,
       columns: [
         { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
         { key: "callCentreReached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
@@ -3021,7 +3038,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
   // in) — keeping it to one column, not duplicated across both blocks.
   const venueGroups = [
     {
-      label: "Call-center", color: C.teal,
+      label: "Mobilisation", color: C.teal,
       columns: [
         { key: "assigned", label: "Assigned", align: "right", render: (v) => fmtNum(v) },
         { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
@@ -3072,15 +3089,15 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
         <Grid cols={4}>
           <KpiTile label="Assigned to treatment" value={fmtNum(data?.assigned)} tag="REAL" onClick={() => openMobDrill("assigned", "Assigned to treatment")} />
           <KpiTile label="Youth called" value={fmtNum(data?.called)} sub={`unique youth IDs dialed, of ${fmtNum(data?.assigned)} assigned`} tag="REAL" onClick={() => openMobDrill("called", "Youth called")} />
-          <KpiTile label="Youth reached" value={fmtNum(data?.reached)} sub={`of ${fmtNum(data?.assigned)} assigned`} tag="REAL" onClick={() => openMobDrill("reached", "Youth reached")} />
+          <KpiTile label="Youth reached" value={fmtNum(data?.reached)} sub={`of ${fmtNum(data?.assigned)} assigned · click for Online vs Offline`} tag="REAL" onClick={() => openModeDrill("reached", "Youth reached")} />
           <KpiTile label="Reach rate" value={<span style={{ color: rateColor(data?.reach_rate, "reach_rate") }}>{fmtPct(data?.reach_rate)}</span>} sub="reached ÷ assigned · target 70%" tag="REAL" onClick={() => openMobDrill("reach_rate", "Reach rate", fmtPct)} />
-          <KpiTile label="Youth confirmed" value={fmtNum(data?.confirmed)} sub={`of ${fmtNum(data?.reached)} reached`} tag="REAL" onClick={() => openMobDrill("confirmed", "Youth confirmed")} />
+          <KpiTile label="Youth confirmed" value={fmtNum(data?.confirmed)} sub={`of ${fmtNum(data?.reached)} reached · click for Online vs Offline`} tag="REAL" onClick={() => openModeDrill("confirmed", "Youth confirmed")} />
           <KpiTile label="Confirmed female" value={fmtNum(data?.confirmed_female)} sub={<><span style={{ color: femaleShareStatus(data?.confirmed_female_pct)?.color, fontWeight: 700 }}>{fmtPct(data?.confirmed_female_pct)}</span> of confirmed · target 60%</>} tag="REAL" onClick={() => openMobDrill("confirmed_female", "Confirmed female")} />
           <KpiTile label="Mobilisation rate" value={<span style={{ color: rateColor(data?.mobilisation_rate, "mobilisation_rate") }}>{fmtPct(data?.mobilisation_rate)}</span>} sub="confirmed ÷ reached" tag="REAL" onClick={() => openMobDrill("mobilisation_rate", "Mobilisation rate", fmtPct)} />
-          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(data?.progress_pct)] }}>{fmtPct(data?.progress_pct)}</span>} sub={`confirmed ÷ target (${fmtNum(data?.target)}) — call-center only, see Combined progress below`} tag="REAL" onClick={() => openMobDrill("progress_pct", "Progress on target", fmtPct)} />
+          <KpiTile label="Progress on target" value={<span style={{ color: RATE_CATEGORY_COLOR[categorizeRate(data?.progress_pct)] }}>{fmtPct(data?.progress_pct)}</span>} sub={`confirmed ÷ target (${fmtNum(data?.target)}) — Mobilisation only, see Combined progress below`} tag="REAL" onClick={() => openMobDrill("progress_pct", "Progress on target", fmtPct)} />
         </Grid>
         <p style={{ fontSize: 11.5, color: C.muted, margin: "-6px 0 14px" }}>
-          Everything above is built from the call-center pathway alone (DAILY_ACQUISITION_SUMMARY) — the auto-confirmed Newly registered pathway is deliberately kept out of these numbers so it never blends into one confusing rate. See it on its own below, and combined with this pathway in "Combined progress."
+          Reached/Confirmed above are "Mobilisation" as a whole — the Online (call-center) and Offline (in-person) acquisition channels blended together, each with its own real reach step. The auto-confirmed Newly registered pathway is a separate program, deliberately kept out of these numbers so it never blends into one confusing rate — see it on its own below, and combined with Mobilisation in "Combined progress."
         </p>
         <Card title="BC3 Control List vs Newly registered" subtitle="Newly registered subcounties are auto-confirmed by policy — a distinct pathway with its own numbers, not blended into the BC3 Control List's rates." chip="REAL">
           <DataTable
@@ -3101,15 +3118,36 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
           />
         </Card>
 
+        <Card
+          title="Mobilisation mode — Online vs Offline"
+          subtitle={`Online (call-center) vs Offline (in-person) acquisition — ${fmtPct(data?.online_offline_share?.online_pct)} of confirmed came in Online, ${fmtPct(data?.online_offline_share?.offline_pct)} Offline. Click Youth reached/confirmed above for the same split.`}
+          chip="REAL"
+        >
+          <DataTable
+            columns={[
+              { key: "label", label: "Mode" },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "confirmed", label: "Confirmed", align: "right", render: (v) => fmtNum(v) },
+              { key: "mobilisation_rate", label: "Mobilisation rate", align: "right", render: renderRateCell("mobilisation_rate") },
+              { key: "pct_female", label: "% Female", align: "right", render: renderPctFemaleCell },
+            ]}
+            rows={[
+              { label: "Online (call-center)", ...data?.online },
+              { label: "Offline (in-person)", ...data?.offline },
+            ]}
+            stickyHeader
+          />
+        </Card>
+
         {data?.combined && (
           <Card
-            title="Combined progress — call-center + auto-confirm"
-            subtitle="The one place both pathways are added together: auto-confirmed (awareness pilot) + confirmed (call-center), against a combined target (mobilisation target + the awareness-stage eligible target). Kept separate from the clean call-center numbers above on purpose."
+            title="Combined progress — Mobilisation + auto-confirm"
+            subtitle="The one place both pathways are added together: auto-confirmed (awareness pilot) + confirmed (Mobilisation — Online + Offline), against a combined target (mobilisation target + the awareness-stage eligible target). Kept separate from the clean Mobilisation numbers above on purpose."
             chip="REAL"
           >
             <Grid cols={3}>
               <KpiTile label="Auto-confirmed (awareness)" value={fmtNum(data.combined.auto_confirmed)} tag="REAL" />
-              <KpiTile label="Confirmed (call-center)" value={fmtNum(data.combined.call_centre_confirmed)} tag="REAL" />
+              <KpiTile label="Confirmed (Mobilisation)" value={fmtNum(data.combined.call_centre_confirmed)} tag="REAL" />
               <KpiTile label="Total so far" value={fmtNum(data.combined.total_so_far)} sub={`of ${fmtNum(data.combined.target)} combined target`} tag="REAL" />
             </Grid>
             <div style={{ margin: "4px 0 16px" }}>
@@ -3164,11 +3202,6 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
               </Insight>
             );
           })()}
-          {data?.four_week?.mobilisation_rate != null && data?.mobilisation_rate != null && Math.abs(data.mobilisation_rate - data.four_week.mobilisation_rate) >= 1 && (
-            <Insight tone="warn">
-              The blended mobilisation rate (<b>{fmtPct(data.mobilisation_rate)}</b>) reads {data.mobilisation_rate > data.four_week.mobilisation_rate ? "higher" : "lower"} than the BC3 Control List's real call-center rate (<b>{fmtPct(data.four_week.mobilisation_rate)}</b>) — the {fmtNum(data?.two_half_week?.assigned)} auto-confirmed Newly registered youth skew the overall figure. See the cycle breakdown above.
-            </Insight>
-          )}
           {topVenue && (
             <Insight tone="pos"><b>{topVenue.venue}</b> confirmed the most youth overall ({fmtNum(topVenue.confirmed)}, {fmtPct(topVenue.rate)} of reached).</Insight>
           )}
@@ -3182,7 +3215,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
       <State loading={heatmap.loading} error={heatmap.error} empty={!heatmap.loading && parishRows.length === 0 && venueRows.length === 0}>
         <Card
           title="District totals"
-          subtitle="Same disaggregation as the parish table below, summed to district grain — call-center vs auto-confirmed (awareness), each checked against its own target."
+          subtitle="Same disaggregation as the parish table below, summed to district grain — Mobilisation (Online + Offline) vs auto-confirmed (awareness), each checked against its own target."
           chip="REAL"
         >
           <GroupedDataTable
@@ -3195,7 +3228,7 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
         </Card>
 
         <Insight tone="neutral">
-          <b>How to use these filters.</b> Click <b>Parish</b> or <b>Venue</b> to switch grain — Parish is the default and shows the full call-center vs auto-confirmed split; Venue is call-center only (see below). Click a status to filter the table to just those rows. Click <b>All</b> to reset.
+          <b>How to use these filters.</b> Click <b>Parish</b> or <b>Venue</b> to switch grain — Parish is the default and shows the full Mobilisation vs auto-confirmed split; Venue is Mobilisation only (see below). Click a status to filter the table to just those rows. Click <b>All</b> to reset.
         </Insight>
 
         <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
@@ -3219,8 +3252,8 @@ function MobRecruitmentFunnelPage({ filters, dateFrom, dateTo }) {
         <Card
           title={mobGrain === "parish" ? "Parish performance vs target" : "Venue performance vs target"}
           subtitle={mobGrain === "parish"
-            ? `Call-center confirmed (vs mobilisation target) and auto-confirmed from awareness-eligible youth (vs treatment target) shown separately, plus the total confirmed vs combined target. 5 parishes visible at a time — scroll down for the rest.`
-            : "Call-center confirmed (vs mobilisation target) shown alongside its parish's auto-confirmed figure (vs treatment target) — awareness records carry no venue at all, only district/parish, so that middle block is the same number on every venue in that parish, not venue-specific. Total stays call-center-only, to avoid double-counting a shared parish figure across sibling venues."}
+            ? `Mobilisation confirmed (vs mobilisation target) and auto-confirmed from awareness-eligible youth (vs treatment target) shown separately, plus the total confirmed vs combined target. 5 parishes visible at a time — scroll down for the rest.`
+            : "Mobilisation confirmed (vs mobilisation target) shown alongside its parish's auto-confirmed figure (vs treatment target) — awareness records carry no venue at all, only district/parish, so that middle block is the same number on every venue in that parish, not venue-specific. Total stays Mobilisation-only, to avoid double-counting a shared parish figure across sibling venues."}
           chip="REAL"
         >
           {mobGrain === "parish" ? (
@@ -6878,11 +6911,11 @@ async function buildMobilisationExport(filters) {
         { label: "Newly registered", ...mob.two_half_week },
       ], "Deliberately not blended into one row — see \"Combined progress\" below for the two pathways added together."),
       ...(mob.combined ? [
-        xSection("Combined progress — call-center + auto-confirm", "label", "Component", [
+        xSection("Combined progress — Mobilisation + auto-confirm", "label", "Component", [
           xCol("value", "Value"),
         ], [
           { label: "Auto-confirmed (awareness)", value: mob.combined.auto_confirmed },
-          { label: "Confirmed (call-center)", value: mob.combined.call_centre_confirmed },
+          { label: "Confirmed (Mobilisation)", value: mob.combined.call_centre_confirmed },
           { label: "Total so far", value: mob.combined.total_so_far },
           { label: "Mobilisation target (acquisition)", value: mob.combined.mobilisation_target },
           { label: "Eligible target (awareness)", value: mob.combined.eligible_target },

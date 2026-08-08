@@ -30,6 +30,8 @@ from app.core.tables import (
     DAILY_ACQUISITION_TARGETS_DEDUPED,
     DAILY_ACQ_MEASURE_ACTUAL,
     DAILY_ACQ_MEASURE_TARGET,
+    ONLINE_COLLECTION_TYPE,
+    OFFLINE_COLLECTION_TYPE,
     SITE_FUNNEL_METRICS,
     SITE_FUNNEL_MEASURE_TARGET,
     SITE_FUNNEL_MEASURE_ACTUAL,
@@ -929,6 +931,26 @@ def mobilisation(
     `preload_assigned`, or `combined`'s target components, which come from
     static planning tables (DAILY_ACQUISITION_TARGETS_DEDUPED,
     PARISH_TARGETS_BC5) with no date to filter by.
+
+    "Mobilisation" (`four_week`, assigned/reached/confirmed/rates at the top
+    level) is TWO acquisition channels blended, per `collection_type` (see
+    tables.py) — ONLINE_COLLECTION_TYPE, the call-center pathway this
+    endpoint originally modeled alone, and OFFLINE_COLLECTION_TYPE, an
+    in-person channel live since call_date 2026-08-07. Both have their own
+    genuine total_youth_reached/total_acquired_youth pair as of the current
+    upstream data model (re-verified live 2026-08-08 after an upstream
+    change — Offline's total_youth_reached used to be always 0, which made
+    summing it into Confirmed alone produce Confirmed > Reached,
+    mobilisation_rate >100%, reproduced live under that earlier shape), so
+    `reached`/`confirmed` here are a plain SUM across both channels — no
+    special-casing needed anymore to keep mobilisation_rate <= 100%.
+
+    `online`/`offline` are the PURE per-channel breakdowns (for an Online vs
+    Offline drill-down/share display) — each now has its own real reach_rate.
+    `online_offline_share` gives the two channels' share of combined
+    confirmed. `combined.total_so_far` sums Mobilisation (both channels) +
+    the auto-confirm pilot — the recruitment team's single "how are we doing
+    overall" number.
     """
     cohorts = resolve_active_cohorts(cohort)
     tm_where, tm_params = target_measure_where("moa", cohorts)
@@ -962,12 +984,27 @@ def mobilisation(
         extra=[active_cohort_clause("mor", requested=cohort)] + _date_extra("call_date", date_from, date_to, "mor"),
         prefix="mor", district_col="agent_district", gender_col="youth_gender",
     )
+    # Split by collection_type (see tables.py) in one pass rather than two
+    # round-trips — both channels now have their own genuine reached/confirmed
+    # pair, so the headline Mobilisation figures are just their plain sum.
     actual = (database.run_query(
-        f"SELECT SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed "
-        f"FROM {DAILY_ACQUISITION_SUMMARY} WHERE {actual_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'",
+        f"""
+        SELECT
+          SUM(IF(collection_type = '{ONLINE_COLLECTION_TYPE}', total_youth_reached, 0)) AS online_reached,
+          SUM(IF(collection_type = '{ONLINE_COLLECTION_TYPE}', total_acquired_youth, 0)) AS online_confirmed,
+          SUM(IF(collection_type = '{OFFLINE_COLLECTION_TYPE}', total_youth_reached, 0)) AS offline_reached,
+          SUM(IF(collection_type = '{OFFLINE_COLLECTION_TYPE}', total_acquired_youth, 0)) AS offline_confirmed
+        FROM {DAILY_ACQUISITION_SUMMARY} WHERE {actual_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}'
+        """,
         actual_params, role=user.role) or [{}])[0]
-    four_week_reached   = actual.get("reached") or 0
-    four_week_confirmed = actual.get("confirmed") or 0
+    online_reached      = actual.get("online_reached") or 0
+    online_confirmed    = actual.get("online_confirmed") or 0
+    offline_reached     = actual.get("offline_reached") or 0
+    offline_confirmed   = actual.get("offline_confirmed") or 0
+    # Mobilisation headline = both channels, plain sum — each individually
+    # has confirmed <= reached, so the blended ratio is guaranteed sane too.
+    four_week_reached   = online_reached + offline_reached
+    four_week_confirmed = online_confirmed + offline_confirmed
 
     auto_confirmed = _auto_confirmed_count(district, gender, user.role, cohort, date_from, date_to)
     # This pathway never had a preload list, so there's no "assigned" figure
@@ -990,6 +1027,15 @@ def mobilisation(
     four_week     = _segment(preload_assigned, four_week_reached, four_week_confirmed)
     four_week["called"] = youth_called
     two_half_week = _segment(None, auto_pathway_registered, auto_confirmed)
+    # Pure per-channel breakdowns (for the Online vs Offline drill-down/share
+    # display) — both now have a real reach step, so both get a real
+    # mobilisation_rate. Neither has its own Assigned/preload list (that
+    # concept lives on the 'targets' measure rows, which don't carry
+    # collection_type at all) — None, not 0, same "doesn't exist" convention
+    # two_half_week's assigned uses; reach_rate is therefore always None for
+    # both, same as four_week's own reach_rate meaning "vs the preload list".
+    online  = _segment(None, online_reached, online_confirmed)
+    offline = _segment(None, offline_reached, offline_confirmed)
 
     # Female share is computed on the full (district/cohort-filtered) set
     # regardless of the `gender` query param — filtering to gender=FEMALE and
@@ -999,14 +1045,40 @@ def mobilisation(
         extra=[active_cohort_clause("mog", requested=cohort)] + _date_extra("call_date", date_from, date_to, "mog"),
         prefix="mog", district_col="agent_district",
     )
-    four_week_confirmed_female = (database.run_query(
-        f"SELECT SUM(total_acquired_youth) AS n FROM {DAILY_ACQUISITION_SUMMARY} "
-        f"WHERE {gsplit_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND UPPER(youth_gender) = 'FEMALE'",
-        gsplit_params, role=user.role) or [{}])[0].get("n") or 0
+    gsplit = (database.run_query(
+        f"""
+        SELECT
+          SUM(IF(collection_type = '{ONLINE_COLLECTION_TYPE}', total_acquired_youth, 0)) AS online_confirmed_female,
+          SUM(IF(collection_type = '{OFFLINE_COLLECTION_TYPE}', total_acquired_youth, 0)) AS offline_confirmed_female
+        FROM {DAILY_ACQUISITION_SUMMARY}
+        WHERE {gsplit_where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND UPPER(youth_gender) = 'FEMALE'
+        """,
+        gsplit_params, role=user.role) or [{}])[0]
+    online_confirmed_female = gsplit.get("online_confirmed_female") or 0
+    offline_confirmed_female = gsplit.get("offline_confirmed_female") or 0
+    # Blended, matching four_week["confirmed"] above. Offline's youth_gender
+    # is only PARTIALLY populated (confirmed live, 2026-08-08) — rows with no
+    # gender recorded contribute to neither this nor total_confirmed's female
+    # share numerator, same "not every row has this field" pattern the rest
+    # of this codebase already handles (e.g. attendance_status).
+    four_week_confirmed_female = online_confirmed_female + offline_confirmed_female
     two_half_week_confirmed_female = _auto_confirmed_count(district, "FEMALE", user.role, cohort, date_from, date_to)
 
     four_week["pct_female"] = round(100 * four_week_confirmed_female / four_week["confirmed"], 1) if four_week["confirmed"] else None
     two_half_week["pct_female"] = round(100 * two_half_week_confirmed_female / two_half_week["confirmed"], 1) if two_half_week["confirmed"] else None
+    online["pct_female"] = round(100 * online_confirmed_female / online["confirmed"], 1) if online["confirmed"] else None
+    offline["pct_female"] = round(100 * offline_confirmed_female / offline["confirmed"], 1) if offline["confirmed"] else None
+
+    # Share uses the PURE per-mode confirmed counts, not four_week["confirmed"]
+    # (which is the blended headline, online_confirmed + offline_confirmed —
+    # using it here as one side of its own split would double-count Offline).
+    total_confirmed_all_modes = online_confirmed + offline_confirmed
+    online_offline_share = {
+        "online_confirmed": online_confirmed,
+        "offline_confirmed": offline_confirmed,
+        "online_pct": round(100 * online_confirmed / total_confirmed_all_modes, 1) if total_confirmed_all_modes else None,
+        "offline_pct": round(100 * offline_confirmed / total_confirmed_all_modes, 1) if total_confirmed_all_modes else None,
+    }
 
     # BOOTCAMP_5's mobilisation target does NOT come from DAILY_ACQUISITION_
     # SUMMARY's own mobilisation_target column — confirmed with the
@@ -1072,10 +1144,16 @@ def mobilisation(
         treatment_target = round(pt.get("treatment_target") or 0)
         control_target = round(pt.get("control_target") or 0)
         combined_target = target + treatment_target
-        total_so_far = four_week_confirmed + auto_confirmed
+        # All THREE pathways now (call-center + auto-confirm pilot + offline)
+        # — offline is real mobilisation progress toward the same target, not
+        # a separate program. online_confirmed (pure), NOT four_week_confirmed
+        # (which is now the blended online+offline headline) — using the
+        # blended figure here would double-count Offline.
+        total_so_far = online_confirmed + auto_confirmed + offline_confirmed
         combined = {
             "auto_confirmed": auto_confirmed,
-            "call_centre_confirmed": four_week_confirmed,
+            "call_centre_confirmed": online_confirmed,
+            "offline_confirmed": offline_confirmed,
             "total_so_far": total_so_far,
             "mobilisation_target": target,
             "eligible_target": eligible_target,
@@ -1093,6 +1171,9 @@ def mobilisation(
         "progress_pct": round(100 * four_week_confirmed / target, 1) if target else None,
         "four_week": four_week,
         "two_half_week": two_half_week,
+        "online": online,
+        "offline": offline,
+        "online_offline_share": online_offline_share,
         "combined": combined,
     }
 
@@ -1110,7 +1191,18 @@ def mobilisation_heatmap(
     merged "Performance categorisation" toggle (Parish is the default visible
     table, Venue the alternate grain) and its Insights (top venue, high-risk
     venues). by_district still exists for the KPI/cycle cards elsewhere on
-    the page, at district grain, call-center-only.
+    the page, at district grain.
+
+    "call_centre_reached"/"call_centre_confirmed" are Mobilisation as a whole
+    now (both acquisition channels — see ONLINE_COLLECTION_TYPE/
+    OFFLINE_COLLECTION_TYPE, tables.py — the field names are kept for
+    backwards compatibility, not because they're Online-only anymore): Online
+    rows join this rollup normally (they carry a real venue_parish), but
+    Offline rows never have venue_parish populated (confirmed live,
+    2026-08-08), so they're queried separately by venue name only
+    (offline_by_venue_sql) and merged in via venue_to_parish — a reverse
+    lookup built from targets_by_venue, the only source with a reliable
+    parish for a venue name (same reasoning as district_by_parish below).
 
     IMPORTANT — agent_district is not a reliable district for the actual
     (call-center) side. Confirmed live, 2026-08-04: it's where the CALLING
@@ -1205,6 +1297,24 @@ def mobilisation_heatmap(
     """
     by_venue = database.run_query(by_venue_sql, params, role=user.role)
 
+    # Offline rows (collection_type = OFFLINE_COLLECTION_TYPE, see tables.py)
+    # carry a real venue_name but venue_parish is always NULL for them
+    # (confirmed live, 2026-08-08) — so they can't join the parish grouping
+    # above directly. Queried separately by venue only, then merged into
+    # by_venue below (once each venue's real parish is known via
+    # targets_by_venue) so "Mobilisation" progress at parish/venue grain
+    # includes both acquisition channels, same as the headline in
+    # mobilisation().
+    offline_by_venue_sql = f"""
+    SELECT {canonical_venue_sql("venue_name")} AS venue,
+           SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed,
+           SUM(IF(UPPER(youth_gender) = 'FEMALE', total_acquired_youth, 0)) AS confirmed_female
+    FROM {DAILY_ACQUISITION_SUMMARY}
+    WHERE {where} AND measure = '{DAILY_ACQ_MEASURE_ACTUAL}' AND collection_type = '{OFFLINE_COLLECTION_TYPE}' AND venue_name IS NOT NULL
+    GROUP BY venue
+    """
+    offline_by_venue = {r["venue"]: r for r in database.run_query(offline_by_venue_sql, params, role=user.role)}
+
     cohorts = resolve_active_cohorts(cohort)
     tm_where, tm_params = target_measure_where("mht", cohorts)
     targets_where, targets_params = build_where(
@@ -1260,6 +1370,47 @@ def mobilisation_heatmap(
         for r in database.run_query(venue_targets_sql, targets_params, role=user.role)
     }
 
+    # Merge Offline into by_venue now that each venue's real parish is known
+    # (via targets_by_venue's own (parish, venue) keys — the only source with
+    # a reliable parish for a venue name, same reasoning as district_by_parish
+    # below). A venue name is assumed to belong to one parish across the
+    # cohort, matching this program's real structure (verified live,
+    # 2026-08-08: no venue name recurs under two different parishes in
+    # targets_by_venue) — last-write-wins if that ever stops holding.
+    #
+    # Builds a FRESH list of dicts rather than mutating by_venue's rows in
+    # place — those come straight from database.run_query(), which may hand
+    # back the exact object cache.py's TTLCache is holding; an in-place "+="
+    # would compound Offline's numbers on every cache hit (confirmed live,
+    # 2026-08-08 — reached/confirmed climbed on every repeated request until
+    # this was fixed. Same rule this file already documents at mobilisation()
+    # for mo_row).
+    venue_to_parish = {v: p for (p, v) in targets_by_venue}
+    if offline_by_venue:
+        merged_by_venue = []
+        seen_venues = set()
+        for r in by_venue:
+            o = offline_by_venue.get(r["venue"])
+            merged_by_venue.append(r if o is None else {
+                **r,
+                "reached": (r.get("reached") or 0) + (o.get("reached") or 0),
+                "confirmed": (r.get("confirmed") or 0) + (o.get("confirmed") or 0),
+                "confirmed_female": (r.get("confirmed_female") or 0) + (o.get("confirmed_female") or 0),
+            })
+            seen_venues.add(r["venue"])
+        for venue, o in offline_by_venue.items():
+            if venue in seen_venues:
+                continue
+            parish = venue_to_parish.get(venue)
+            if parish is None:
+                continue  # no known parish for this venue at all — out of scope, same as elsewhere in this function
+            merged_by_venue.append({
+                "parish": parish, "venue": venue,
+                "reached": o.get("reached") or 0, "confirmed": o.get("confirmed") or 0,
+                "confirmed_female": o.get("confirmed_female") or 0,
+            })
+        by_venue = merged_by_venue
+
     # Actual (call-center) rows are grouped by PARISH here, deliberately NOT
     # by agent_district — confirmed with the recruitment team, 2026-08-04:
     # agent_district is where the calling AGENT is based, not the youth's
@@ -1294,6 +1445,33 @@ def mobilisation_heatmap(
         for p, r in actual_by_parish_raw.items()
         if p in district_by_parish
     }
+
+    # Roll Offline up to parish grain too (same merge as by_venue above, via
+    # the same venue_to_parish lookup — parish_actual_sql can't pick these
+    # rows up directly, venue_parish is always NULL for them). Same
+    # fresh-dict rule as by_venue above — actual_by_parish's values are the
+    # exact row objects database.run_query() returned (possibly the cached
+    # ones), so an in-place "+=" here would compound too.
+    for venue, o in offline_by_venue.items():
+        parish = venue_to_parish.get(venue)
+        district = district_by_parish.get(parish)
+        if parish is None or district is None:
+            continue
+        key = (district, parish)
+        existing = actual_by_parish.get(key)
+        if existing is not None:
+            actual_by_parish[key] = {
+                **existing,
+                "reached": (existing.get("reached") or 0) + (o.get("reached") or 0),
+                "confirmed": (existing.get("confirmed") or 0) + (o.get("confirmed") or 0),
+                "confirmed_female": (existing.get("confirmed_female") or 0) + (o.get("confirmed_female") or 0),
+            }
+        else:
+            actual_by_parish[key] = {
+                "parish": parish,
+                "reached": o.get("reached") or 0, "confirmed": o.get("confirmed") or 0,
+                "confirmed_female": o.get("confirmed_female") or 0,
+            }
 
     # Per-parish auto-confirm (awareness) numbers and treatment-target share —
     # see mobilisation()'s `combined` section for the same blend at program
@@ -1471,6 +1649,13 @@ def mobilisation_forecast(
     on DAILY_ACQUISITION_SUMMARY, report_date on AWARENESS_KYC for the
     auto-confirmed pathway) — never `target`, a static planning figure with
     no date to filter by.
+
+    reached/confirmed per day are blended Online + Offline, same as
+    /api/recruitment/mobilisation's headline (see ONLINE_COLLECTION_TYPE/
+    OFFLINE_COLLECTION_TYPE, tables.py, and that endpoint's docstring) — both
+    channels have their own genuine reached/confirmed pair, so a plain SUM
+    across every row (no collection_type filter needed) is the correct
+    blended daily total.
     """
     where, params = build_where(
         districts=district,
