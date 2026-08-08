@@ -915,7 +915,7 @@ def test_mobilisation_heatmap_accepts_date_range(as_staff, mock_run_query):
         params={"date_from": "2026-01-01", "date_to": "2026-01-31"},
     )
     assert r.status_code == 200
-    actual_call = next(c for c in mock_run_query.calls if "SUM(total_youth_reached) AS reached, SUM(total_acquired_youth) AS confirmed" in c["sql"])
+    actual_call = next(c for c in mock_run_query.calls if "SUM(total_youth_reached) AS online_reached, SUM(total_acquired_youth) AS online_confirmed" in c["sql"])
     assert "call_date >=" in actual_call["sql"] and "call_date <=" in actual_call["sql"]
     targets_call = next(c for c in mock_run_query.calls if "SUM(preload_youth) AS assigned, SUM(mobilisation_target) AS target" in c["sql"] and "GROUP BY district\n" in c["sql"])
     assert "call_date" not in targets_call["sql"]
@@ -939,11 +939,11 @@ def test_mobilisation_heatmap_merges_offline_into_venue_and_parish(as_staff, moc
         if "GROUP BY district, parish, venue" in sql:
             return [{"district": "TESTDISTRICT", "parish": "TESTPARISH", "venue": "TEST SCHOOL", "assigned": 10, "target": 20}]
         if "collection_type = 'OFFLINE'" in sql:
-            return [{"venue": "TEST SCHOOL", "reached": 5, "confirmed": 4, "confirmed_female": 2}]
+            return [{"venue": "TEST SCHOOL", "offline_reached": 5, "offline_confirmed": 4, "offline_confirmed_female": 2}]
         if "GROUP BY parish, venue" in sql:
-            return [{"parish": "TESTPARISH", "venue": "TEST SCHOOL", "reached": 10, "confirmed": 8, "confirmed_female": 3}]
+            return [{"parish": "TESTPARISH", "venue": "TEST SCHOOL", "online_reached": 10, "online_confirmed": 8, "online_confirmed_female": 3}]
         if "GROUP BY parish\n" in sql:
-            return [{"parish": "TESTPARISH", "reached": 10, "confirmed": 8, "confirmed_female": 3}]
+            return [{"parish": "TESTPARISH", "online_reached": 10, "online_confirmed": 8, "online_confirmed_female": 3}]
         if "GROUP BY district, parish" in sql:
             return [{"district": "TESTDISTRICT", "parish": "TESTPARISH", "assigned": 10, "target": 20}]
         if "GROUP BY district\n" in sql:
@@ -956,9 +956,16 @@ def test_mobilisation_heatmap_merges_offline_into_venue_and_parish(as_staff, moc
     venue = next(v for v in body["by_venue"] if v["venue"] == "TEST SCHOOL")
     assert venue["reached"] == 15  # 10 online + 5 offline
     assert venue["confirmed"] == 12  # 8 online + 4 offline
+    assert venue["online_reached"] == 10 and venue["offline_reached"] == 5
+    assert venue["online_confirmed"] == 8 and venue["offline_confirmed"] == 4
     parish = next(p for p in body["by_parish"] if p["parish"] == "TESTPARISH")
     assert parish["call_centre_reached"] == 15
     assert parish["call_centre_confirmed"] == 12
+    assert parish["online_reached"] == 10 and parish["offline_reached"] == 5
+    assert parish["online_confirmed"] == 8 and parish["offline_confirmed"] == 4
+    district = next(d for d in body["by_district"] if d["district"] == "TESTDISTRICT")
+    assert district["online_reached"] == 10 and district["offline_reached"] == 5
+    assert district["online_confirmed"] == 8 and district["offline_confirmed"] == 4
 
 
 def test_mobilisation_heatmap_offline_merge_does_not_mutate_cached_rows(as_staff, mock_run_query):
@@ -969,9 +976,9 @@ def test_mobilisation_heatmap_offline_merge_does_not_mutate_cached_rows(as_staff
     # themselves every time. Reproduced live, 2026-08-08: reached/confirmed
     # climbed on every repeated request until this was fixed. Same fixed
     # dict objects returned on every call here, simulating a cache hit.
-    online_venue_row = {"parish": "TESTPARISH", "venue": "TEST SCHOOL", "reached": 10, "confirmed": 8, "confirmed_female": 3}
-    online_parish_row = {"parish": "TESTPARISH", "reached": 10, "confirmed": 8, "confirmed_female": 3}
-    offline_row = {"venue": "TEST SCHOOL", "reached": 5, "confirmed": 4, "confirmed_female": 2}
+    online_venue_row = {"parish": "TESTPARISH", "venue": "TEST SCHOOL", "online_reached": 10, "online_confirmed": 8, "online_confirmed_female": 3}
+    online_parish_row = {"parish": "TESTPARISH", "online_reached": 10, "online_confirmed": 8, "online_confirmed_female": 3}
+    offline_row = {"venue": "TEST SCHOOL", "offline_reached": 5, "offline_confirmed": 4, "offline_confirmed_female": 2}
 
     def side_effect(sql, params, role):
         if "GROUP BY district, parish, venue" in sql:
@@ -1001,8 +1008,8 @@ def test_mobilisation_heatmap_offline_merge_does_not_mutate_cached_rows(as_staff
         assert parish["call_centre_confirmed"] == 12
     # The "cached" row objects themselves must be untouched, not just the
     # response -- proves the fix rebuilds dicts instead of mutating in place.
-    assert online_venue_row["reached"] == 10
-    assert online_parish_row["reached"] == 10
+    assert online_venue_row["online_reached"] == 10
+    assert online_parish_row["online_reached"] == 10
 
 
 def test_mobilisation_forecast_accepts_date_range(as_staff, mock_run_query):
