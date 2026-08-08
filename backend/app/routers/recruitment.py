@@ -2024,9 +2024,14 @@ def qa_calls(user: User = Depends(current_user)):
     venue x mobilizer x cycle, pre-summed incl. by gender) rather than
     aggregating the 607-row silver table client-side. Denominators, confirmed
     live 2026-08-08 by reading every row's totals:
+    - reach_rate is total_unique_reached_youth ÷ total_unique_youth_called —
+      per the recruitment team's ask, 2026-08-08 — a per-youth grain (not
+      total_call_status_reached ÷ total_call_attempts, which double-counts a
+      youth reached across multiple call attempts).
     - call_outcomes (Reached/No Answer/Phone Off/...) are shares of
-      total_call_attempts — the call-attempt grain, matching call-centre-
-      insights' "% of calls" framing.
+      total_call_attempts instead — the call-attempt grain, matching
+      call-centre-insights' "% of calls" framing (this breakdown is about
+      what attempts looked like, not how many distinct youth were reached).
     - identity_confirmed_rate and the Confirmed/No/Maybe breakdown are shares
       of total_unique_reached_youth — total_confirmed_youth + total_no_youth +
       total_maybe_youth sums EXACTLY to it, confirming that's this outcome's
@@ -2127,6 +2132,7 @@ def qa_calls(user: User = Depends(current_user)):
     district_sql = f"""
     SELECT youth_district AS district,
       SUM(total_call_attempts) AS attempts,
+      SUM(total_unique_youth_called) AS called,
       SUM(total_call_status_reached) AS reached,
       SUM(total_unique_reached_youth) AS unique_reached,
       SUM(total_confirmed_youth) AS confirmed,
@@ -2137,6 +2143,7 @@ def qa_calls(user: User = Depends(current_user)):
     """
     by_district = []
     for r in database.run_query(district_sql, role=user.role):
+        d_called = r.get("called") or 0
         d_reached = r.get("reached") or 0
         d_unique_reached = r.get("unique_reached") or 0
         d_confirmed = r.get("confirmed") or 0
@@ -2145,7 +2152,7 @@ def qa_calls(user: User = Depends(current_user)):
             "district": r["district"],
             "attempts": r.get("attempts") or 0,
             "reached": d_reached,
-            "reach_rate": _pct(d_reached, r.get("attempts") or 0),
+            "reach_rate": _pct(d_unique_reached, d_called),
             "identity_confirmed_rate": _pct(d_confirmed, d_unique_reached),
             "name_match_rate": _pct(d_name_matches, d_reached),
         })
@@ -2211,12 +2218,15 @@ def qa_calls(user: User = Depends(current_user)):
     # mobilizer x cycle grain only), so this one chart comes from the SILVER
     # per-call table instead, grouped by DATE(created_at) -- the same reliable
     # date column call-centre-insights uses (see that endpoint's docstring).
-    # A simple day-by-day bar count, not a trend line — one QA pilot week
+    # COUNT(DISTINCT youth_id), not COUNT(*), for the same reason reach_rate
+    # above uses unique_reached/called rather than call-attempt counts — a
+    # youth called more than once in a day shouldn't inflate the total. A
+    # simple day-by-day bar count, not a trend line — one QA pilot week
     # doesn't have enough days yet for a trend to mean anything.
     daily_sql = f"""
-    SELECT DATE(created_at) AS date, COUNT(*) AS calls,
-      COUNTIF(call_status = 'Reached') AS reached,
-      COUNTIF(confirmed_identity = 'Yes') AS confirmed
+    SELECT DATE(created_at) AS date,
+      COUNT(DISTINCT youth_id) AS called,
+      COUNT(DISTINCT IF(call_status = 'Reached', youth_id, NULL)) AS reached
     FROM {QUALITY_ASSURANCE_SILVER}
     WHERE bootcamp_cycle = 'BOOTCAMP_5' AND created_at IS NOT NULL
     GROUP BY date ORDER BY date
@@ -2228,7 +2238,7 @@ def qa_calls(user: User = Depends(current_user)):
         "calls_analysed": attempts,
         "youth_called": called,
         "reached": reached,
-        "reach_rate": _pct(reached, attempts),
+        "reach_rate": _pct(unique_reached, called),
         "call_outcomes": call_outcomes,
         "unique_reached": unique_reached,
         "confirmed": confirmed,

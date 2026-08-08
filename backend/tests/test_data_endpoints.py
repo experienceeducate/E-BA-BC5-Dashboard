@@ -954,8 +954,8 @@ def test_qa_calls_no_date_range_params(as_staff, mock_run_query):
 
 def test_qa_calls_shape_and_rates(as_staff, mock_run_query):
     def side_effect(sql, params, role):
-        # Unique to totals_sql -- district_sql also has SUM(total_call_attempts).
-        if "SUM(total_unique_youth_called)" in sql:
+        # Unique to totals_sql -- district_sql also selects called/attempts.
+        if "SUM(total_call_status_no_answer)" in sql:
             return [{
                 "attempts": 100, "called": 80, "reached": 60, "unique_reached": 50,
                 "confirmed": 40, "no_youth": 8, "maybe_youth": 2, "name_matches": 45,
@@ -972,7 +972,8 @@ def test_qa_calls_shape_and_rates(as_staff, mock_run_query):
     assert body["calls_analysed"] == 100
     assert body["youth_called"] == 80
     assert body["reached"] == 60
-    assert body["reach_rate"] == 60.0
+    # reach_rate is unique_reached / called (per-youth), not reached / attempts.
+    assert body["reach_rate"] == 62.5
     assert body["unique_reached"] == 50
     # Confirmed/No/Maybe are shares of unique_reached (40+8+2 == 50 exactly).
     assert body["confirmed"] == 40
@@ -992,9 +993,9 @@ def test_qa_calls_shape_and_rates(as_staff, mock_run_query):
 
 def test_qa_calls_breakdowns_by_district_venue_gender_and_daily(as_staff, mock_run_query):
     def side_effect(sql, params, role):
-        # Unique to totals_sql -- district_sql also has SUM(total_call_attempts).
-        if "SUM(total_unique_youth_called)" in sql:
-            return [{"attempts": 100, "reached": 60, "unique_reached": 50, "confirmed": 40, "name_matches": 45}]
+        # Unique to totals_sql -- district_sql also selects called/attempts.
+        if "SUM(total_call_status_no_answer)" in sql:
+            return [{"attempts": 100, "called": 80, "reached": 60, "unique_reached": 50, "confirmed": 40, "name_matches": 45}]
         # Check venue_sql before district_sql -- venue_sql also selects
         # "youth_district AS district" (as a second column), so it would
         # otherwise match the district branch first.
@@ -1005,8 +1006,8 @@ def test_qa_calls_breakdowns_by_district_venue_gender_and_daily(as_staff, mock_r
             ]
         if "youth_district AS district" in sql:
             return [
-                {"district": "MAYUGE", "attempts": 60, "reached": 40, "unique_reached": 35, "confirmed": 30, "name_matches": 32},
-                {"district": "IGANGA", "attempts": 40, "reached": 20, "unique_reached": 15, "confirmed": 10, "name_matches": 13},
+                {"district": "MAYUGE", "attempts": 60, "called": 50, "reached": 40, "unique_reached": 35, "confirmed": 30, "name_matches": 32},
+                {"district": "IGANGA", "attempts": 40, "called": 30, "reached": 20, "unique_reached": 15, "confirmed": 10, "name_matches": 13},
             ]
         if "total_call_status_reached_female" in sql:
             return [{
@@ -1014,7 +1015,7 @@ def test_qa_calls_breakdowns_by_district_venue_gender_and_daily(as_staff, mock_r
                 "confirmed_f": 28, "confirmed_m": 12, "name_matches_f": 30, "name_matches_m": 15,
             }]
         if "DATE(created_at) AS date" in sql:
-            return [{"date": "2026-08-07", "calls": 50, "reached": 30, "confirmed": 25}]
+            return [{"date": "2026-08-07", "called": 50, "reached": 30}]
         return []
     mock_run_query.set_side_effect(side_effect)
     r = as_staff.get("/api/recruitment/qa-calls")
@@ -1022,7 +1023,8 @@ def test_qa_calls_breakdowns_by_district_venue_gender_and_daily(as_staff, mock_r
     body = r.json()
 
     by_district = {d["district"]: d for d in body["by_district"]}
-    assert by_district["MAYUGE"]["reach_rate"] == round(100 * 40 / 60, 1)
+    # reach_rate is unique_reached / called (per-youth), not reached / attempts.
+    assert by_district["MAYUGE"]["reach_rate"] == round(100 * 35 / 50, 1)
     assert by_district["MAYUGE"]["identity_confirmed_rate"] == round(100 * 30 / 35, 1)
 
     # Sorted by name_mismatch_rate DESCENDING -- worst venue first.
@@ -1035,7 +1037,8 @@ def test_qa_calls_breakdowns_by_district_venue_gender_and_daily(as_staff, mock_r
     assert by_gender["Male"]["name_match_rate"] == round(100 * 15 / 20, 1)
 
     assert body["daily"][0]["date"] == "2026-08-07"
-    assert body["daily"][0]["calls"] == 50
+    assert body["daily"][0]["called"] == 50
+    assert body["daily"][0]["reached"] == 30
 
 
 # --- Attendance ---------------------------------------------------------------

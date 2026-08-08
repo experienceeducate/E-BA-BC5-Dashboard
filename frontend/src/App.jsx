@@ -3868,7 +3868,7 @@ function MobQualityAssuranceCallsPage() {
 
       <Grid cols={4}>
         <KpiTile label="Youth called" value={fmtNum(data?.youth_called)} sub={`${fmtNum(data?.calls_analysed)} call attempts`} tag="REAL" />
-        <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} sub={`${fmtNum(data?.reached)} reached of ${fmtNum(data?.calls_analysed)} attempts`} tag="REAL" />
+        <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} sub={`${fmtNum(data?.unique_reached)} of ${fmtNum(data?.youth_called)} youth reached`} tag="REAL" />
         <KpiTile label="Confirmation rate" value={fmtPct(data?.identity_confirmed_rate)} sub={`${fmtNum(data?.confirmed)} confirmed of ${fmtNum(data?.unique_reached)} reached & surveyed`} tag="REAL" />
         <KpiTile label="Name match rate" value={fmtPct(data?.name_match_rate)} sub={`of ${fmtNum(data?.reached)} reached calls`} tag="REAL" />
       </Grid>
@@ -3896,7 +3896,7 @@ function MobQualityAssuranceCallsPage() {
         </State>
       </Card>
 
-      <Card title="Daily call volume" subtitle="Calls placed per day, with how many reached someone and were confirmed — one QA pilot week, so shown as daily bars rather than a trend line" chip="REAL">
+      <Card title="Daily call volume" subtitle="Unique youth called vs. uniquely reached, per day — one QA pilot week, so shown as daily bars rather than a trend line" chip="REAL">
         <State loading={qa.loading} error={qa.error} empty={!qa.loading && daily.length === 0}>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={daily} margin={{ left: 0 }}>
@@ -3905,9 +3905,8 @@ function MobQualityAssuranceCallsPage() {
               <YAxis tick={{ fontSize: 11 }} />
               <Tooltip />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="calls" name="Calls" fill={C.ink} radius={[3, 3, 0, 0]} />
-              <Bar dataKey="reached" name="Reached" fill={C.green} radius={[3, 3, 0, 0]} />
-              <Bar dataKey="confirmed" name="Confirmed" fill={C.teal} radius={[3, 3, 0, 0]} />
+              <Bar dataKey="called" name="Youth called" fill={C.ink} radius={[3, 3, 0, 0]} />
+              <Bar dataKey="reached" name="Youth reached" fill={C.green} radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </State>
