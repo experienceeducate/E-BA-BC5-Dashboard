@@ -882,6 +882,19 @@ function rateColor(value, targetKey) {
   return value >= t.good ? C.green : value >= t.warn ? C.gold : C.coral;
 }
 
+// present÷activated-style ratios occasionally exceed 100% on live data (a
+// mart snapshot lags a day or two behind another mart it's joined against --
+// confirmed live 2026-08-08: 8 of 43 venues have ATTENDANCE_SUMMARY's present
+// exceed SITE_FUNNEL_METRICS' activated_youth by 1-2 youth). The backend's
+// own attendance_rate fields are already capped at the source (see
+// attendance()'s _rate, backend); this covers the frontend's own client-side
+// re-derivations (KPI means, drill rollups) so a rate never renders as a
+// nonsensical >100% while the raw present/absent counts stay exactly as
+// reported.
+function capRate(v) {
+  return v == null ? null : Math.min(v, 100);
+}
+
 // Shared DataTable column renderers for the three color bands used
 // throughout the app, so every table showing one of these metrics is
 // colored consistently rather than some tables getting color and others not.
@@ -3906,16 +3919,20 @@ function RetentionTab({ filters }) {
   const targetRetention = data?.targets?.retention ?? 85;
   const targetAllSessions = data?.targets?.all_sessions ?? 75;
   const rateFns = {
-    activation_rate: (d) => (d.acquired ? Math.round((1000 * d.activated) / d.acquired) / 10 : null),
-    retention_rate: (d) => (d.activated ? Math.round((1000 * d.retained) / d.activated) / 10 : null),
+    activation_rate: (d) => (d.acquired ? capRate(Math.round((1000 * d.activated) / d.acquired) / 10) : null),
+    retention_rate: (d) => (d.activated ? capRate(Math.round((1000 * d.retained) / d.activated) / 10) : null),
   };
 
   const totalAcquired = sumBy(rows, "acquired");
   const totalActivated = sumBy(rows, "activated");
   const totalRetained = sumBy(rows, "retained");
   const totalRetainedFemale = sumBy(rows, "retained_female");
-  const overallActivationRate = totalAcquired ? Math.round((1000 * totalActivated) / totalAcquired) / 10 : null;
-  const overallRetentionRate = totalActivated ? Math.round((1000 * totalRetained) / totalActivated) / 10 : null;
+  // capRate: confirmed live (2026-08-08) that at least one venue has
+  // activated_youth slightly exceed acquired_youth (a snapshot-timing gap
+  // within SITE_FUNNEL_METRICS itself, not a query bug -- see capRate's
+  // definition). Real counts stay as reported; only the ratio is capped.
+  const overallActivationRate = totalAcquired ? capRate(Math.round((1000 * totalActivated) / totalAcquired) / 10) : null;
+  const overallRetentionRate = totalActivated ? capRate(Math.round((1000 * totalRetained) / totalActivated) / 10) : null;
   const pctFemaleOfRetained = totalRetained ? Math.round((1000 * totalRetainedFemale) / totalRetained) / 10 : null;
 
   // Session completion — real per-youth lesson-completion counts from
@@ -3925,13 +3942,13 @@ function RetentionTab({ filters }) {
   // >=100%-of-lessons metric alongside it -- moved here from the Attendance
   // tab since both live on this mart, not a daily-attendance one.
   const totalAllSessions = sumBy(rows, "all_sessions_count");
-  const overallAllSessionsRate = totalActivated ? Math.round((1000 * totalAllSessions) / totalActivated) / 10 : null;
+  const overallAllSessionsRate = totalActivated ? capRate(Math.round((1000 * totalAllSessions) / totalActivated) / 10) : null;
 
   // One click on either gauge opens a single drill comparing BOTH metrics
   // side by side, gendered, by district then venue -- rather than six
   // separate single-metric gauges each needing their own click to compare.
   function openSessionCompletionDrill() {
-    const rate = (n, d) => (d ? Math.round((1000 * (n || 0)) / d) / 10 : null);
+    const rate = (n, d) => (d ? capRate(Math.round((1000 * (n || 0)) / d) / 10) : null);
     const byDistrict = {};
     rows.forEach((v) => {
       const d = byDistrict[v.district] || (byDistrict[v.district] = {
@@ -4207,19 +4224,21 @@ function AttendanceOverviewPage({ filters, dateFrom, dateTo }) {
   const avgChurn = daily.length ? sumBy(daily, "net_churn") / daily.length : null;
   const avgChurnRate = avgPresent ? Math.round((1000 * avgChurn) / avgPresent) / 10 : null;
   const latestDay = daily[daily.length - 1];
-  const latestAttendanceRate = latestDay && totalActivated ? Math.round((1000 * latestDay.present) / totalActivated) / 10 : null;
+  const latestAttendanceRate = latestDay && totalActivated ? capRate(Math.round((1000 * latestDay.present) / totalActivated) / 10) : null;
 
   // Mean of each day's own present÷activated (and absent÷activated) —
   // "average attendance"/"absenteeism rate" across every day reported, using
   // the same total-activated denominator as Latest attendance rate above, not
-  // a raw headcount average (which wouldn't be a %).
+  // a raw headcount average (which wouldn't be a %). Each day's own rate is
+  // capped before averaging (see capRate) so one over-100% day can't skew the
+  // mean upward.
   const mean = (arr) => (arr.length ? Math.round((10 * arr.reduce((s, v) => s + v, 0)) / arr.length) / 10 : null);
-  const dailyRates = daily.map((d) => (totalActivated ? (100 * (d.present || 0)) / totalActivated : null)).filter((v) => v != null);
+  const dailyRates = daily.map((d) => (totalActivated ? capRate((100 * (d.present || 0)) / totalActivated) : null)).filter((v) => v != null);
   const avgAttendanceRate = mean(dailyRates);
   const dailyAbsentRates = daily.map((d) => (totalActivated ? (100 * (d.absent || 0)) / totalActivated : null)).filter((v) => v != null);
   const avgAbsenteeismRate = mean(dailyAbsentRates);
 
-  const rateFns = { attendance_rate: (d) => (d.activated ? Math.round((1000 * d.present) / d.activated) / 10 : null) };
+  const rateFns = { attendance_rate: (d) => (d.activated ? capRate(Math.round((1000 * d.present) / d.activated) / 10) : null) };
   const districtRows = groupByDistrict(venueRows, ["activated", "present"], rateFns);
   // Every venue, worst-first — same priority read as the previous bottom-5
   // cut, just paginated instead of hard-limited to 5.
@@ -4276,11 +4295,11 @@ function AttendanceOverviewPage({ filters, dateFrom, dateTo }) {
       district: d.district,
       activated: d.activated,
       present: d.present,
-      attendance_rate: d.activated ? Math.round((1000 * d.present) / d.activated) / 10 : null,
+      attendance_rate: d.activated ? capRate(Math.round((1000 * d.present) / d.activated) / 10) : null,
       present_female: d.present_female,
-      attendance_rate_female: d.activated_female ? Math.round((1000 * d.present_female) / d.activated_female) / 10 : null,
+      attendance_rate_female: d.activated_female ? capRate(Math.round((1000 * d.present_female) / d.activated_female) / 10) : null,
       present_male: d.present_male,
-      attendance_rate_male: d.activated_male ? Math.round((1000 * d.present_male) / d.activated_male) / 10 : null,
+      attendance_rate_male: d.activated_male ? capRate(Math.round((1000 * d.present_male) / d.activated_male) / 10) : null,
     })).sort((a, b) => (b.attendance_rate ?? -1) - (a.attendance_rate ?? -1));
     drill.open({
       title: `Attendance — ${date}`,

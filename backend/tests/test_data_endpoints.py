@@ -980,6 +980,29 @@ def test_attendance_by_venue_gender_rate(as_staff, mock_run_query):
     assert v["attendance_rate_male"] == 75.0
 
 
+def test_attendance_by_venue_rate_capped_at_100(as_staff, mock_run_query):
+    """Confirmed live: a handful of venues have ATTENDANCE_SUMMARY's present
+    exceed SITE_FUNNEL_METRICS' activated_youth by 1-2 youth (a snapshot-
+    timing gap between the two marts, not a query bug) -- the raw present
+    count stays real, but the rendered rate must never exceed 100%."""
+    def side_effect(sql, params, role):
+        if "AVG(total_youths_present)" in sql:
+            return [{"venue": "Nabukima church of God", "present": 41, "present_female": 23, "present_male": 18}]
+        if "SUM(activated_youth) AS activated" in sql:
+            return [{
+                "district": "BUGIRI", "venue": "Nabukima church of God",
+                "activated": 40, "activated_female": 22, "activated_male": 18,
+            }]
+        return []
+    mock_run_query.set_side_effect(side_effect)
+    r = as_staff.get("/api/implementation/attendance")
+    v = r.json()["by_venue"][0]
+    assert v["present"] == 41.0  # raw present stays real, uncapped
+    assert v["attendance_rate"] == 100.0
+    assert v["attendance_rate_female"] == 100.0
+    assert v["attendance_rate_male"] == 100.0
+
+
 def test_attendance_by_venue_day_shape_and_rates(as_staff, mock_run_query):
     def side_effect(sql, params, role):
         if "SELECT venue_name AS venue, report_date AS event_date" in sql:
@@ -1262,6 +1285,26 @@ def test_retention_gender_filter_picks_headline_without_collapsing_split(as_staf
     assert v["retained_male"] == 30
     assert v["retention_rate_male"] == round(100 * 30 / 35, 1)
     assert v["all_sessions_rate_male"] == round(100 * 22 / 35, 1)
+
+
+def test_retention_rates_capped_at_100(as_staff, mock_run_query):
+    """Confirmed live: at least one venue has activated_youth slightly exceed
+    acquired_youth (a snapshot-timing gap within SITE_FUNNEL_METRICS itself,
+    not a query bug) -- raw counts stay real, but no rendered rate may exceed
+    100%."""
+    mock_run_query.set_rows([{
+        "district": "BUGIRI", "venue": "Bwigula Primary School",
+        "acquired": 70, "acquired_female": 40, "acquired_male": 30,
+        "activated": 71, "activated_female": 41, "activated_male": 30,
+        "retained": 71, "retained_female": 41, "retained_male": 30,
+        "all_sessions_count": 71, "all_sessions_count_female": 41, "all_sessions_count_male": 30,
+    }])
+    r = as_staff.get("/api/implementation/retention")
+    v = r.json()["by_venue"][0]
+    assert v["activated"] == 71  # raw count stays real, uncapped
+    assert v["activation_rate"] == 100.0
+    assert v["retention_rate"] == 100.0
+    assert v["all_sessions_rate"] == 100.0
 
 
 def test_attendance_by_venue_day_includes_absent_and_net_churn(as_staff, mock_run_query):

@@ -252,8 +252,20 @@ def attendance(
     activated_rows = database.run_query(activated_sql, activated_params, role=user.role)
     activated_by_venue = {_norm_venue_key(r["venue"]): r for r in activated_rows}
 
+    # Capped at 100 -- confirmed live (2026-08-08) that 8 of 43 active-cohort
+    # venues have a day where ATTENDANCE_SUMMARY's total_youths_present (or a
+    # gender split) exceeds SITE_FUNNEL_METRICS' activated_youth by 1-2 youth
+    # (e.g. Nabukima church of God: activated_female=22, but present_female=23
+    # on nearly every reported day). Both counts are real; this is a genuine
+    # snapshot-timing gap between the two marts (activated_youth lags a youth
+    # who's already showing up in daily attendance), not a query bug -- but an
+    # uncapped ratio renders as a nonsensical >100% "attendance rate" once a
+    # venue filter isolates just that venue, so the rate is capped here while
+    # present/absent themselves are left exactly as reported.
     def _rate(numer, denom):
-        return round(100 * numer / denom, 1) if numer is not None and denom else None
+        if numer is None or not denom:
+            return None
+        return min(round(100 * numer / denom, 1), 100.0)
 
     by_venue = []
     for r in activated_rows:
@@ -528,8 +540,16 @@ def retention(
     """
     rows = database.run_query(sql, params, role=user.role)
 
+    # Capped at 100 -- same reasoning as attendance()'s _rate: confirmed live
+    # that at least one venue (Bwigula Primary School) has activated_youth
+    # slightly exceed acquired_youth, a snapshot-timing gap within
+    # SITE_FUNNEL_METRICS itself rather than a query bug. Both counts stay
+    # real; only the ratio is capped so it never renders as a nonsensical
+    # >100% rate.
     def _rate(numer, denom):
-        return round(100 * numer / denom, 1) if numer is not None and denom else None
+        if numer is None or not denom:
+            return None
+        return min(round(100 * numer / denom, 1), 100.0)
 
     picked_rows = []
     for r in rows:
