@@ -2043,6 +2043,15 @@ def qa_calls(user: User = Depends(current_user)):
     Shown verbatim (n is small enough that a keyword theme classifier like
     call-centre-insights' would be overfitting), including a literal "none"
     value as-is rather than inferring it means no support was needed.
+
+    by_district/by_venue/by_gender reuse the same gold rollup, just grouped
+    instead of summed whole. by_venue is sorted by name_mismatch_rate
+    DESCENDING (highest mismatch first, per the recruitment team's ask,
+    2026-08-08) — it exists to surface which venues need a name-verification
+    follow-up, not to rank best performers. daily is the one exception
+    sourced from QUALITY_ASSURANCE_SILVER instead (grouped by DATE(created_at),
+    the same reliable column call-centre-insights uses) since the gold rollup
+    has no date dimension at all to chart a trend from.
     """
     totals_sql = f"""
     SELECT
@@ -2114,6 +2123,106 @@ def qa_calls(user: User = Depends(current_user)):
     """
     support_quotes = [_clean_quote(r["note"]) for r in database.run_query(support_sql, role=user.role)]
 
+    # District comparison — same gold rollup, grouped instead of summed whole.
+    district_sql = f"""
+    SELECT youth_district AS district,
+      SUM(total_call_attempts) AS attempts,
+      SUM(total_call_status_reached) AS reached,
+      SUM(total_unique_reached_youth) AS unique_reached,
+      SUM(total_confirmed_youth) AS confirmed,
+      SUM(total_name_matches) AS name_matches
+    FROM {QUALITY_ASSURANCE_BC5}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND youth_district IS NOT NULL
+    GROUP BY district ORDER BY district
+    """
+    by_district = []
+    for r in database.run_query(district_sql, role=user.role):
+        d_reached = r.get("reached") or 0
+        d_unique_reached = r.get("unique_reached") or 0
+        d_confirmed = r.get("confirmed") or 0
+        d_name_matches = r.get("name_matches") or 0
+        by_district.append({
+            "district": r["district"],
+            "attempts": r.get("attempts") or 0,
+            "reached": d_reached,
+            "reach_rate": _pct(d_reached, r.get("attempts") or 0),
+            "identity_confirmed_rate": _pct(d_confirmed, d_unique_reached),
+            "name_match_rate": _pct(d_name_matches, d_reached),
+        })
+
+    # By venue — same fields, grouped finer, sorted so the highest NAME
+    # MISMATCH rate (not match rate) sorts first: this table exists
+    # specifically to surface which venues need a name-verification follow-up,
+    # per the recruitment team's ask, 2026-08-08.
+    venue_sql = f"""
+    SELECT venue_name AS venue, youth_district AS district,
+      SUM(total_call_status_reached) AS reached,
+      SUM(total_name_matches) AS name_matches
+    FROM {QUALITY_ASSURANCE_BC5}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND venue_name IS NOT NULL
+    GROUP BY venue, district
+    """
+    by_venue = []
+    for r in database.run_query(venue_sql, role=user.role):
+        v_reached = r.get("reached") or 0
+        v_name_matches = r.get("name_matches") or 0
+        v_mismatches = max(v_reached - v_name_matches, 0)
+        by_venue.append({
+            "venue": r["venue"],
+            "district": r["district"],
+            "reached": v_reached,
+            "name_mismatches": v_mismatches,
+            "name_mismatch_rate": _pct(v_mismatches, v_reached),
+        })
+    by_venue.sort(key=lambda r: (-(r["name_mismatch_rate"] or 0), -r["reached"]))
+
+    # Gender comparison — same gold rollup's per-gender columns (confirmed
+    # with the recruitment team, 2026-08-08, to check for a reach/confirm/
+    # name-match gap between arms, the same kind of check Executive Summary's
+    # gender table already does for the main funnel).
+    gender_sql = f"""
+    SELECT
+      SUM(total_call_status_reached_female) AS reached_f, SUM(total_call_status_reached_male) AS reached_m,
+      SUM(total_unique_reached_female) AS unique_reached_f, SUM(total_unique_reached_male) AS unique_reached_m,
+      SUM(total_confirmed_female) AS confirmed_f, SUM(total_confirmed_male) AS confirmed_m,
+      SUM(total_name_matches_female) AS name_matches_f, SUM(total_name_matches_male) AS name_matches_m
+    FROM {QUALITY_ASSURANCE_BC5}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5'
+    """
+    g = (database.run_query(gender_sql, role=user.role) or [{}])[0]
+
+    def gn(key):
+        return g.get(key) or 0
+
+    by_gender = [
+        {
+            "gender": "Female", "reached": gn("reached_f"),
+            "identity_confirmed_rate": _pct(gn("confirmed_f"), gn("unique_reached_f")),
+            "name_match_rate": _pct(gn("name_matches_f"), gn("reached_f")),
+        },
+        {
+            "gender": "Male", "reached": gn("reached_m"),
+            "identity_confirmed_rate": _pct(gn("confirmed_m"), gn("unique_reached_m")),
+            "name_match_rate": _pct(gn("name_matches_m"), gn("reached_m")),
+        },
+    ]
+
+    # Daily call volume — the gold rollup has no date dimension at all (venue x
+    # mobilizer x cycle grain only), so this one chart comes from the SILVER
+    # per-call table instead, grouped by DATE(created_at) -- the same reliable
+    # date column call-centre-insights uses (see that endpoint's docstring).
+    # A simple day-by-day bar count, not a trend line — one QA pilot week
+    # doesn't have enough days yet for a trend to mean anything.
+    daily_sql = f"""
+    SELECT DATE(created_at) AS date, COUNT(*) AS calls,
+      COUNTIF(call_status = 'Reached') AS reached,
+      COUNTIF(confirmed_identity = 'Yes') AS confirmed
+    FROM {QUALITY_ASSURANCE_SILVER}
+    WHERE bootcamp_cycle = 'BOOTCAMP_5' AND created_at IS NOT NULL
+    GROUP BY date ORDER BY date
+    """
+    daily = database.run_query(daily_sql, role=user.role)
+
     return {
         "since": QA_CALLS_START_DATE,
         "calls_analysed": attempts,
@@ -2122,11 +2231,16 @@ def qa_calls(user: User = Depends(current_user)):
         "reach_rate": _pct(reached, attempts),
         "call_outcomes": call_outcomes,
         "unique_reached": unique_reached,
+        "confirmed": confirmed,
         "identity_confirmed_rate": _pct(confirmed, unique_reached),
         "confirmation_outcome": confirmation_outcome,
         "name_match_rate": _pct(name_matches, reached),
         "name_breakdown": name_breakdown,
         "support_needed": {"n": len(support_quotes), "quotes": support_quotes},
+        "by_district": by_district,
+        "by_venue": by_venue,
+        "by_gender": by_gender,
+        "daily": daily,
     }
 
 

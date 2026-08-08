@@ -3839,10 +3839,22 @@ function MobQualityAssuranceCallsPage() {
   const confirmationOutcome = data?.confirmation_outcome || [];
   const nameBreakdown = data?.name_breakdown || [];
   const supportQuotes = data?.support_needed?.quotes || [];
+  const byDistrict = data?.by_district || [];
+  const byVenue = data?.by_venue || [];
+  const byGender = data?.by_gender || [];
+  const daily = data?.daily || [];
   const pctColumns = [
     { key: "count", label: "# Youth", align: "right", render: (v) => fmtNum(v) },
     { key: "pct", label: "%", align: "right", render: (v) => fmtPct(v) },
   ];
+  // Flags a gap worth a second look — same 5pp convention Executive
+  // Summary's gender table uses for female-vs-male retention.
+  function renderGapFlaggedPct(v, gapAbs) {
+    const flagged = gapAbs != null && gapAbs > 5;
+    return <span style={{ color: flagged ? C.coral : "inherit", fontWeight: flagged ? 700 : 400 }}>{fmtPct(v)}</span>;
+  }
+  const genderConfirmedGap = byGender.length === 2 ? Math.abs((byGender[0].identity_confirmed_rate || 0) - (byGender[1].identity_confirmed_rate || 0)) : null;
+  const genderNameGap = byGender.length === 2 ? Math.abs((byGender[0].name_match_rate || 0) - (byGender[1].name_match_rate || 0)) : null;
 
   return (
     <div>
@@ -3857,7 +3869,7 @@ function MobQualityAssuranceCallsPage() {
       <Grid cols={4}>
         <KpiTile label="Youth called" value={fmtNum(data?.youth_called)} sub={`${fmtNum(data?.calls_analysed)} call attempts`} tag="REAL" />
         <KpiTile label="Reach rate" value={fmtPct(data?.reach_rate)} sub={`${fmtNum(data?.reached)} reached of ${fmtNum(data?.calls_analysed)} attempts`} tag="REAL" />
-        <KpiTile label="Identity confirmed" value={fmtPct(data?.identity_confirmed_rate)} sub={`of ${fmtNum(data?.unique_reached)} reached & surveyed`} tag="REAL" />
+        <KpiTile label="Confirmation rate" value={fmtPct(data?.identity_confirmed_rate)} sub={`${fmtNum(data?.confirmed)} confirmed of ${fmtNum(data?.unique_reached)} reached & surveyed`} tag="REAL" />
         <KpiTile label="Name match rate" value={fmtPct(data?.name_match_rate)} sub={`of ${fmtNum(data?.reached)} reached calls`} tag="REAL" />
       </Grid>
 
@@ -3881,6 +3893,23 @@ function MobQualityAssuranceCallsPage() {
               rows={outcomes}
             />
           </div>
+        </State>
+      </Card>
+
+      <Card title="Daily call volume" subtitle="Calls placed per day, with how many reached someone and were confirmed — one QA pilot week, so shown as daily bars rather than a trend line" chip="REAL">
+        <State loading={qa.loading} error={qa.error} empty={!qa.loading && daily.length === 0}>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={daily} margin={{ left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+              <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar dataKey="calls" name="Calls" fill={C.ink} radius={[3, 3, 0, 0]} />
+              <Bar dataKey="reached" name="Reached" fill={C.green} radius={[3, 3, 0, 0]} />
+              <Bar dataKey="confirmed" name="Confirmed" fill={C.teal} radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
         </State>
       </Card>
 
@@ -3915,6 +3944,56 @@ function MobQualityAssuranceCallsPage() {
           </State>
         </Card>
       </div>
+
+      <ExecBand num="◆" title="Gender differences" />
+      <Card title="Female vs male — confirmation and name-match rates" subtitle="Gaps over 5pp between the two genders are flagged" chip="REAL">
+        <State loading={qa.loading} error={qa.error} empty={!qa.loading && byGender.length === 0}>
+          <DataTable
+            columns={[
+              { key: "gender", label: "Gender" },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "identity_confirmed_rate", label: "Confirmation rate", align: "right", render: (v) => renderGapFlaggedPct(v, genderConfirmedGap) },
+              { key: "name_match_rate", label: "Name match rate", align: "right", render: (v) => renderGapFlaggedPct(v, genderNameGap) },
+            ]}
+            rows={byGender}
+          />
+        </State>
+      </Card>
+
+      <ExecBand num="◆" title="District comparison" />
+      <Card title="Reach, confirmation and name-match rate by district" chip="REAL">
+        <State loading={qa.loading} error={qa.error} empty={!qa.loading && byDistrict.length === 0}>
+          <DataTable
+            columns={[
+              { key: "district", label: "District" },
+              { key: "attempts", label: "Attempts", align: "right", render: (v) => fmtNum(v) },
+              { key: "reach_rate", label: "Reach rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "identity_confirmed_rate", label: "Confirmation rate", align: "right", render: (v) => fmtPct(v) },
+              { key: "name_match_rate", label: "Name match rate", align: "right", render: (v) => fmtPct(v) },
+            ]}
+            rows={byDistrict}
+          />
+        </State>
+      </Card>
+
+      <ExecBand num="◆" title="Venue name mismatches" />
+      <Card title="Which venues have the most name mismatches" subtitle="Sorted worst-first by name mismatch rate — the venue-level follow-up list, not a leaderboard" chip="REAL">
+        <State loading={qa.loading} error={qa.error} empty={!qa.loading && byVenue.length === 0}>
+          <DataTable
+            columns={[
+              { key: "venue", label: "Venue" },
+              { key: "district", label: "District" },
+              { key: "reached", label: "Reached", align: "right", render: (v) => fmtNum(v) },
+              { key: "name_mismatches", label: "Mismatches", align: "right", render: (v) => fmtNum(v) },
+              {
+                key: "name_mismatch_rate", label: "Mismatch rate", align: "right",
+                render: (v) => <span style={{ color: v != null && v > 20 ? C.coral : "inherit", fontWeight: v != null && v > 20 ? 700 : 400 }}>{fmtPct(v)}</span>,
+              },
+            ]}
+            rows={byVenue}
+          />
+        </State>
+      </Card>
 
       <ExecBand num="◆" title="Support needed — verbatim" />
       <Card title={`What support youth mentioned (n=${fmtNum(data?.support_needed?.n)})`} subtitle="A sparse free-text field on the QA call record — shown verbatim rather than themed, the sample is too small to categorise meaningfully" chip="SAMPLE" chipTone="sim">
