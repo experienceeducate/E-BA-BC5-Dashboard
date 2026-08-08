@@ -1594,6 +1594,40 @@ def test_retention_rates_capped_at_100(as_staff, mock_run_query):
     assert v["all_sessions_rate"] == 100.0
 
 
+def _cycle_param_values(calls, prefix):
+    for c in calls:
+        for p in c["params"]:
+            if getattr(p, "name", "") == f"{prefix}_cycle":
+                return list(p.values)
+    return None
+
+
+def test_attendance_defaults_to_bootcamp_4_not_shared_active_cohorts(as_staff, mock_run_query):
+    """ACTIVE_COHORTS is shared across every live-table query, but it's
+    BOOTCAMP_5-only (Mobilisation/Recruitment closed out BC4 -- confirmed
+    live 2026-08-08). ATTENDANCE_SUMMARY/SITE_FUNNEL_METRICS have zero
+    BOOTCAMP_5 rows (confirmed live throughout this session), so this
+    endpoint must default to ATTENDANCE_MART_COHORTS (BOOTCAMP_4), not fall
+    through to the shared ACTIVE_COHORTS default -- that exact regression
+    (a separate PR bumping ACTIVE_COHORTS) silently emptied this endpoint."""
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/attendance")
+    for prefix in ("ad", "adv", "advd", "ada"):
+        assert _cycle_param_values(mock_run_query.calls, prefix) == ["BOOTCAMP_4"], prefix
+
+
+def test_attendance_lessons_defaults_to_bootcamp_4(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/attendance-lessons")
+    assert _cycle_param_values(mock_run_query.calls, "al") == ["BOOTCAMP_4"]
+
+
+def test_retention_defaults_to_bootcamp_4(as_staff, mock_run_query):
+    mock_run_query.set_rows([])
+    as_staff.get("/api/implementation/retention")
+    assert _cycle_param_values(mock_run_query.calls, "rt") == ["BOOTCAMP_4"]
+
+
 def test_attendance_by_venue_day_includes_absent_and_net_churn(as_staff, mock_run_query):
     """absent/net_churn are needed so the frontend can recompute a venue-
     filtered Daily attendance/net-churn series -- previously missing from

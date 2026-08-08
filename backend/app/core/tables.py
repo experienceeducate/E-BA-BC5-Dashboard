@@ -625,31 +625,55 @@ MILESTONE_PERFORMANCE_CATEGORY_SQL = """CASE
     END"""
 
 
-def resolve_active_cohorts(requested: list = None) -> list:
+def resolve_active_cohorts(requested: list = None, default: list = None) -> list:
     """The cycles a live-table query should scope to: `requested` (the
-    frontend's cohort filter selection) when given and non-empty, else the
-    default ACTIVE_COHORTS set.
+    frontend's cohort filter selection) when given and non-empty, else
+    `default` if the caller supplied one, else the shared ACTIVE_COHORTS set.
 
-    `requested` is trusted as-is rather than intersected against
-    ACTIVE_COHORTS — the filter dropdown's cohort options now come from a
+    `default` exists because ACTIVE_COHORTS is shared across every live-table
+    query, but not every mart agrees on which cycle is "active" -- Mobilisation/
+    Recruitment tables (DAILY_ACQUISITION_SUMMARY etc.) closed out BOOTCAMP_4
+    and moved to BOOTCAMP_5 (confirmed live 2026-08-08), while ATTENDANCE_
+    SUMMARY/SITE_FUNNEL_METRICS/LESSON_ATTENDANCE have zero BOOTCAMP_5 rows at
+    all (confirmed live throughout this session) -- their only real data is
+    BOOTCAMP_4. Bumping the shared ACTIVE_COHORTS to BOOTCAMP_5-only for the
+    former silently emptied the latter. Callers on the BC4-only side pass
+    `default=ATTENDANCE_MART_COHORTS` instead of relying on the shared default.
+
+    `requested` is trusted as-is rather than intersected against ACTIVE_
+    COHORTS/`default` — the filter dropdown's cohort options now come from a
     live `SELECT DISTINCT bootcamp_cycle` (see /api/filters), which can
-    include cohorts outside ACTIVE_COHORTS (e.g. BOOTCAMP_2/3), so filtering
-    a real user selection down to just the BC4/5 default would silently
-    ignore it. Values are always passed as a BigQuery query parameter
-    (never string-interpolated), so there's no injection risk in trusting
-    an unrecognized string here — it just matches zero rows."""
+    include cohorts outside either list (e.g. BOOTCAMP_2/3), so filtering a
+    real user selection down would silently ignore it. Values are always
+    passed as a BigQuery query parameter (never string-interpolated), so
+    there's no injection risk in trusting an unrecognized string here — it
+    just matches zero rows."""
     cleaned = [c for c in (requested or []) if c]
-    return cleaned or ACTIVE_COHORTS
+    if cleaned:
+        return cleaned
+    return default if default is not None else ACTIVE_COHORTS
 
 
-def active_cohort_clause(prefix: str, requested: list = None):
-    """(clause, params) restricting bootcamp_cycle to resolve_active_cohorts(requested)
-    for a live-table query. Splice into build_where(extra=[...]). See the
-    ACTIVE_COHORTS comment."""
+def active_cohort_clause(prefix: str, requested: list = None, default: list = None):
+    """(clause, params) restricting bootcamp_cycle to
+    resolve_active_cohorts(requested, default) for a live-table query.
+    Splice into build_where(extra=[...]). See resolve_active_cohorts' and
+    ACTIVE_COHORTS' comments -- pass `default` for a mart whose active cycle
+    disagrees with the shared ACTIVE_COHORTS set (e.g. ATTENDANCE_MART_COHORTS)."""
     return (
         f"bootcamp_cycle IN UNNEST(@{prefix}_cycle)",
-        [_array(f"{prefix}_cycle", "STRING", resolve_active_cohorts(requested))],
+        [_array(f"{prefix}_cycle", "STRING", resolve_active_cohorts(requested, default))],
     )
+
+
+# BC5 has zero rows across ATTENDANCE_SUMMARY, SITE_FUNNEL_METRICS, and
+# LESSON_ATTENDANCE (confirmed live throughout this session) -- unlike
+# ACTIVE_COHORTS (BOOTCAMP_5-only, governing Mobilisation/Recruitment tables
+# where BC4 is closed out), these three tables' only real data is BOOTCAMP_4.
+# Passed as active_cohort_clause(..., default=ATTENDANCE_MART_COHORTS) by
+# /api/implementation/attendance, /attendance-lessons, and /retention. Update
+# (or drop back to the shared ACTIVE_COHORTS) once BC5 data lands here too.
+ATTENDANCE_MART_COHORTS = ["BOOTCAMP_4"]
 
 # ─── gold_eba — aggregated marts (scaffold — BC5 feed not live yet) ────────────
 RECRUITMENT_FUNNEL   = f"{_GOLD}.eba_recruitment_funnel"      # TODO: confirm — district×gender×stage×cohort counts
