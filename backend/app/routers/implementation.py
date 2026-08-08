@@ -24,6 +24,7 @@ from app.core.tables import (
     SITE_FUNNEL_METRICS,
     SITE_FUNNEL_MEASURE_ACTUAL,
     ATTENDANCE_SUMMARY,
+    ATTENDANCE_MART_COHORTS,
     LESSON_ATTENDANCE,
     LESSON_TIMELY_REPORT_SQL,
     TRAINER_OBSERVATIONS,
@@ -166,7 +167,7 @@ def attendance(
     """
     where_d, params_d = build_where(
         districts=district, venues=venue,
-        extra=[active_cohort_clause("ad")] + _date_extra("report_date", date_from, date_to, "adfd"),
+        extra=[active_cohort_clause("ad", default=ATTENDANCE_MART_COHORTS)] + _date_extra("report_date", date_from, date_to, "adfd"),
         prefix="ad",
         district_col="youth_district", venue_col="venue_name",
     )
@@ -195,7 +196,7 @@ def attendance(
 
     present_where, present_params = build_where(
         districts=district, venues=venue,
-        extra=[active_cohort_clause("adv")] + _date_extra("report_date", date_from, date_to, "advfd"),
+        extra=[active_cohort_clause("adv", default=ATTENDANCE_MART_COHORTS)] + _date_extra("report_date", date_from, date_to, "advfd"),
         prefix="adv",
         district_col="youth_district", venue_col="venue_name",
     )
@@ -217,7 +218,7 @@ def attendance(
     # above) -- feeds by_venue_day, the Daily attendance chart's drill.
     venue_day_where, venue_day_params = build_where(
         districts=district, venues=venue,
-        extra=[active_cohort_clause("advd")] + _date_extra("report_date", date_from, date_to, "advdfd"),
+        extra=[active_cohort_clause("advd", default=ATTENDANCE_MART_COHORTS)] + _date_extra("report_date", date_from, date_to, "advdfd"),
         prefix="advd",
         district_col="youth_district", venue_col="venue_name",
     )
@@ -236,7 +237,7 @@ def attendance(
     venue_day_rows = database.run_query(venue_day_sql, venue_day_params, role=user.role)
 
     activated_where, activated_params = build_where(
-        districts=district, venues=venue, extra=[active_cohort_clause("ada")], prefix="ada",
+        districts=district, venues=venue, extra=[active_cohort_clause("ada", default=ATTENDANCE_MART_COHORTS)], prefix="ada",
         district_col="district", venue_col="venue_name",
     )
     activated_sql = f"""
@@ -392,7 +393,7 @@ def attendance_lessons(
     """
     where, params = build_where(
         districts=district, gender=gender, venues=venue,
-        extra=[active_cohort_clause("al")] + _date_extra("report_date", date_from, date_to, "alfd"),
+        extra=[active_cohort_clause("al", default=ATTENDANCE_MART_COHORTS)] + _date_extra("report_date", date_from, date_to, "alfd"),
         prefix="al",
         district_col="youth_district", venue_col="venue_name", gender_col="youth_gender",
     )
@@ -516,7 +517,7 @@ def retention(
     the frontend) rather than duplicating it across both endpoints.
     """
     where, params = build_where(
-        districts=district, venues=venue, extra=[active_cohort_clause("rt")], prefix="rt",
+        districts=district, venues=venue, extra=[active_cohort_clause("rt", default=ATTENDANCE_MART_COHORTS)], prefix="rt",
         venue_col="venue_name",
     )
     sql = f"""
